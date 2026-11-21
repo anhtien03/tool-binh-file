@@ -37,7 +37,7 @@ function computeDistanceField(binaryMask, w, h) {
 
     for (let q = 1; q < w; q++) {
       const gq = g[rowOff + q];
-      const gq2 = gq >= INF ? INF : gq * g;
+      const gq2 = gq >= INF ? INF : gq * gq;
       let s = 0;
       while (true) {
         const r = v[k];
