@@ -936,7 +936,42 @@ export function computeImpositionPlan(pagesMeta, config) {
 
     sheetLists.forEach((placements, idx) => {
       let stickerCutPaths = [];
-      if (singleCut1Dao && stickerShape === 'rect' && cornerRadius === 0 && gX <= 0.05 && gY <= 0.05) {
+      if (stickerShape === 'pdfContour') {
+        const declaredB = Math.max(0, Number(bleedMm) || 0);
+        for (const p of placements) {
+          const srcMeta = pagesMeta[p.pageIndex];
+          const contours = srcMeta?.extractedContours || [];
+          if (contours.length === 0) {
+            stickerCutPaths.push({ kind: 'rect', x: p.x, y: p.y, w: p.trimW, h: p.trimH, r: cornerRadius });
+            continue;
+          }
+          const offL = srcMeta.hasExplicitTrimBox ? srcMeta.trimOffsetLeftMm || 0 : declaredB;
+          const offT = srcMeta.hasExplicitTrimBox ? srcMeta.trimOffsetTopMm || 0 : declaredB;
+          const srcTrimW = srcMeta.hasExplicitTrimBox
+            ? srcMeta.trimWmm
+            : Math.max(1, (srcMeta.mediaWmm || trimW) - 2 * declaredB);
+          const srcTrimH = srcMeta.hasExplicitTrimBox
+            ? srcMeta.trimHmm
+            : Math.max(1, (srcMeta.mediaHmm || trimH) - 2 * declaredB);
+
+          const rot = ((p.rotate % 360) + 360) % 360;
+          const isRot90 = rot === 90 || rot === 270;
+          const sx = (isRot90 ? p.trimH : p.trimW) / Math.max(0.01, srcTrimW);
+          const sy = (isRot90 ? p.trimW : p.trimH) / Math.max(0.01, srcTrimH);
+
+          for (const c of contours) {
+            const transformedPts = c.ptsMm.map(([mx, my]) => {
+              const ux = (mx - offL) * sx;
+              const uy = (my - offT) * sy;
+              if (rot === 90) return [p.x + uy, p.y + p.trimH - ux];
+              if (rot === 180) return [p.x + p.trimW - ux, p.y + p.trimH - uy];
+              if (rot === 270) return [p.x + p.trimW - uy, p.y + ux];
+              return [p.x + ux, p.y + uy];
+            });
+            stickerCutPaths.push({ kind: 'poly', pts: transformedPts, closed: c.closed });
+          }
+        }
+      } else if (singleCut1Dao && stickerShape === 'rect' && cornerRadius === 0 && gX <= 0.05 && gY <= 0.05) {
         stickerCutPaths = deduplicateRectCutLines(placements);
       } else {
         stickerCutPaths = placements.map((p) => {

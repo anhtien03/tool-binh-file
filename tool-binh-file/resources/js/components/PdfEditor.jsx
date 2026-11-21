@@ -151,6 +151,9 @@ export default function PdfEditor() {
     if (nextItems.length > 1 && collation === 'stepAndRepeat') {
       setCollation('sequential');
     }
+    if (flatPages.some((p) => p.extractedContours && p.extractedContours.length > 0)) {
+      setStickerShape('pdfContour');
+    }
   };
 
   const mergeWithNextItem = (idx) => {
@@ -944,6 +947,7 @@ export default function PdfEditor() {
                       onChange={(e) => setStickerShape(e.target.value)}
                       className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
                     >
+                      <option value="pdfContour">Theo CutContour PDF</option>
                       <option value="rect">Chữ nhật / Bo góc</option>
                       <option value="circle">Hình tròn</option>
                       <option value="oval">Hình Oval / Elip</option>

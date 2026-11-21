@@ -324,6 +324,18 @@ export async function exportStickerPdf(sourceFilesInput, plan, config, exportRol
             thickness: 0.25,
             color: cutMagenta,
           });
+        } else if (cp.kind === 'poly' && cp.pts && cp.pts.length >= 2) {
+          const count = cp.closed ? cp.pts.length : cp.pts.length - 1;
+          for (let i = 0; i < count; i++) {
+            const a = cp.pts[i];
+            const b = cp.pts[(i + 1) % cp.pts.length];
+            destPage.drawLine({
+              start: { x: a[0] * MM_TO_PT, y: sheetHPt - a[1] * MM_TO_PT },
+              end: { x: b[0] * MM_TO_PT, y: sheetHPt - b[1] * MM_TO_PT },
+              thickness: 0.25,
+              color: cutMagenta,
+            });
+          }
         } else if (cp.kind === 'ellipse') {
           destPage.drawEllipse({
             x: cp.cx * MM_TO_PT,
@@ -384,6 +396,12 @@ export function exportStickerCutSvg(plan, sheetIndex = 0) {
   const cutsSvg = (sheet.stickerCutPaths || [])
     .map((cp) => {
       if (cp.kind === 'line') return `<line x1="${cp.x1}" y1="${cp.y1}" x2="${cp.x2}" y2="${cp.y2}" stroke="#ec008c" stroke-width="0.2" />`;
+      if (cp.kind === 'poly' && cp.pts) {
+        const ptsStr = cp.pts.map(([x, y]) => `${x},${y}`).join(' ');
+        return cp.closed
+          ? `<polygon points="${ptsStr}" fill="none" stroke="#ec008c" stroke-width="0.2" />`
+          : `<polyline points="${ptsStr}" fill="none" stroke="#ec008c" stroke-width="0.2" />`;
+      }
       if (cp.kind === 'ellipse') return `<ellipse cx="${cp.cx}" cy="${cp.cy}" rx="${cp.rx}" ry="${cp.ry}" fill="none" stroke="#ec008c" stroke-width="0.2" />`;
       return `<rect x="${cp.x}" y="${cp.y}" width="${cp.w}" height="${cp.h}" rx="${cp.r || 0}" ry="${cp.r || 0}" fill="none" stroke="#ec008c" stroke-width="0.2" />`;
     })

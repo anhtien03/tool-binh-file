@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
 import { MM_TO_PT, PAPER_SIZES } from '../engine/impositionEngine';
+import { extractCutContoursFromPdfPage } from '../engine/pdfCutContourExtractor';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
 
@@ -72,6 +73,7 @@ export default function PdfCanvasPreview({
             trimOffsetBottomMm: (tb.y - mb.y) / MM_TO_PT,
             trimOffsetTopMm: (mb.y + mb.height - (tb.y + tb.height)) / MM_TO_PT,
             hasExplicitTrimBox,
+            extractedContours: extractCutContoursFromPdfPage(pdfDoc, p),
           });
         });
       } catch (err) {
@@ -397,6 +399,14 @@ export default function PdfCanvasPreview({
         if (cp.kind === 'line') {
           ctx.moveTo(cp.x1 * scale, cp.y1 * scale);
           ctx.lineTo(cp.x2 * scale, cp.y2 * scale);
+        } else if (cp.kind === 'poly') {
+          if (cp.pts && cp.pts.length >= 2) {
+            cp.pts.forEach(([px, py], idx) => {
+              if (idx === 0) ctx.moveTo(px * scale, py * scale);
+              else ctx.lineTo(px * scale, py * scale);
+            });
+            if (cp.closed) ctx.closePath();
+          }
         } else if (cp.kind === 'ellipse') {
           ctx.ellipse(cp.cx * scale, cp.cy * scale, cp.rx * scale, cp.ry * scale, 0, 0, Math.PI * 2);
         } else if (cp.kind === 'rect') {
