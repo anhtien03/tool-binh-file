@@ -370,7 +370,7 @@ export default function PdfCanvasPreview({
       )}
 
       <div
-        className="p-6 rounded-2xl border border-slate-200 flex justify-center items-center w-full overflow-auto max-h-[600px] min-h-[420px]"
+        className="p-6 rounded-2xl border border-slate-200 w-full overflow-auto h-[540px]"
         style={{
           backgroundColor: '#fafbf9',
           backgroundImage:
@@ -378,10 +378,13 @@ export default function PdfCanvasPreview({
           backgroundSize: '24px 24px',
         }}
       >
-        <div style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}>
+        <div
+          className="m-auto shrink-0"
+          style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
+        >
           <canvas
             ref={canvasRef}
-            className="shadow-lg bg-white rounded border border-slate-300"
+            className="shadow-lg bg-white rounded border border-slate-300 block"
             style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
           />
         </div>

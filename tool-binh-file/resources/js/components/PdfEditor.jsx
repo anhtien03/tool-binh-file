@@ -985,7 +985,7 @@ export default function PdfEditor() {
           </aside>
 
           {/* 2. CENTER WORKSPACE */}
-          <main className="flex-1 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3 shadow-xs">
+          <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3 shadow-xs">
             <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
               <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
                 <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
@@ -1023,7 +1023,7 @@ export default function PdfEditor() {
               </div>
             )}
 
-            <div className="flex-1 flex items-center justify-center">
+            <div className="flex-1 min-w-0 w-full flex items-center justify-center">
               <PdfCanvasPreview
                 sourceFiles={sourceFiles}
                 plan={plan}
