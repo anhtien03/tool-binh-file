@@ -196,178 +196,9 @@ export default function DielineStudio({
   const matInfo = PAPER_MATERIALS[materialKey] || PAPER_MATERIALS.ivory;
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 p-4 min-h-[calc(100vh-56px)] bg-[#F4F6F5]">
-      {/* 1. LEFT PARAMETER SIDEBAR (~300px) */}
-      <aside className="w-full lg:w-[305px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-4 overflow-y-auto max-h-[calc(100vh-88px)] shrink-0 shadow-xs">
-        {/* Selected Template Card */}
-        <div className="rounded-xl border border-slate-200 bg-[#FAFBF9] p-3">
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">MẪU ĐANG CHỌN</span>
-            <span className="px-1.5 py-0.5 rounded bg-[#E6F4EF] text-[#146C53] text-[10px] font-mono font-bold">
-              {tpl.code}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <div className="text-sm font-bold text-slate-800">{tpl.shortName}</div>
-              <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">{tpl.name}</div>
-            </div>
-            <button
-              onClick={onOpenLibrary}
-              className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-[#146C53] text-xs font-semibold text-[#146C53] cursor-pointer shrink-0"
-            >
-              Đổi
-            </button>
-          </div>
-          {/* Quick Template Switcher */}
-          <select
-            value={templateId}
-            onChange={(e) => onChangeTemplate(e.target.value)}
-            className="mt-2.5 w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700"
-          >
-            {Object.values(DIELINE_TEMPLATES).map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.shortName} ({t.code})
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Dimensions */}
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-800">Kích thước</span>
-            <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] font-mono font-bold">mm</span>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            {[
-              ['Dài (L)', 'L'],
-              ['Rộng (W)', 'W'],
-              ['Cao (H)', 'H'],
-            ].map(([label, key]) => (
-              <div key={key} className="flex flex-col gap-1">
-                <label className="text-[11px] text-slate-500 font-medium">{label}</label>
-                <input
-                  type="number"
-                  min="10"
-                  value={params[key]}
-                  onChange={(e) => updateParam(key, e.target.value)}
-                  className="bg-white border border-slate-200 focus:border-[#146C53] focus:outline-none rounded-lg px-2.5 py-1.5 text-xs font-mono font-semibold text-slate-800"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Dimension Mode (3 Systems) */}
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-800">Chế độ kích thước</span>
-            <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] font-bold">3 HỆ SỐ</span>
-          </div>
-          <div className="grid grid-cols-3 gap-1 bg-slate-100 p-1 rounded-xl">
-            {[
-              ['production', 'Sản xuất'],
-              ['inner', 'Lọt lòng'],
-              ['outer', 'Phủ bì'],
-            ].map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => setDimensionMode(k)}
-                className={`py-1.5 rounded-lg text-[11px] font-semibold transition-all cursor-pointer ${
-                  dimensionMode === k ? 'bg-white text-[#146C53] shadow-xs font-bold' : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Paper & Caliper */}
-        <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-800">Loại giấy hộp</span>
-            <span className="px-1.5 py-0.5 rounded bg-[#E6F4EF] text-[#146C53] text-[10px] font-bold">5 LOẠI</span>
-          </div>
-          <select
-            value={materialKey}
-            onChange={(e) => setMaterialKey(e.target.value)}
-            className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800"
-          >
-            {Object.entries(PAPER_MATERIALS).map(([k, m]) => (
-              <option key={k} value={k}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-
-          <div className="grid grid-cols-3 gap-2">
-            <div className="flex flex-col gap-0.5">
-              <label className="text-[10px] text-slate-500">Độ dày (mm)</label>
-              <input
-                type="number"
-                min="0.1"
-                step="0.05"
-                value={params.thickness}
-                onChange={(e) => updateParam('thickness', e.target.value)}
-                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-              />
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <label className="text-[10px] text-slate-500">Mép dán</label>
-              <input
-                type="number"
-                min="8"
-                value={params.glueTab}
-                onChange={(e) => updateParam('glueTab', e.target.value)}
-                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-              />
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <label className="text-[10px] text-slate-500">Tai gài</label>
-              <input
-                type="number"
-                min="0"
-                disabled={templateId === 'tray' || templateId === 'sleeve' || templateId === 'bag'}
-                value={params.tuckFlap}
-                onChange={(e) => updateParam('tuckFlap', e.target.value)}
-                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono disabled:bg-slate-50 disabled:text-slate-400"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Artwork Upload */}
-        <div className="flex flex-col gap-1.5 pt-2 border-t border-slate-100">
-          <span className="text-xs font-bold text-slate-800">Ốp thiết kế lên mặt hộp</span>
-          <div className="flex items-center gap-2">
-            <label className="flex-1 text-center py-2 px-3 rounded-xl border border-dashed border-slate-300 hover:border-[#146C53] bg-[#FAFBF9] text-xs font-medium text-slate-600 cursor-pointer truncate">
-              {artworkName ? `🎨 ${artworkName}` : '⬆️ Chọn ảnh / PDF bản trải'}
-              <input
-                type="file"
-                accept="image/*,.pdf"
-                className="hidden"
-                onChange={(e) => handleArtworkUpload(e.target.files[0])}
-              />
-            </label>
-            {artworkDataUrl && (
-              <button
-                onClick={() => {
-                  setArtworkDataUrl(null);
-                  setArtworkName('');
-                }}
-                className="px-2.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-xs font-semibold text-rose-600 cursor-pointer"
-              >
-                Xóa
-              </button>
-            )}
-          </div>
-        </div>
-      </aside>
-
-      {/* 2. CENTER MAIN CANVAS */}
-      <main className="flex-1 bg-white rounded-2xl border border-slate-200 flex flex-col overflow-hidden shadow-xs min-h-[580px]">
+    <div className="flex flex-col lg:flex-row gap-3 flex-1 min-w-0">
+      {/* 1. LEFT: CENTER MAIN CANVAS */}
+      <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 flex flex-col overflow-hidden shadow-xs min-h-[580px]">
         {/* Canvas Top Bar */}
         <div className="px-4 py-2.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-white">
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
@@ -731,36 +562,174 @@ export default function DielineStudio({
         </div>
       </main>
 
-      {/* 3. RIGHT DESIGN SUMMARY SIDEBAR (~280px) */}
-      <aside className="w-full lg:w-[280px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-4 shrink-0 shadow-xs">
-        <div className="flex flex-col gap-4">
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">BẢN THIẾT KẾ</span>
-            <h3 className="text-sm font-bold text-slate-800 mt-0.5">Thiết kế hiện tại</h3>
+      {/* 2. MIDDLE-RIGHT SETTINGS & SUMMARY SIDEBAR (~345px) */}
+      <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-4 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
+        <div className="flex flex-col gap-3.5">
+          {/* Selected Template Card */}
+          <div className="rounded-xl border border-slate-200 bg-[#FAFBF9] p-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">MẪU ĐANG CHỌN</span>
+              <span className="px-1.5 py-0.5 rounded bg-[#E6F4EF] text-[#146C53] text-[10px] font-mono font-bold">
+                {tpl.code}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-bold text-slate-800">{tpl.shortName}</div>
+                <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">{tpl.name}</div>
+              </div>
+              <button
+                onClick={onOpenLibrary}
+                className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-[#146C53] text-xs font-semibold text-[#146C53] cursor-pointer shrink-0"
+              >
+                Đổi
+              </button>
+            </div>
+            <select
+              value={templateId}
+              onChange={(e) => onChangeTemplate(e.target.value)}
+              className="mt-2 w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700"
+            >
+              {Object.values(DIELINE_TEMPLATES).map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.shortName} ({t.code})
+                </option>
+              ))}
+            </select>
           </div>
 
-          <div className="divide-y divide-slate-100 text-xs">
-            <div className="py-2.5 flex justify-between gap-2">
-              <span className="text-slate-500">Vật liệu</span>
-              <span className="font-semibold text-slate-800 text-right">{matInfo.name}</span>
+          {/* Dimensions */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800">Kích thước (mm)</span>
+              <div className="flex gap-1 bg-slate-100 p-0.5 rounded-lg text-[10px] font-semibold">
+                {[
+                  ['production', 'SX'],
+                  ['inner', 'Lọt lòng'],
+                  ['outer', 'Phủ bì'],
+                ].map(([k, label]) => (
+                  <button
+                    key={k}
+                    onClick={() => setDimensionMode(k)}
+                    className={`px-2 py-0.5 rounded cursor-pointer ${
+                      dimensionMode === k ? 'bg-white text-[#146C53] shadow-xs font-bold' : 'text-slate-500'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="py-2.5 flex justify-between gap-2">
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                ['Dài (L)', 'L'],
+                ['Rộng (W)', 'W'],
+                ['Cao (H)', 'H'],
+              ].map(([label, key]) => (
+                <div key={key} className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-500">{label}</label>
+                  <input
+                    type="number"
+                    min="10"
+                    value={params[key]}
+                    onChange={(e) => updateParam(key, e.target.value)}
+                    className="bg-white border border-slate-200 focus:border-[#146C53] rounded-lg px-2 py-1 text-xs font-mono font-semibold"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Paper & Caliper */}
+          <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
+            <span className="text-xs font-bold text-slate-800">Loại giấy &amp; Thông số kỹ thuật</span>
+            <select
+              value={materialKey}
+              onChange={(e) => setMaterialKey(e.target.value)}
+              className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800"
+            >
+              {Object.entries(PAPER_MATERIALS).map(([k, m]) => (
+                <option key={k} value={k}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-500">Độ dày (mm)</label>
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.05"
+                  value={params.thickness}
+                  onChange={(e) => updateParam('thickness', e.target.value)}
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                />
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-500">Mép dán</label>
+                <input
+                  type="number"
+                  min="8"
+                  value={params.glueTab}
+                  onChange={(e) => updateParam('glueTab', e.target.value)}
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                />
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-500">Tai gài</label>
+                <input
+                  type="number"
+                  min="0"
+                  disabled={templateId === 'tray' || templateId === 'sleeve' || templateId === 'bag'}
+                  value={params.tuckFlap}
+                  onChange={(e) => updateParam('tuckFlap', e.target.value)}
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono disabled:bg-slate-50 disabled:text-slate-400"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Artwork Upload */}
+          <div className="flex flex-col gap-1.5 pt-2 border-t border-slate-100">
+            <span className="text-xs font-bold text-slate-800">Ốp thiết kế lên mặt hộp</span>
+            <div className="flex items-center gap-2">
+              <label className="flex-1 text-center py-1.5 px-3 rounded-xl border border-dashed border-slate-300 hover:border-[#146C53] bg-[#FAFBF9] text-xs font-medium text-slate-600 cursor-pointer truncate">
+                {artworkName ? `🎨 ${artworkName}` : '⬆️ Chọn ảnh / PDF bản trải'}
+                <input
+                  type="file"
+                  accept="image/*,.pdf"
+                  className="hidden"
+                  onChange={(e) => handleArtworkUpload(e.target.files[0])}
+                />
+              </label>
+              {artworkDataUrl && (
+                <button
+                  onClick={() => {
+                    setArtworkDataUrl(null);
+                    setArtworkName('');
+                  }}
+                  className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-xs font-semibold text-rose-600 cursor-pointer"
+                >
+                  Xóa
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Live Summary */}
+          <div className="divide-y divide-slate-100 text-xs pt-2 border-t border-slate-100">
+            <div className="py-1.5 flex justify-between gap-2">
               <span className="text-slate-500">Khổ phôi trải</span>
               <span className="font-mono font-bold text-slate-800">
                 {dieline.bounds.width} × {dieline.bounds.height} mm
               </span>
             </div>
-            <div className="py-2.5 flex justify-between gap-2">
-              <span className="text-slate-500">Kích thước sản xuất</span>
-              <span className="font-mono font-semibold text-slate-700">
-                {dieline.params.L} × {dieline.params.W} × {dieline.params.H}
-              </span>
-            </div>
-            <div className="py-2.5 flex justify-between gap-2">
+            <div className="py-1.5 flex justify-between gap-2">
               <span className="text-slate-500">Xếp tờ ({sheetStats.sheetLabel})</span>
               <span className="font-mono font-bold text-[#146C53]">{sheetStats.count} khuôn/tờ</span>
             </div>
-            <div className="py-2.5 flex justify-between gap-2">
+            <div className="py-1.5 flex justify-between gap-2">
               <span className="text-slate-500">Hao phí tờ</span>
               <span className="font-mono font-semibold text-amber-600">{sheetStats.wastePct}%</span>
             </div>
@@ -781,15 +750,9 @@ export default function DielineStudio({
           </button>
           <button
             onClick={handleExportSvg}
-            className="w-full py-2.5 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold transition-colors cursor-pointer"
+            className="w-full py-2 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold transition-colors cursor-pointer"
           >
             🧩 Xuất SVG Vector (AI / Corel)
-          </button>
-          <button
-            onClick={onOpenImpose}
-            className="w-full py-2 rounded-xl border border-slate-200 hover:border-[#146C53] text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
-          >
-            Chuyển sang Bình Bài In →
           </button>
         </div>
       </aside>

@@ -324,238 +324,11 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   };
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 p-4 flex-1 bg-[#F4F6F5]">
-      {/* LEFT SIDEBAR */}
-      <aside className="w-full lg:w-[340px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3.5 shrink-0 shadow-xs">
-        <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-xl">
-          <button
-            onClick={() => setSubMode('contour')}
-            className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-              subMode === 'contour' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500'
-            }`}
-          >
-            Dò đường bế Sticker
-          </button>
-          <button
-            onClick={() => setSubMode('bleed')}
-            className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-              subMode === 'bleed' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500'
-            }`}
-          >
-            Bù tràn lề 4 cạnh
-          </button>
-        </div>
-
-        {/* File Upload */}
-        <div className="relative border border-dashed border-slate-300 hover:border-[#146C53] rounded-xl p-3 text-center cursor-pointer bg-[#FAFBF9]">
-          <input
-            type="file"
-            accept=".png,.jpg,.jpeg,.pdf"
-            onChange={(e) => {
-              handleUpload(e.target.files[0]);
-              e.target.value = '';
-            }}
-            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-          />
-          <div className="text-xs font-semibold text-slate-700 truncate">
-            {loading ? '⏳ Đang xử lý file...' : sourceFile ? `📄 ${sourceFile.name}` : '⬆️ Chọn ảnh PNG sticker hoặc file PDF'}
-          </div>
-          {renderedCanvas && (
-            <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-              Kích thước: {sizeMm.w} × {sizeMm.h} mm
-            </div>
-          )}
-        </div>
-        {error && <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px]">⚠️ {error}</div>}
-
-        <div className="grid grid-cols-2 gap-2">
-          <div className="flex flex-col gap-0.5">
-            <label className="text-[10px] text-slate-500">Rộng thực tế (mm)</label>
-            <input
-              type="number"
-              min="10"
-              value={sizeMm.w}
-              onChange={(e) => setSizeMm((s) => ({ ...s, w: Math.max(10, parseFloat(e.target.value) || 10) }))}
-              className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-            />
-          </div>
-          <div className="flex flex-col gap-0.5">
-            <label className="text-[10px] text-slate-500">Cao thực tế (mm)</label>
-            <input
-              type="number"
-              min="10"
-              value={sizeMm.h}
-              onChange={(e) => setSizeMm((s) => ({ ...s, h: Math.max(10, parseFloat(e.target.value) || 10) }))}
-              className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-            />
-          </div>
-        </div>
-
-        {subMode === 'contour' ? (
-          <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-800">Chỉnh đường bế (CutContour)</span>
-              {renderedCanvas && (
-                <span className="px-2 py-0.5 rounded-full bg-[#E6F4EF] text-[#146C53] text-[10px] font-bold">
-                  Đã nhận diện {contoursMm.length} tem
-                </span>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] text-slate-500">Hình dáng đường bế</label>
-              <select
-                value={shapeMode}
-                onChange={(e) => setShapeMode(e.target.value)}
-                className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-800"
-              >
-                <option value="auto">Tự do theo hình (Freeform)</option>
-                <option value="circle">Ép Tròn chuẩn (Circle đều 100%)</option>
-                <option value="oval">Ép Oval / Elip chuẩn</option>
-                <option value="rect">Ép Chữ nhật vuông</option>
-              </select>
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <div className="flex justify-between text-[11px]">
-                <span className="text-slate-600">Độ nở / thu viền (Offset)</span>
-                <span className="font-mono font-bold text-[#146C53]">{offsetMm > 0 ? `+${offsetMm}` : offsetMm} mm</span>
-              </div>
-              <input
-                type="range"
-                min="-2"
-                max="6"
-                step="0.5"
-                value={offsetMm}
-                onChange={(e) => setOffsetMm(parseFloat(e.target.value))}
-                className="w-full accent-[#146C53]"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <div className="flex justify-between text-[11px]">
-                <span className="text-slate-600">Làm mượt góc (Smoothing)</span>
-                <span className="font-mono font-bold text-slate-700">{smoothLevel}x</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="3"
-                step="1"
-                value={smoothLevel}
-                onChange={(e) => setSmoothLevel(parseInt(e.target.value, 10))}
-                className="w-full accent-[#146C53]"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-500">Độ bám sát (mm)</label>
-                <input
-                  type="number"
-                  min="0.1"
-                  max="3"
-                  step="0.1"
-                  value={simplifyMm}
-                  onChange={(e) => setSimplifyMm(Math.max(0.1, parseFloat(e.target.value) || 0.4))}
-                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                />
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-500">Lọc nhiễu (&lt; mm²)</label>
-                <input
-                  type="number"
-                  min="0.5"
-                  step="0.5"
-                  value={minAreaMm2}
-                  onChange={(e) => setMinAreaMm2(Math.max(0.5, parseFloat(e.target.value) || 4))}
-                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                />
-              </div>
-            </div>
-
-            <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
-              <input
-                type="checkbox"
-                className="accent-[#146C53]"
-                checked={ignoreCornerMarks}
-                onChange={(e) => setIgnoreCornerMarks(e.target.checked)}
-              />
-              Bỏ qua 4 boong góc khi dò tem
-            </label>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
-            <span className="text-xs font-bold text-slate-800">Thiết lập bù tràn lề 4 cạnh</span>
-            <div className="flex flex-col gap-1">
-              <div className="flex justify-between text-[11px]">
-                <span className="text-slate-600">Độ rộng bù xén (Bleed)</span>
-                <span className="font-mono font-bold text-[#146C53]">{bleedAllMm} mm</span>
-              </div>
-              <input
-                type="range"
-                min="0.5"
-                max="6"
-                step="0.5"
-                value={bleedAllMm}
-                onChange={(e) => setBleedAllMm(parseFloat(e.target.value))}
-                className="w-full accent-[#146C53]"
-              />
-            </div>
-
-            <div className="grid grid-cols-4 gap-1.5 text-[11px]">
-              {[
-                ['top', '↑ Trên'],
-                ['bottom', '↓ Dưới'],
-                ['left', '← Trái'],
-                ['right', '→ Phải'],
-              ].map(([k, lbl]) => (
-                <button
-                  key={k}
-                  onClick={() => setBleedEdges((prev) => ({ ...prev, [k]: !prev[k] }))}
-                  className={`py-1.5 rounded-lg border font-semibold cursor-pointer ${
-                    bleedEdges[k]
-                      ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53]'
-                      : 'bg-slate-50 border-slate-200 text-slate-400'
-                  }`}
-                >
-                  {lbl}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] text-slate-500">Thuật toán bù mép</label>
-              <select
-                value={fillMode}
-                onChange={(e) => setFillMode(e.target.value)}
-                className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
-              >
-                <option value="mirror">Phản chiếu mép (Mirror — Đẹp nhất cho ảnh)</option>
-                <option value="stretch">Kéo giãn mép (Edge Stretch)</option>
-                <option value="solid">Đổ màu trơn</option>
-              </select>
-            </div>
-
-            {fillMode === 'solid' && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] text-slate-600">Màu nền bù:</span>
-                <input
-                  type="color"
-                  value={solidColorHex}
-                  onChange={(e) => setSolidColorHex(e.target.value)}
-                  className="w-10 h-7 rounded border border-slate-200 cursor-pointer"
-                />
-              </div>
-            )}
-          </div>
-        )}
-      </aside>
-
-      {/* CENTER CANVAS */}
+    <div className="flex flex-col lg:flex-row gap-3 flex-1 min-w-0">
+      {/* LEFT: CENTER CANVAS */}
       <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col items-center justify-center shadow-xs">
         <div
-          className="w-full h-[540px] rounded-2xl border border-slate-200 flex items-center justify-center overflow-auto p-4"
+          className="w-full h-[560px] rounded-2xl border border-slate-200 flex items-center justify-center overflow-auto p-4"
           style={{
             backgroundColor: '#fafbf9',
             backgroundImage:
@@ -583,37 +356,244 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
         </div>
       </main>
 
-      {/* RIGHT SUMMARY SIDEBAR */}
-      <aside className="w-full lg:w-[260px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-4 shrink-0 shadow-xs">
-        <div className="flex flex-col gap-3">
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">XUẤT FILE CHUẨN IN</span>
-            <h3 className="text-sm font-bold text-slate-800 mt-0.5">
-              {subMode === 'contour' ? 'Tạo CutContour Sticker' : 'Bù tràn lề 4 cạnh'}
-            </h3>
-          </div>
-          <div className="divide-y divide-slate-100 text-xs">
-            <div className="py-2 flex justify-between">
-              <span className="text-slate-500">Kích thước gốc</span>
-              <span className="font-mono font-bold text-slate-800">
-                {sizeMm.w} × {sizeMm.h} mm
-              </span>
-            </div>
-            {subMode === 'contour' ? (
-              <div className="py-2 flex justify-between">
-                <span className="text-slate-500">Số tem nhận diện</span>
-                <span className="font-mono font-bold text-[#146C53]">{contoursMm.length} tem</span>
+      {/* MIDDLE-RIGHT: SETTINGS & EXPORT PANEL */}
+      <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-3.5 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
+        <div className="flex flex-col gap-3.5">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+            <div>
+              <div className="text-xs font-bold text-slate-800">BÙ XÉN &amp; TẠO ĐƯỜNG CẮT</div>
+              <div className="text-[10px] text-slate-400">
+                {subMode === 'contour' ? 'Dò đường bế Sticker tự động' : 'Bù tràn lề 4 cạnh'}
               </div>
-            ) : (
-              <div className="py-2 flex justify-between">
-                <span className="text-slate-500">Khổ sau bù Bleed</span>
-                <span className="font-mono font-bold text-[#146C53]">
-                  {(sizeMm.w + (bleedEdges.left ? bleedAllMm : 0) + (bleedEdges.right ? bleedAllMm : 0)).toFixed(1)} ×{' '}
-                  {(sizeMm.h + (bleedEdges.top ? bleedAllMm : 0) + (bleedEdges.bottom ? bleedAllMm : 0)).toFixed(1)} mm
-                </span>
+            </div>
+            <span className="px-2 py-0.5 rounded bg-[#E6F4EF] text-[#146C53] text-[10px] font-mono font-bold">
+              {sizeMm.w}×{sizeMm.h}mm
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-xl">
+            <button
+              onClick={() => setSubMode('contour')}
+              className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
+                subMode === 'contour' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500'
+              }`}
+            >
+              Dò đường bế Sticker
+            </button>
+            <button
+              onClick={() => setSubMode('bleed')}
+              className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
+                subMode === 'bleed' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500'
+              }`}
+            >
+              Bù tràn lề 4 cạnh
+            </button>
+          </div>
+
+          {/* File Upload */}
+          <div className="relative border border-dashed border-slate-300 hover:border-[#146C53] rounded-xl p-3 text-center cursor-pointer bg-[#FAFBF9]">
+            <input
+              type="file"
+              accept=".png,.jpg,.jpeg,.pdf"
+              onChange={(e) => {
+                handleUpload(e.target.files[0]);
+                e.target.value = '';
+              }}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+            />
+            <div className="text-xs font-semibold text-slate-700 truncate">
+              {loading ? '⏳ Đang xử lý file...' : sourceFile ? `📄 ${sourceFile.name}` : '⬆️ Chọn ảnh PNG sticker hoặc file PDF'}
+            </div>
+            {renderedCanvas && (
+              <div className="text-[11px] font-mono text-slate-400 mt-0.5">
+                Kích thước: {sizeMm.w} × {sizeMm.h} mm
               </div>
             )}
           </div>
+          {error && <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px]">⚠️ {error}</div>}
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="flex flex-col gap-0.5">
+              <label className="text-[10px] text-slate-500">Rộng thực tế (mm)</label>
+              <input
+                type="number"
+                min="10"
+                value={sizeMm.w}
+                onChange={(e) => setSizeMm((s) => ({ ...s, w: Math.max(10, parseFloat(e.target.value) || 10) }))}
+                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <label className="text-[10px] text-slate-500">Cao thực tế (mm)</label>
+              <input
+                type="number"
+                min="10"
+                value={sizeMm.h}
+                onChange={(e) => setSizeMm((s) => ({ ...s, h: Math.max(10, parseFloat(e.target.value) || 10) }))}
+                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+              />
+            </div>
+          </div>
+
+          {subMode === 'contour' ? (
+            <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800">Chỉnh đường bế (CutContour)</span>
+                {renderedCanvas && (
+                  <span className="px-2 py-0.5 rounded-full bg-[#E6F4EF] text-[#146C53] text-[10px] font-bold">
+                    Đã nhận diện {contoursMm.length} tem
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-slate-500">Hình dáng đường bế</label>
+                <select
+                  value={shapeMode}
+                  onChange={(e) => setShapeMode(e.target.value)}
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-800"
+                >
+                  <option value="auto">Tự do theo hình (Freeform)</option>
+                  <option value="circle">Ép Tròn chuẩn (Circle đều 100%)</option>
+                  <option value="oval">Ép Oval / Elip chuẩn</option>
+                  <option value="rect">Ép Chữ nhật vuông</option>
+                </select>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-600">Độ nở / thu viền (Offset)</span>
+                  <span className="font-mono font-bold text-[#146C53]">{offsetMm > 0 ? `+${offsetMm}` : offsetMm} mm</span>
+                </div>
+                <input
+                  type="range"
+                  min="-2"
+                  max="6"
+                  step="0.5"
+                  value={offsetMm}
+                  onChange={(e) => setOffsetMm(parseFloat(e.target.value))}
+                  className="w-full accent-[#146C53]"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-600">Làm mượt góc (Smoothing)</span>
+                  <span className="font-mono font-bold text-slate-700">{smoothLevel}x</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="3"
+                  step="1"
+                  value={smoothLevel}
+                  onChange={(e) => setSmoothLevel(parseInt(e.target.value, 10))}
+                  className="w-full accent-[#146C53]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-500">Độ bám sát (mm)</label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="3"
+                    step="0.1"
+                    value={simplifyMm}
+                    onChange={(e) => setSimplifyMm(Math.max(0.1, parseFloat(e.target.value) || 0.4))}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-500">Lọc nhiễu (&lt; mm²)</label>
+                  <input
+                    type="number"
+                    min="0.5"
+                    step="0.5"
+                    value={minAreaMm2}
+                    onChange={(e) => setMinAreaMm2(Math.max(0.5, parseFloat(e.target.value) || 4))}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="accent-[#146C53]"
+                  checked={ignoreCornerMarks}
+                  onChange={(e) => setIgnoreCornerMarks(e.target.checked)}
+                />
+                Bỏ qua 4 boong góc khi dò tem
+              </label>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
+              <span className="text-xs font-bold text-slate-800">Thiết lập bù tràn lề 4 cạnh</span>
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-600">Độ rộng bù xén (Bleed)</span>
+                  <span className="font-mono font-bold text-[#146C53]">{bleedAllMm} mm</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="6"
+                  step="0.5"
+                  value={bleedAllMm}
+                  onChange={(e) => setBleedAllMm(parseFloat(e.target.value))}
+                  className="w-full accent-[#146C53]"
+                />
+              </div>
+
+              <div className="grid grid-cols-4 gap-1.5 text-[11px]">
+                {[
+                  ['top', '↑ Trên'],
+                  ['bottom', '↓ Dưới'],
+                  ['left', '← Trái'],
+                  ['right', '→ Phải'],
+                ].map(([k, lbl]) => (
+                  <button
+                    key={k}
+                    onClick={() => setBleedEdges((prev) => ({ ...prev, [k]: !prev[k] }))}
+                    className={`py-1.5 rounded-lg border font-semibold cursor-pointer ${
+                      bleedEdges[k]
+                        ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53]'
+                        : 'bg-slate-50 border-slate-200 text-slate-400'
+                    }`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-slate-500">Thuật toán bù mép</label>
+                <select
+                  value={fillMode}
+                  onChange={(e) => setFillMode(e.target.value)}
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
+                >
+                  <option value="mirror">Phản chiếu mép (Mirror — Đẹp nhất cho ảnh)</option>
+                  <option value="stretch">Kéo giãn mép (Edge Stretch)</option>
+                  <option value="solid">Đổ màu trơn</option>
+                </select>
+              </div>
+
+              {fillMode === 'solid' && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-slate-600">Màu nền bù:</span>
+                  <input
+                    type="color"
+                    value={solidColorHex}
+                    onChange={(e) => setSolidColorHex(e.target.value)}
+                    className="w-10 h-7 rounded border border-slate-200 cursor-pointer"
+                  />
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-2 pt-3 border-t border-slate-100">

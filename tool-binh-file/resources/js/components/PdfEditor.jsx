@@ -7,9 +7,11 @@ import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
 import { exportImposedPdf, exportStickerPdf, exportStickerCutSvg } from '../engine/pdfExporter';
 
 export default function PdfEditor() {
-  // --- Top-Level Navigation ('library' | 'dieline' | 'namecard' | 'sticker' | 'booklet') ---
+  // --- Top-Level Navigation ('library' | 'dieline' | 'namecard' | 'sticker' | 'booklet' | 'bleed') ---
   const [activeStudio, setActiveStudio] = useState('namecard');
   const [selectedTemplateId, setSelectedTemplateId] = useState('ste');
+  const [toolSearch, setToolSearch] = useState('');
+  const [showSettingsPanel, setShowSettingsPanel] = useState(true);
 
   // --- Multi-File & Gang-Run State ---
   const [sourceFiles, setSourceFiles] = useState([]);
@@ -433,12 +435,11 @@ export default function PdfEditor() {
   return (
     <div className="min-h-screen flex flex-col bg-[#F4F6F5] text-slate-900 font-sans">
       {/* GLOBAL DEEP FOREST GREEN TOP APP BAR (#112A24) */}
-      <header className="h-14 bg-[#112A24] text-white px-4 sm:px-6 flex items-center justify-between gap-4 shrink-0 shadow-sm sticky top-0 z-30">
-        <div className="flex items-center gap-6">
-          {/* Brand */}
+      <header className="h-12 bg-[#112A24] text-white px-4 sm:px-5 flex items-center justify-between gap-4 shrink-0 shadow-sm sticky top-0 z-30">
+        <div className="flex items-center gap-4">
           <button
             onClick={() => setActiveStudio('library')}
-            className="flex items-center gap-2.5 cursor-pointer group"
+            className="flex items-center gap-2 cursor-pointer group"
           >
             <div className="w-7 h-7 rounded-lg bg-[#146C53] border border-emerald-400/30 flex items-center justify-center font-black text-xs text-white">
               TB
@@ -448,108 +449,186 @@ export default function PdfEditor() {
             </span>
           </button>
 
-          {/* Center Nav */}
-          <nav className="flex items-center gap-1 text-xs font-semibold">
-            {[
-              ['library', 'Thư viện hộp'],
-              ['dieline', 'Khuôn 2D & 3D'],
-              ['bleed', 'Bù xén & Đường cắt'],
-              ['namecard', 'Bình Namecard'],
-              ['sticker', 'Bình Tem Bế (Decal)'],
-              ['booklet', 'Bình Sách (Booklet)'],
-            ].map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => {
-                  setActiveStudio(key);
-                  setCurrentSheetIndex(0);
-                }}
-                className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
-                  activeStudio === key
-                    ? 'bg-[#146C53] text-white'
-                    : 'text-emerald-100/75 hover:text-white hover:bg-white/10'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
+          <span className="hidden sm:inline-flex px-2.5 py-0.5 rounded-full bg-white/10 text-emerald-200 text-[11px] font-semibold">
+            {activeStudio === 'namecard'
+              ? 'Bình Cắt Xén / Namecard'
+              : activeStudio === 'sticker'
+              ? 'Bình Tem Bế (Decal)'
+              : activeStudio === 'booklet'
+              ? 'Bình Sách & Tạp chí'
+              : activeStudio === 'bleed'
+              ? 'Bù xén & Tạo đường cắt'
+              : activeStudio === 'dieline'
+              ? 'Khuôn Bế 2D & 3D'
+              : 'Thư viện Khuôn Bế'}
+          </span>
         </div>
 
-        {/* Right Quick Action */}
+        {/* Right Quick Actions */}
         <div className="flex items-center gap-2 shrink-0">
           {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
-            <button
-              onClick={() => handleDownload('print')}
-              disabled={loading || sourceFiles.length === 0}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                loading || sourceFiles.length === 0
-                  ? 'bg-white/10 text-emerald-100/40 cursor-not-allowed'
-                  : 'bg-[#146C53] hover:bg-[#198768] text-white shadow-xs'
-              }`}
-            >
-              {loading
-                ? 'Đang xuất...'
-                : activeStudio === 'booklet'
-                ? 'Xuất PDF Bình Sách'
-                : activeStudio === 'sticker'
-                ? 'Xuất File IN Tem'
-                : 'Xuất PDF Bình Bài'}
-            </button>
+            <>
+              <button
+                onClick={() => setShowSettingsPanel((v) => !v)}
+                className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-emerald-100 cursor-pointer"
+              >
+                {showSettingsPanel ? 'Ẩn thông số' : 'Hiện thông số'}
+              </button>
+              <button
+                onClick={() => handleDownload('print')}
+                disabled={loading || sourceFiles.length === 0}
+                className={`px-3.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  loading || sourceFiles.length === 0
+                    ? 'bg-white/10 text-emerald-100/40 cursor-not-allowed'
+                    : 'bg-[#146C53] hover:bg-[#198768] text-white shadow-xs'
+                }`}
+              >
+                {loading
+                  ? 'Đang xuất...'
+                  : activeStudio === 'booklet'
+                  ? 'Xuất PDF Bình Sách'
+                  : activeStudio === 'sticker'
+                  ? 'Xuất File IN Tem'
+                  : 'Xuất PDF Bình Bài'}
+              </button>
+            </>
           )}
         </div>
       </header>
 
-      {/* BODY CONTENT */}
-      {activeStudio === 'library' && (
-        <TemplateLibrary
-          onSelectTemplate={(id) => {
-            setSelectedTemplateId(id);
-            setActiveStudio('dieline');
-          }}
-          onOpenImpose={() => {
-            setActiveStudio('namecard');
-            setCurrentSheetIndex(0);
-          }}
-          onOpenBooklet={() => {
-            setActiveStudio('booklet');
-            setCurrentSheetIndex(0);
-          }}
-        />
-      )}
+      {/* UNIFIED PRO WORKSPACE: [LEFT: CANVAS] + [MIDDLE: ACTIVE TOOL SETTINGS] + [FAR RIGHT: TOOLS DOCK] */}
+      <div className="flex-1 flex flex-col lg:flex-row gap-3 p-3 min-w-0">
+        {activeStudio === 'library' && (
+          <div className="flex-1 min-w-0 overflow-y-auto">
+            <TemplateLibrary
+              onSelectTemplate={(id) => {
+                setSelectedTemplateId(id);
+                setActiveStudio('dieline');
+              }}
+              onOpenImpose={() => {
+                setActiveStudio('namecard');
+                setCurrentSheetIndex(0);
+              }}
+              onOpenBooklet={() => {
+                setActiveStudio('booklet');
+                setCurrentSheetIndex(0);
+              }}
+            />
+          </div>
+        )}
 
-      {activeStudio === 'dieline' && (
-        <DielineStudio
-          templateId={selectedTemplateId}
-          onChangeTemplate={(id) => setSelectedTemplateId(id)}
-          onOpenLibrary={() => setActiveStudio('library')}
-          onOpenImpose={() => {
-            setActiveStudio('namecard');
-            setCurrentSheetIndex(0);
-          }}
-        />
-      )}
+        {activeStudio === 'dieline' && (
+          <DielineStudio
+            templateId={selectedTemplateId}
+            onChangeTemplate={(id) => setSelectedTemplateId(id)}
+            onOpenLibrary={() => setActiveStudio('library')}
+            onOpenImpose={() => {
+              setActiveStudio('namecard');
+              setCurrentSheetIndex(0);
+            }}
+          />
+        )}
 
-      {activeStudio === 'bleed' && (
-        <BleedAndContourStudio
-          onOpenStickerImpose={() => {
-            setActiveStudio('sticker');
-            setCurrentSheetIndex(0);
-          }}
-          onSendSplitStickersToImpose={(splitPdfFile) => {
-            setSourceFiles([{ id: `split-${Date.now()}`, file: splitPdfFile }]);
-            setStickerShape('pdfContour');
-            setCollation('sequential');
-            setActiveStudio('sticker');
-            setCurrentSheetIndex(0);
-          }}
-        />
-      )}
+        {activeStudio === 'bleed' && (
+          <BleedAndContourStudio
+            onOpenStickerImpose={() => {
+              setActiveStudio('sticker');
+              setCurrentSheetIndex(0);
+            }}
+            onSendSplitStickersToImpose={(splitPdfFile) => {
+              setSourceFiles([{ id: `split-${Date.now()}`, file: splitPdfFile }]);
+              setStickerShape('pdfContour');
+              setCollation('sequential');
+              setActiveStudio('sticker');
+              setCurrentSheetIndex(0);
+            }}
+          />
+        )}
 
-      {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
-        <div className="flex flex-col lg:flex-row gap-4 p-4 flex-1">
-          {/* 1. LEFT PARAMETER SIDEBAR (~330px) */}
-          <aside className="w-full lg:w-[340px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3.5 overflow-y-auto max-h-[calc(100vh-88px)] shrink-0 shadow-xs">
+        {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
+          <>
+            {/* 1. LEFT: WIDE CANVAS VIEWER */}
+            <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                  <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
+                    {plan.summary.itemsPerSheet} con/tờ
+                    {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount} ngang + ${plan.summary.secondaryCount} dọc)`}
+                  </span>
+                  <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-semibold">
+                    {plan.sheetDim.width}×{plan.sheetDim.height}mm · {plan.summary.utilizationPct}%
+                  </span>
+                  {plan.summary.ratioSheetsNeeded > 0 && (
+                    <span className="px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 font-bold">
+                      Cần in: {plan.summary.ratioSheetsNeeded} tờ
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs font-mono text-slate-600">
+                  <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
+                    Fit
+                  </button>
+                  <button onClick={() => setZoom((z) => Math.max(0.4, Math.round((z - 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                    −
+                  </button>
+                  <span className="min-w-[40px] text-center font-bold">{Math.round(zoom * 100)}%</span>
+                  <button onClick={() => setZoom((z) => Math.min(4.0, Math.round((z + 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                    +
+                  </button>
+                </div>
+              </div>
+
+              {error && <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs">⚠️ {error}</div>}
+              {success && (
+                <div className="p-2.5 rounded-xl bg-[#E6F4EF] border border-emerald-200 text-[#146C53] text-xs font-semibold">
+                  🎉 Đã xuất file PDF vector chuẩn CMYK (giữ nguyên Bleed &amp; Smart Clipping)!
+                </div>
+              )}
+
+              <div className="flex-1 min-w-0 w-full flex items-center justify-center">
+                <PdfCanvasPreview
+                  sourceFiles={sourceFiles}
+                  plan={plan}
+                  margins={{ top: marginTop, bottom: marginBottom, left: marginLeft, right: marginRight }}
+                  bleedMm={bleedMm}
+                  showBleedOverlay={showBleedOverlay}
+                  showSafeArea={showSafeArea}
+                  safeInsetMm={safeInsetMm}
+                  splitStickerPreview={mode === 'sticker' && splitStickerPreview}
+                  currentSheetIndex={currentSheetIndex}
+                  setCurrentSheetIndex={setCurrentSheetIndex}
+                  onPagesSynced={handlePagesSynced}
+                  zoom={zoom}
+                  onZoomChange={setZoom}
+                />
+              </div>
+            </main>
+
+            {/* 2. MIDDLE-RIGHT: ACTIVE TOOL SETTINGS + JOB CHECKS + EXPORT */}
+            {showSettingsPanel && (
+              <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3.5 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <div>
+                    <div className="text-xs font-bold text-slate-800 uppercase">
+                      {mode === 'sticker' ? 'BÌNH BÀI BẾ TEM' : mode === 'booklet' ? 'BÌNH SÁCH & TẠP CHÍ' : 'BÌNH CẮT XÉN'}
+                    </div>
+                    <div className="text-[10px] text-slate-400">
+                      {mode === 'sticker'
+                        ? 'Sắp xếp tem nhãn & đường bế CutContour'
+                        : mode === 'booklet'
+                        ? 'Đảo trang đóng ghim / đóng keo / gáy xoắn'
+                        : 'Xếp tối ưu namecard, tờ rơi, voucher'}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowSettingsPanel(false)}
+                    title="Thu gọn bảng thông số"
+                    className="w-6 h-6 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 text-sm cursor-pointer"
+                  >
+                    ×
+                  </button>
+                </div>
             {/* Multi-File Upload & Gang-Run Item List */}
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
@@ -1228,214 +1307,178 @@ export default function PdfEditor() {
                 </div>
               </div>
             </div>
-          </aside>
 
-          {/* 2. CENTER WORKSPACE */}
-          <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3 shadow-xs">
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
-              <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-                <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
-                  {plan.summary.itemsPerSheet} con/tờ
-                  {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount} ngang + ${plan.summary.secondaryCount} dọc)`}
-                </span>
-                <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-semibold">
-                  Hiệu suất: {plan.summary.utilizationPct}%
-                </span>
-                {plan.summary.ratioSheetsNeeded > 0 && (
-                  <span className="px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 font-bold">
-                    Cần in: {plan.summary.ratioSheetsNeeded} tờ
-                  </span>
-                )}
-              </div>
-
-              <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs font-mono text-slate-600">
-                <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
-                  Fit
-                </button>
-                <button onClick={() => setZoom((z) => Math.max(0.4, Math.round((z - 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
-                  −
-                </button>
-                <span className="min-w-[40px] text-center font-bold">{Math.round(zoom * 100)}%</span>
-                <button onClick={() => setZoom((z) => Math.min(4.0, Math.round((z + 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
-                  +
-                </button>
-              </div>
-            </div>
-
-            {error && <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs">⚠️ {error}</div>}
-            {success && (
-              <div className="p-2.5 rounded-xl bg-[#E6F4EF] border border-emerald-200 text-[#146C53] text-xs font-semibold">
-                🎉 Đã xuất file PDF vector chuẩn CMYK (giữ nguyên Bleed &amp; Smart Clipping)!
-              </div>
-            )}
-
-            <div className="flex-1 min-w-0 w-full flex items-center justify-center">
-              <PdfCanvasPreview
-                sourceFiles={sourceFiles}
-                plan={plan}
-                margins={{ top: marginTop, bottom: marginBottom, left: marginLeft, right: marginRight }}
-                bleedMm={bleedMm}
-                showBleedOverlay={showBleedOverlay}
-                showSafeArea={showSafeArea}
-                safeInsetMm={safeInsetMm}
-                splitStickerPreview={mode === 'sticker' && splitStickerPreview}
-                currentSheetIndex={currentSheetIndex}
-                setCurrentSheetIndex={setCurrentSheetIndex}
-                onPagesSynced={handlePagesSynced}
-                zoom={zoom}
-                onZoomChange={setZoom}
-              />
-            </div>
-          </main>
-
-          {/* 3. RIGHT SUMMARY SIDEBAR (~260px) */}
-          <aside className="w-full lg:w-[260px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-4 shrink-0 shadow-xs">
-            <div className="flex flex-col gap-3">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">BẢN BÌNH BÀI</span>
-                <h3 className="text-sm font-bold text-slate-800 mt-0.5">Tóm tắt thông số</h3>
-              </div>
-
-              <div className="divide-y divide-slate-100 text-xs">
-                <div className="py-2 flex justify-between">
-                  <span className="text-slate-500">Khổ giấy in</span>
-                  <span className="font-mono font-bold text-slate-800">
-                    {plan.sheetDim.width}×{plan.sheetDim.height} mm
-                  </span>
-                </div>
-                <div className="py-2 flex justify-between">
-                  <span className="text-slate-500">Thành phẩm</span>
-                  <span className="font-mono font-semibold text-slate-800">
-                    {plan.summary.trimW}×{plan.summary.trimH} mm
-                  </span>
-                </div>
-                <div className="py-2 flex justify-between">
-                  <span className="text-slate-500">Số con / tờ</span>
-                  <span className="font-mono font-bold text-[#146C53]">{plan.summary.itemsPerSheet} con</span>
-                </div>
-                <div className="py-2 flex justify-between">
-                  <span className="text-slate-500">Số tờ PDF xuất</span>
-                  <span className="font-mono font-semibold text-slate-800">{plan.sheets.length} trang</span>
-                </div>
-                <div className="py-2 flex justify-between">
-                  <span className="text-slate-500">Hao phí giấy</span>
-                  <span className="font-mono font-semibold text-amber-600">
-                    {Math.max(0, Math.round((100 - plan.summary.utilizationPct) * 10) / 10)}%
-                  </span>
-                </div>
-              </div>
-
-              {/* Job Checks Section */}
-              {plan.jobChecks && plan.jobChecks.length > 0 && (
-                <div className="pt-3 border-t border-slate-100 flex flex-col gap-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      KIỂM TRA BÀI (JOB CHECKS)
-                    </span>
-                    {(() => {
-                      const warnCount = plan.jobChecks.filter((c) => c.level !== 'ok').length;
-                      return (
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                            warnCount === 0
-                              ? 'bg-[#E6F4EF] text-[#146C53]'
-                              : 'bg-amber-50 text-amber-700 border border-amber-200'
+                {/* Job Checks Section (compact inside Settings Panel) */}
+                {plan.jobChecks && plan.jobChecks.length > 0 && (
+                  <div className="pt-2 border-t border-slate-100 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                        KIỂM TRA BÀI (JOB CHECKS)
+                      </span>
+                      {(() => {
+                        const warnCount = plan.jobChecks.filter((c) => c.level !== 'ok').length;
+                        return (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              warnCount === 0
+                                ? 'bg-[#E6F4EF] text-[#146C53]'
+                                : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            }`}
+                          >
+                            {warnCount === 0 ? 'Đạt chuẩn' : `${warnCount} lưu ý`}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    <div className="flex flex-col gap-1 max-h-36 overflow-y-auto pr-0.5">
+                      {plan.jobChecks.map((chk) => (
+                        <div
+                          key={chk.id}
+                          className={`rounded-lg px-2 py-1.5 border text-[10px] ${
+                            chk.level === 'error'
+                              ? 'bg-rose-50 border-rose-200 text-rose-800'
+                              : chk.level === 'warn'
+                              ? 'bg-amber-50/70 border-amber-200 text-amber-900'
+                              : 'bg-[#FAFBF9] border-slate-200 text-slate-700'
                           }`}
                         >
-                          {warnCount === 0 ? 'Đạt chuẩn' : `${warnCount} lưu ý`}
-                        </span>
-                      );
-                    })()}
+                          <div className="font-bold">{chk.title}</div>
+                          <div className="opacity-80 mt-0.5">{chk.detail}</div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
+                )}
 
-                  <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-0.5">
-                    {plan.jobChecks.map((chk) => (
-                      <div
-                        key={chk.id}
-                        className={`rounded-lg px-2.5 py-2 border text-[11px] ${
-                          chk.level === 'error'
-                            ? 'bg-rose-50 border-rose-200 text-rose-800'
-                            : chk.level === 'warn'
-                            ? 'bg-amber-50/70 border-amber-200 text-amber-900'
-                            : 'bg-[#FAFBF9] border-slate-200 text-slate-700'
+                {/* Export Buttons */}
+                <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
+                  {mode === 'sticker' ? (
+                    <>
+                      <button
+                        onClick={() => handleDownload('print')}
+                        disabled={loading || sourceFiles.length === 0}
+                        className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                          loading || sourceFiles.length === 0
+                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
                         }`}
                       >
-                        <div className="font-bold flex items-center gap-1.5">
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                              chk.level === 'error'
-                                ? 'bg-rose-500'
-                                : chk.level === 'warn'
-                                ? 'bg-amber-500'
-                                : 'bg-[#146C53]'
-                            }`}
-                          />
-                          <span>{chk.title}</span>
-                        </div>
-                        <div className="text-[10px] opacity-80 mt-0.5 leading-relaxed">{chk.detail}</div>
-                      </div>
-                    ))}
-                  </div>
+                        {loading ? 'Đang xuất...' : '🖨️ Xuất File IN (PDF + Boong)'}
+                      </button>
+                      <button
+                        onClick={() => handleDownload('cut')}
+                        disabled={loading || sourceFiles.length === 0}
+                        className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                          loading || sourceFiles.length === 0
+                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            : 'bg-rose-600 hover:bg-rose-500 text-white shadow-xs'
+                        }`}
+                      >
+                        ✂️ Xuất File BẾ (CutContour PDF)
+                      </button>
+                      <button
+                        onClick={() => handleDownload('svg')}
+                        disabled={loading || sourceFiles.length === 0}
+                        className="w-full py-2 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold cursor-pointer disabled:opacity-40"
+                      >
+                        🧩 Xuất File BẾ (.SVG)
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => handleDownload('print')}
+                      disabled={loading || sourceFiles.length === 0}
+                      className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                        loading || sourceFiles.length === 0
+                          ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                          : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
+                      }`}
+                    >
+                      {loading ? 'Đang xuất Vector PDF...' : '⚡ Xuất PDF Bình Bài (CMYK)'}
+                    </button>
+                  )}
                 </div>
-              )}
-            </div>
+              </aside>
+            )}
+          </>
+        )}
 
-            <div className="flex flex-col gap-2 pt-3 border-t border-slate-100">
-              {mode === 'sticker' ? (
-                <>
-                  <button
-                    onClick={() => handleDownload('print')}
-                    disabled={loading || sourceFiles.length === 0}
-                    className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                      loading || sourceFiles.length === 0
-                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                        : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
-                    }`}
-                  >
-                    {loading ? 'Đang xuất...' : '🖨️ Xuất File IN (PDF + Boong)'}
-                  </button>
-                  <button
-                    onClick={() => handleDownload('cut')}
-                    disabled={loading || sourceFiles.length === 0}
-                    className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                      loading || sourceFiles.length === 0
-                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                        : 'bg-rose-600 hover:bg-rose-500 text-white shadow-xs'
-                    }`}
-                  >
-                    ✂️ Xuất File BẾ (CutContour PDF)
-                  </button>
-                  <button
-                    onClick={() => handleDownload('svg')}
-                    disabled={loading || sourceFiles.length === 0}
-                    className="w-full py-2 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold cursor-pointer disabled:opacity-40"
-                  >
-                    🧩 Xuất File BẾ (.SVG)
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => handleDownload('print')}
-                  disabled={loading || sourceFiles.length === 0}
-                  className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                    loading || sourceFiles.length === 0
-                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                      : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
-                  }`}
-                >
-                  {loading ? 'Đang xuất Vector PDF...' : '⚡ Xuất PDF Bình Bài (CMYK)'}
-                </button>
-              )}
-              <button
-                onClick={() => setActiveStudio('library')}
-                className="w-full py-2 rounded-xl border border-slate-200 hover:border-[#146C53] text-slate-700 text-xs font-semibold cursor-pointer"
-              >
-                Mở Thư viện Khuôn Bế →
-              </button>
-            </div>
-          </aside>
-        </div>
-      )}
+        {/* 3. FAR-RIGHT TOOLS DOCK (Acrobat / PrynX Pro Style) */}
+        <aside className="w-full lg:w-[225px] bg-white rounded-2xl border border-slate-200 p-3 flex flex-col gap-3 shrink-0 shadow-xs max-h-[calc(100vh-80px)] overflow-y-auto">
+          <input
+            type="text"
+            value={toolSearch}
+            onChange={(e) => setToolSearch(e.target.value)}
+            placeholder="🔍 Tìm công cụ..."
+            className="w-full bg-[#FAFBF9] border border-slate-200 focus:border-[#146C53] focus:outline-none rounded-xl px-3 py-1.5 text-xs text-slate-700"
+          />
+
+          {[
+            {
+              group: 'BÌNH BÀI IN',
+              items: [
+                { id: 'namecard', label: 'Bình Cắt Xén (Namecard)', icon: '🪪', badge: 'N-Up' },
+                { id: 'sticker', label: 'Bình Tem Bế (Decal)', icon: '🏷️', badge: 'Boong' },
+                { id: 'booklet', label: 'Bình Sách & Tạp chí', icon: '📖', badge: 'Booklet' },
+              ],
+            },
+            {
+              group: 'CHUẨN HÓA & ĐƯỜNG CẮT',
+              items: [{ id: 'bleed', label: 'Bù xén - Tạo đường cắt', icon: '🔪', badge: 'Trace' }],
+            },
+            {
+              group: 'KHUÔN BẾ BAO BÌ',
+              items: [
+                { id: 'dieline', label: 'Khuôn Bế 2D & 3D', icon: '📦', badge: '3D' },
+                { id: 'library', label: 'Thư viện mẫu ECMA', icon: '📚', badge: '5 mẫu' },
+              ],
+            },
+          ].map((grp) => {
+            const q = toolSearch.trim().toLowerCase();
+            const visibleItems = grp.items.filter(
+              (it) => !q || it.label.toLowerCase().includes(q) || it.badge.toLowerCase().includes(q)
+            );
+            if (visibleItems.length === 0) return null;
+            return (
+              <div key={grp.group} className="flex flex-col gap-1">
+                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  {grp.group}
+                </div>
+                {visibleItems.map((tool) => {
+                  const active = activeStudio === tool.id;
+                  return (
+                    <button
+                      key={tool.id}
+                      onClick={() => {
+                        setActiveStudio(tool.id);
+                        setShowSettingsPanel(true);
+                        setCurrentSheetIndex(0);
+                      }}
+                      className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border text-left transition-all cursor-pointer ${
+                        active
+                          ? 'bg-[#E6F4EF] border-[#146C53]/50 text-[#146C53] shadow-2xs'
+                          : 'bg-white border-transparent hover:bg-slate-50 hover:border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 min-w-0">
+                        <span className="text-sm shrink-0">{tool.icon}</span>
+                        <span className="text-xs font-semibold truncate">{tool.label}</span>
+                      </span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
+                          active ? 'bg-[#146C53] text-white' : 'bg-slate-100 text-slate-500'
+                        }`}
+                      >
+                        {tool.badge}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </aside>
+      </div>
     </div>
   );
 }
