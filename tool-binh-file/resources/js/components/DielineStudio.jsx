@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { DIELINE_TEMPLATES, generateDieline, exportDielineSvg } from '../engine/dielineEngine';
-import { exportDielinePdf } from '../engine/dielinePdfExporter';
-import { solveDutchCut } from '../engine/impositionEngine';
+import { exportDielinePdf, exportImposedDielinePdf } from '../engine/dielinePdfExporter';
+import { PAPER_SIZES, solveDutchCut, solveSimpleGrid } from '../engine/impositionEngine';
 import Box3DViewer, { PAPER_MATERIALS } from './Box3DViewer';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
@@ -17,8 +17,15 @@ export default function DielineStudio({
   const [params, setParams] = useState(tpl.defaults);
   const [dimensionMode, setDimensionMode] = useState('production'); // 'production' | 'inner' | 'outer'
   const [materialKey, setMaterialKey] = useState('ivory');
-  const [canvasMode, setCanvasMode] = useState('2d'); // '2d' | '3d' | 'split'
+  const [canvasMode, setCanvasMode] = useState('2d'); // '2d' | '3d' | 'split' | 'impose'
   const [zoom2D, setZoom2D] = useState(1.0);
+
+  // Dieline Sheet Imposition Settings (for 'impose' tab)
+  const [imposePaperKey, setImposePaperKey] = useState('K65x86');
+  const [imposeGapMm, setImposeGapMm] = useState(5);
+  const [imposeMarginMm, setImposeMarginMm] = useState(10);
+  const [imposeDutchCut, setImposeDutchCut] = useState(true);
+  const [imposeFlip180, setImposeFlip180] = useState(true);
 
   // 3D Controls
   const [foldProgress, setFoldProgress] = useState(0.92);
@@ -39,14 +46,70 @@ export default function DielineStudio({
 
   const dieline = useMemo(() => generateDieline(templateId, params, dimensionMode), [templateId, params, dimensionMode]);
 
-  // Estimate how many blanks fit on an SRA3 (320 x 450 mm) or 650 x 860 mm offset sheet
-  const sheetStats = useMemo(() => {
-    const sra3 = solveDutchCut(300, 430, dieline.bounds.width, dieline.bounds.height, 4, 4);
-    const areaBlank = dieline.bounds.width * dieline.bounds.height;
-    const utilSra3 = Math.min(100, Math.round(((sra3.total * areaBlank) / (320 * 450)) * 1000) / 10);
-    const wasteSra3 = Math.max(0, Math.round((100 - utilSra3) * 10) / 10);
-    return { sra3Count: sra3.total, utilSra3, wasteSra3 };
-  }, [dieline]);
+  // Compute full imposed sheet plan for THIS dieline on the selected press sheet
+  const dielineSheetPlan = useMemo(() => {
+    const pPreset = PAPER_SIZES[imposePaperKey] || PAPER_SIZES.K65x86;
+    const sheetW = Math.max(pPreset.width, pPreset.height);
+    const sheetH = Math.min(pPreset.width, pPreset.height);
+    const margin = Math.max(0, Number(imposeMarginMm) || 0);
+    const gap = Math.max(0, Number(imposeGapMm) || 0);
+    const availW = Math.max(20, sheetW - margin * 2);
+    const availH = Math.max(20, sheetH - margin * 2);
+    const bw = dieline.bounds.width;
+    const bh = dieline.bounds.height;
+
+    const solved = imposeDutchCut
+      ? solveDutchCut(availW, availH, bw, bh, gap, gap, gap)
+      : solveSimpleGrid(availW, availH, bw, bh, gap, gap);
+
+    const rawPlacements = [];
+    for (let r = 0; r < solved.primary.rows; r++) {
+      for (let c = 0; c < solved.primary.cols; c++) {
+        const rot = imposeFlip180 && (r + c) % 2 === 1 ? 180 : 0;
+        rawPlacements.push({ x: c * (bw + gap), y: r * (bh + gap), w: bw, h: bh, rotate: rot });
+      }
+    }
+    const hasPrimary = solved.primary.cols > 0 && solved.primary.rows > 0;
+    const offX = solved.splitAxis === 'vertical' && hasPrimary ? solved.usedPrimarySpan + solved.subBlockGap : 0;
+    const offY = solved.splitAxis === 'horizontal' && hasPrimary ? solved.usedPrimarySpan + solved.subBlockGap : 0;
+
+    for (let r = 0; r < solved.secondary.rows; r++) {
+      for (let c = 0; c < solved.secondary.cols; c++) {
+        const rot = imposeFlip180 && (r + c) % 2 === 1 ? 270 : 90;
+        rawPlacements.push({ x: offX + c * (bh + gap), y: offY + r * (bw + gap), w: bh, h: bw, rotate: rot });
+      }
+    }
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of rawPlacements) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x + p.w > maxX) maxX = p.x + p.w;
+      if (p.y + p.h > maxY) maxY = p.y + p.h;
+    }
+    const dx = margin + (availW - (maxX - minX)) / 2 - minX;
+    const dy = margin + (availH - (maxY - minY)) / 2 - minY;
+    const placements = rawPlacements.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy }));
+
+    const areaBlank = bw * bh;
+    const utilPct = Math.min(100, Math.round(((placements.length * areaBlank) / (sheetW * sheetH)) * 1000) / 10);
+    const wastePct = Math.max(0, Math.round((100 - utilPct) * 10) / 10);
+
+    return {
+      sheetDim: { width: sheetW, height: sheetH },
+      placements,
+      count: placements.length,
+      utilPct,
+      wastePct,
+    };
+  }, [dieline, imposePaperKey, imposeGapMm, imposeMarginMm, imposeDutchCut, imposeFlip180]);
+
+  const sheetStats = {
+    count: dielineSheetPlan.count,
+    utilPct: dielineSheetPlan.utilPct,
+    wastePct: dielineSheetPlan.wastePct,
+    sheetLabel: `${dielineSheetPlan.sheetDim.width}×${dielineSheetPlan.sheetDim.height}`,
+  };
 
   useEffect(() => {
     if (!isAnimating) return;
@@ -96,12 +159,18 @@ export default function DielineStudio({
   const handleExportPdf = async () => {
     setExporting(true);
     try {
-      const bytes = await exportDielinePdf(dieline, artworkDataUrl);
+      const bytes =
+        canvasMode === 'impose'
+          ? await exportImposedDielinePdf(dieline, dielineSheetPlan.sheetDim, dielineSheetPlan.placements)
+          : await exportDielinePdf(dieline, artworkDataUrl);
       const blob = new Blob([bytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${tpl.code}_${params.L}x${params.W}x${params.H}mm.pdf`;
+      a.download =
+        canvasMode === 'impose'
+          ? `BinhKhuon_${tpl.code}_${dielineSheetPlan.count}up_${dielineSheetPlan.sheetDim.width}x${dielineSheetPlan.sheetDim.height}.pdf`
+          : `${tpl.code}_${params.L}x${params.W}x${params.H}mm.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -306,6 +375,7 @@ export default function DielineStudio({
               ['2d', 'Khuôn 2D'],
               ['3d', 'Mô phỏng 3D'],
               ['split', 'Song song 2D + 3D'],
+              ['impose', 'Bình khuôn'],
             ].map(([k, label]) => (
               <button
                 key={k}
@@ -317,12 +387,6 @@ export default function DielineStudio({
                 {label}
               </button>
             ))}
-            <button
-              onClick={onOpenImpose}
-              className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:text-[#146C53] hover:bg-white/60 cursor-pointer"
-            >
-              Bình khuôn / Bình bài →
-            </button>
           </div>
 
           {canvasMode !== '3d' && (
@@ -540,6 +604,130 @@ export default function DielineStudio({
               </div>
             </div>
           )}
+
+          {canvasMode === 'impose' && (
+            <div className="flex flex-col min-h-[520px] bg-[#fafbf9]">
+              {/* Impose Controls Bar */}
+              <div className="px-4 py-2.5 bg-white border-b border-slate-200 flex flex-wrap items-center gap-3 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500 font-semibold">Khổ tờ in:</span>
+                  <select
+                    value={imposePaperKey}
+                    onChange={(e) => setImposePaperKey(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold text-slate-800"
+                  >
+                    <option value="K65x86">Offset K65 × 86 cm</option>
+                    <option value="K79x109">Offset K79 × 109 cm</option>
+                    <option value="A2">A2 (420 × 594 mm)</option>
+                    <option value="SRA3">SRA3 (320 × 450 mm)</option>
+                    <option value="A3">A3 (297 × 420 mm)</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-slate-500">Hở (mm):</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={imposeGapMm}
+                    onChange={(e) => setImposeGapMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                    className="w-14 bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-slate-500">Lề (mm):</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={imposeMarginMm}
+                    onChange={(e) => setImposeMarginMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                    className="w-14 bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+                <label className="flex items-center gap-1.5 text-slate-700 cursor-pointer">
+                  <input type="checkbox" className="accent-[#146C53]" checked={imposeDutchCut} onChange={(e) => setImposeDutchCut(e.target.checked)} />
+                  Trộn 0°+90°
+                </label>
+                <label className="flex items-center gap-1.5 text-slate-700 cursor-pointer">
+                  <input type="checkbox" className="accent-[#146C53]" checked={imposeFlip180} onChange={(e) => setImposeFlip180(e.target.checked)} />
+                  Đối đầu 180°
+                </label>
+                <span className="ml-auto px-2.5 py-1 rounded-full bg-[#E6F4EF] text-[#146C53] font-mono font-bold">
+                  {dielineSheetPlan.count} khuôn/tờ · {dielineSheetPlan.utilPct}%
+                </span>
+              </div>
+
+              {/* Imposed Sheet SVG Preview */}
+              <div
+                className="flex-1 flex items-center justify-center p-6 overflow-auto"
+                style={{
+                  backgroundImage:
+                    'linear-gradient(to right, #eef2f1 1px, transparent 1px), linear-gradient(to bottom, #eef2f1 1px, transparent 1px)',
+                  backgroundSize: '24px 24px',
+                }}
+              >
+                <div style={{ transform: `scale(${zoom2D})`, transformOrigin: 'center center' }} className="transition-transform">
+                  <svg
+                    viewBox={`-12 -12 ${dielineSheetPlan.sheetDim.width + 24} ${dielineSheetPlan.sheetDim.height + 24}`}
+                    className="w-[620px] max-w-full h-auto max-h-[440px] drop-shadow-md"
+                  >
+                    {/* Physical Sheet */}
+                    <rect
+                      x="0"
+                      y="0"
+                      width={dielineSheetPlan.sheetDim.width}
+                      height={dielineSheetPlan.sheetDim.height}
+                      fill="#ffffff"
+                      stroke="#64748b"
+                      strokeWidth="1.2"
+                    />
+                    {/* Printable Margin Box */}
+                    <rect
+                      x={imposeMarginMm}
+                      y={imposeMarginMm}
+                      width={Math.max(0, dielineSheetPlan.sheetDim.width - imposeMarginMm * 2)}
+                      height={Math.max(0, dielineSheetPlan.sheetDim.height - imposeMarginMm * 2)}
+                      fill="none"
+                      stroke="#94a3b8"
+                      strokeWidth="0.6"
+                      strokeDasharray="4 3"
+                    />
+                    {/* Each placed dieline */}
+                    {dielineSheetPlan.placements.map((p, idx) => {
+                      const bw = dieline.bounds.width;
+                      const bh = dieline.bounds.height;
+                      const transform =
+                        p.rotate === 90
+                          ? `translate(${p.x + bh}, ${p.y}) rotate(90)`
+                          : p.rotate === 180
+                          ? `translate(${p.x + bw}, ${p.y + bh}) rotate(180)`
+                          : p.rotate === 270
+                          ? `translate(${p.x}, ${p.y + bw}) rotate(270)`
+                          : `translate(${p.x}, ${p.y})`;
+                      return (
+                        <g key={idx} transform={transform}>
+                          {dieline.creaseSegments.map(([a, b], i) => (
+                            <line
+                              key={`cr-${i}`}
+                              x1={a[0]}
+                              y1={a[1]}
+                              x2={b[0]}
+                              y2={b[1]}
+                              stroke="#dc2626"
+                              strokeWidth="0.8"
+                              strokeDasharray="3 2"
+                            />
+                          ))}
+                          {dieline.cutSegments.map(([a, b], i) => (
+                            <line key={`ct-${i}`} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#1d4ed8" strokeWidth="1" />
+                          ))}
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -569,12 +757,12 @@ export default function DielineStudio({
               </span>
             </div>
             <div className="py-2.5 flex justify-between gap-2">
-              <span className="text-slate-500">Xếp tờ SRA3 (320×450)</span>
-              <span className="font-mono font-bold text-[#146C53]">{sheetStats.sra3Count} khuôn/tờ</span>
+              <span className="text-slate-500">Xếp tờ ({sheetStats.sheetLabel})</span>
+              <span className="font-mono font-bold text-[#146C53]">{sheetStats.count} khuôn/tờ</span>
             </div>
             <div className="py-2.5 flex justify-between gap-2">
-              <span className="text-slate-500">Hao phí tờ SRA3</span>
-              <span className="font-mono font-semibold text-amber-600">{sheetStats.wasteSra3}%</span>
+              <span className="text-slate-500">Hao phí tờ</span>
+              <span className="font-mono font-semibold text-amber-600">{sheetStats.wastePct}%</span>
             </div>
           </div>
         </div>
@@ -585,7 +773,11 @@ export default function DielineStudio({
             disabled={exporting}
             className="w-full py-2.5 rounded-xl bg-[#146C53] hover:bg-[#0f5440] text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
           >
-            {exporting ? 'Đang xuất PDF...' : '📐 Xuất Khuôn Bế PDF 1:1'}
+            {exporting
+              ? 'Đang xuất PDF...'
+              : canvasMode === 'impose'
+              ? '📐 Xuất PDF Tờ Bình Khuôn 1:1'
+              : '📐 Xuất Khuôn Bế PDF 1:1'}
           </button>
           <button
             onClick={handleExportSvg}

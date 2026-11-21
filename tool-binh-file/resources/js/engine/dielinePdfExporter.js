@@ -71,3 +71,71 @@ export async function exportDielinePdf(dieline, artworkDataUrl = null) {
 
   return await doc.save();
 }
+
+/**
+ * Export 1:1 Imposed Dieline Sheet PDF (multiple box blanks nested onto a Press/Offset sheet)
+ */
+export async function exportImposedDielinePdf(dieline, sheetDim, placements) {
+  const doc = await PDFDocument.create();
+  const sheetWPt = sheetDim.width * MM_TO_PT;
+  const sheetHPt = sheetDim.height * MM_TO_PT;
+  const page = doc.addPage([sheetWPt, sheetHPt]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+
+  const creaseColor = cmyk(1, 0, 0, 0);
+  const cutColor = cmyk(0, 1, 0, 0);
+  const bw = dieline.bounds.width;
+  const bh = dieline.bounds.height;
+
+  const transformPoint = (px, py, p) => {
+    let lx = px;
+    let ly = py;
+    if (p.rotate === 90) {
+      lx = bh - py;
+      ly = px;
+    } else if (p.rotate === 180) {
+      lx = bw - px;
+      ly = bh - py;
+    } else if (p.rotate === 270) {
+      lx = py;
+      ly = bw - px;
+    }
+    return [(p.x + lx) * MM_TO_PT, sheetHPt - (p.y + ly) * MM_TO_PT];
+  };
+
+  for (const p of placements) {
+    for (const [a, b] of dieline.creaseSegments) {
+      const [x1, y1] = transformPoint(a[0], a[1], p);
+      const [x2, y2] = transformPoint(b[0], b[1], p);
+      page.drawLine({
+        start: { x: x1, y: y1 },
+        end: { x: x2, y: y2 },
+        thickness: 0.45,
+        color: creaseColor,
+        dashArray: [4, 3],
+      });
+    }
+    for (const [a, b] of dieline.cutSegments) {
+      const [x1, y1] = transformPoint(a[0], a[1], p);
+      const [x2, y2] = transformPoint(b[0], b[1], p);
+      page.drawLine({
+        start: { x: x1, y: y1 },
+        end: { x: x2, y: y2 },
+        thickness: 0.45,
+        color: cutColor,
+      });
+    }
+  }
+
+  const { L, W, H, thickness } = dieline.params;
+  const slug = `Toolbinhfile | Binh Khuon ${dieline.code} (${L}x${W}x${H}mm, CAL ${thickness}) | ${placements.length} khuon/to | Kho giay ${sheetDim.width}x${sheetDim.height}mm`;
+  page.drawText(slug, {
+    x: 6 * MM_TO_PT,
+    y: 3 * MM_TO_PT,
+    size: 6.5,
+    font,
+    color: cmyk(0, 0, 0, 1),
+  });
+
+  return await doc.save();
+}
