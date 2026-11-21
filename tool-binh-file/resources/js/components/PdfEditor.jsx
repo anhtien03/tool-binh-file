@@ -460,7 +460,7 @@ export default function PdfEditor() {
                   setActiveStudio(key);
                   setCurrentSheetIndex(0);
                 }}
-                className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
                   activeStudio === key
                     ? 'bg-[#146C53] text-white'
                     : 'text-emerald-100/75 hover:text-white hover:bg-white/10'
@@ -473,17 +473,8 @@ export default function PdfEditor() {
         </div>
 
         {/* Right Quick Action */}
-        <div className="flex items-center gap-2">
-          {activeStudio === 'bleed' && (
-        <BleedAndContourStudio
-          onOpenStickerImpose={() => {
-            setActiveStudio('sticker');
-            setCurrentSheetIndex(0);
-          }}
-        />
-      )}
-
-      {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
+        <div className="flex items-center gap-2 shrink-0">
+          {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
             <button
               onClick={() => handleDownload('print')}
               disabled={loading || sourceFiles.length === 0}
@@ -965,8 +956,8 @@ export default function PdfEditor() {
                       onChange={(e) => setStickerLayout(e.target.value)}
                       className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
                     >
-                      <option value="optimal">Trộn 0°+90° (Dutch)</option>
-                      <option value="honeycomb">Tổ ong so le (Tròn)</option>
+                      <option value="optimal">Trộn 0°+90°</option>
+                      <option value="honeycomb">Tổ ong so le</option>
                       <option value="simple">Lưới thẳng</option>
                     </select>
                   </div>
@@ -1030,9 +1021,9 @@ export default function PdfEditor() {
                       onChange={(e) => setPontType(e.target.value)}
                       className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
                     >
-                      <option value="circle5mm">Boong tròn đặc 5mm</option>
-                      <option value="circleHollow">Boong tròn rỗng</option>
-                      <option value="graphtec">Boong Graphtec (L)</option>
+                      <option value="circle5mm">Tròn đặc 5mm</option>
+                      <option value="circleHollow">Tròn rỗng</option>
+                      <option value="graphtec">Graphtec (L)</option>
                       <option value="none">Tắt boong</option>
                     </select>
                   </div>
@@ -1079,10 +1070,10 @@ export default function PdfEditor() {
                     onChange={(e) => setBookletStyle(e.target.value)}
                     className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-800"
                   >
-                    <option value="saddleStitch">Bấm kim giữa (Saddle)</option>
-                    <option value="perfectBound">Đóng keo (Perfect Bound)</option>
-                    <option value="wireO">Gáy xoắn / Lò xo (Wire-O)</option>
-                    <option value="zine8">Zine 8 trang (1 tờ 4×2)</option>
+                    <option value="saddleStitch">Bấm kim giữa</option>
+                    <option value="perfectBound">Đóng keo gáy</option>
+                    <option value="wireO">Gáy xoắn (Wire-O)</option>
+                    <option value="zine8">Zine 8 trang</option>
                   </select>
                   <select
                     value={bookletBinding}
@@ -1153,7 +1144,7 @@ export default function PdfEditor() {
             {/* Marks */}
             <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
               <span className="text-xs font-bold text-slate-800">4. Dấu xén &amp; Báo cáo</span>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-[1.45fr_1fr_1fr] gap-2">
                 <select
                   value={markStyle}
                   onChange={(e) => setMarkStyle(e.target.value)}
