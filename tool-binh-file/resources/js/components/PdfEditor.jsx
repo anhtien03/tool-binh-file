@@ -6,8 +6,8 @@ import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
 import { exportImposedPdf } from '../engine/pdfExporter';
 
 export default function PdfEditor() {
-  // --- Top-Level Navigation ('library' | 'dieline' | 'impose') ---
-  const [activeStudio, setActiveStudio] = useState('impose');
+  // --- Top-Level Navigation ('library' | 'dieline' | 'namecard' | 'booklet') ---
+  const [activeStudio, setActiveStudio] = useState('namecard');
   const [selectedTemplateId, setSelectedTemplateId] = useState('ste');
 
   // --- Multi-File & Gang-Run State ---
@@ -15,8 +15,8 @@ export default function PdfEditor() {
   const [pdfPages, setPdfPages] = useState([]);
   const [gangItems, setGangItems] = useState([]);
 
-  // --- Core Imposition Mode ---
-  const [mode, setMode] = useState('grid');
+  // --- Core Imposition Mode (synced cleanly with activeStudio) ---
+  const mode = activeStudio === 'booklet' ? 'booklet' : 'grid';
   const [paperSizeKey, setPaperSizeKey] = useState('A3');
   const [customPaperWidth, setCustomPaperWidth] = useState('325');
   const [customPaperHeight, setCustomPaperHeight] = useState('430');
@@ -179,7 +179,7 @@ export default function PdfEditor() {
   };
 
   const applyNamecardPreset = (presetKey) => {
-    setMode('grid');
+    setActiveStudio('namecard');
     setKeepOriginalSize(true);
     setBleedMm(1.5);
     setGutterX(2);
@@ -390,11 +390,15 @@ export default function PdfEditor() {
             {[
               ['library', 'Thư viện hộp'],
               ['dieline', 'Khuôn 2D & 3D'],
-              ['impose', 'Bình Bài In'],
+              ['namecard', 'Bình Namecard / Tem'],
+              ['booklet', 'Bình Sách (Booklet)'],
             ].map(([key, label]) => (
               <button
                 key={key}
-                onClick={() => setActiveStudio(key)}
+                onClick={() => {
+                  setActiveStudio(key);
+                  setCurrentSheetIndex(0);
+                }}
                 className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
                   activeStudio === key
                     ? 'bg-[#146C53] text-white'
@@ -409,7 +413,7 @@ export default function PdfEditor() {
 
         {/* Right Quick Action */}
         <div className="flex items-center gap-2">
-          {activeStudio === 'impose' && (
+          {(activeStudio === 'namecard' || activeStudio === 'booklet') && (
             <button
               onClick={handleDownload}
               disabled={loading || sourceFiles.length === 0}
@@ -419,7 +423,7 @@ export default function PdfEditor() {
                   : 'bg-[#146C53] hover:bg-[#198768] text-white shadow-xs'
               }`}
             >
-              {loading ? 'Đang xuất...' : 'Xuất PDF Bình Bài'}
+              {loading ? 'Đang xuất...' : activeStudio === 'booklet' ? 'Xuất PDF Bình Sách' : 'Xuất PDF Bình Bài'}
             </button>
           )}
         </div>
@@ -432,7 +436,14 @@ export default function PdfEditor() {
             setSelectedTemplateId(id);
             setActiveStudio('dieline');
           }}
-          onOpenImpose={() => setActiveStudio('impose')}
+          onOpenImpose={() => {
+            setActiveStudio('namecard');
+            setCurrentSheetIndex(0);
+          }}
+          onOpenBooklet={() => {
+            setActiveStudio('booklet');
+            setCurrentSheetIndex(0);
+          }}
         />
       )}
 
@@ -441,11 +452,14 @@ export default function PdfEditor() {
           templateId={selectedTemplateId}
           onChangeTemplate={(id) => setSelectedTemplateId(id)}
           onOpenLibrary={() => setActiveStudio('library')}
-          onOpenImpose={() => setActiveStudio('impose')}
+          onOpenImpose={() => {
+            setActiveStudio('namecard');
+            setCurrentSheetIndex(0);
+          }}
         />
       )}
 
-      {activeStudio === 'impose' && (
+      {(activeStudio === 'namecard' || activeStudio === 'booklet') && (
         <div className="flex flex-col lg:flex-row gap-4 p-4 flex-1">
           {/* 1. LEFT PARAMETER SIDEBAR (~330px) */}
           <aside className="w-full lg:w-[340px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3.5 overflow-y-auto max-h-[calc(100vh-88px)] shrink-0 shadow-xs">
@@ -547,32 +561,6 @@ export default function PdfEditor() {
                   ))}
                 </div>
               )}
-            </div>
-
-            {/* Mode Switcher */}
-            <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-xl">
-              <button
-                onClick={() => {
-                  setMode('grid');
-                  setCurrentSheetIndex(0);
-                }}
-                className={`py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  mode === 'grid' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                Bình Bài Xén (N-Up)
-              </button>
-              <button
-                onClick={() => {
-                  setMode('booklet');
-                  setCurrentSheetIndex(0);
-                }}
-                className={`py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  mode === 'booklet' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                Bình Sách (Booklet)
-              </button>
             </div>
 
             {/* Paper & Margins */}

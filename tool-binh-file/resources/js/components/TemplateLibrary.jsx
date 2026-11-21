@@ -40,7 +40,7 @@ function DielineMiniThumbnail({ templateId }) {
   );
 }
 
-export default function TemplateLibrary({ onSelectTemplate, onOpenImpose }) {
+export default function TemplateLibrary({ onSelectTemplate, onOpenImpose, onOpenBooklet }) {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState('default'); // 'default' | 'name' | 'code'
@@ -139,7 +139,7 @@ export default function TemplateLibrary({ onSelectTemplate, onOpenImpose }) {
               <span className="text-[#146C53]">→</span>
             </button>
             <button
-              onClick={onOpenImpose}
+              onClick={onOpenBooklet || onOpenImpose}
               className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center justify-between cursor-pointer"
             >
               <span>Bình Sách (Booklet)</span>
