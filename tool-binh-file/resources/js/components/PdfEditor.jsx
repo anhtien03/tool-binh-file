@@ -1006,11 +1006,11 @@ export default function PdfEditor() {
                 <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
                   Fit
                 </button>
-                <button onClick={() => setZoom(Math.max(0.5, zoom - 0.15))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                <button onClick={() => setZoom((z) => Math.max(0.4, Math.round((z - 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
                   −
                 </button>
                 <span className="min-w-[40px] text-center font-bold">{Math.round(zoom * 100)}%</span>
-                <button onClick={() => setZoom(Math.min(2.5, zoom + 0.15))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                <button onClick={() => setZoom((z) => Math.min(4.0, Math.round((z + 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
                   +
                 </button>
               </div>
@@ -1036,6 +1036,7 @@ export default function PdfEditor() {
                 setCurrentSheetIndex={setCurrentSheetIndex}
                 onPagesSynced={handlePagesSynced}
                 zoom={zoom}
+                onZoomChange={setZoom}
               />
             </div>
           </main>

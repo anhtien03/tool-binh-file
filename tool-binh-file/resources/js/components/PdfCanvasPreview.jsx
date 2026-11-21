@@ -19,10 +19,14 @@ export default function PdfCanvasPreview({
   setCurrentSheetIndex,
   onPagesSynced,
   zoom = 1.0,
+  onZoomChange,
 }) {
   const [pages, setPages] = useState([]);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
   const canvasRef = useRef(null);
+  const viewportRef = useRef(null);
+  const panStateRef = useRef({ active: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 });
   const fileCacheRef = useRef(new Map()); // id -> parsed pages array
 
   // 1. Parse any newly added PDFs (cached by file id) and flatten into global pagesMeta
@@ -361,6 +365,51 @@ export default function PdfCanvasPreview({
     }
   }, [activeSheet, pages, sheetDim, margins, bleedMm, showBleedOverlay, showSafeArea, safeInsetMm, canvasWidth, canvasHeight]);
 
+  // 3. Ctrl + Wheel Zoom (non-passive so browser page zoom is prevented)
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el || !onZoomChange) return;
+
+    const handleWheel = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.15 : -0.15;
+        onZoomChange((prev) => Math.round(Math.min(4.0, Math.max(0.4, prev + delta)) * 100) / 100);
+      }
+    };
+
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [onZoomChange]);
+
+  // 4. Left-click Drag to Pan
+  const handleMouseDown = (e) => {
+    if (e.button !== 0 || !viewportRef.current) return;
+    panStateRef.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: viewportRef.current.scrollLeft,
+      scrollTop: viewportRef.current.scrollTop,
+    };
+    setIsPanning(true);
+  };
+
+  const handleMouseMove = (e) => {
+    if (!panStateRef.current.active || !viewportRef.current) return;
+    const dx = e.clientX - panStateRef.current.startX;
+    const dy = e.clientY - panStateRef.current.startY;
+    viewportRef.current.scrollLeft = panStateRef.current.scrollLeft - dx;
+    viewportRef.current.scrollTop = panStateRef.current.scrollTop - dy;
+  };
+
+  const stopPanning = () => {
+    if (panStateRef.current.active) {
+      panStateRef.current.active = false;
+      setIsPanning(false);
+    }
+  };
+
   return (
     <div className="flex flex-col items-center w-full relative">
       {pdfLoading && (
@@ -370,7 +419,15 @@ export default function PdfCanvasPreview({
       )}
 
       <div
-        className="p-6 rounded-2xl border border-slate-200 w-full overflow-auto h-[540px]"
+        ref={viewportRef}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={stopPanning}
+        onMouseLeave={stopPanning}
+        title="Giữ Ctrl + cuộn chuột để Zoom · Kéo chuột trái để di chuyển tờ in"
+        className={`p-6 rounded-2xl border border-slate-200 w-full overflow-auto h-[540px] select-none ${
+          isPanning ? 'cursor-grabbing' : 'cursor-grab'
+        }`}
         style={{
           backgroundColor: '#fafbf9',
           backgroundImage:
@@ -402,6 +459,7 @@ export default function PdfCanvasPreview({
             <span className="w-4 border-t border-dashed border-[#146C53] inline-block" /> Vùng an toàn ({safeInsetMm}mm)
           </span>
         )}
+        <span className="text-slate-400">· Ctrl+Cuộn: Zoom · Kéo chuột trái: Di chuyển</span>
       </div>
 
       {sheets.length > 0 && (
