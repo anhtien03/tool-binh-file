@@ -1,32 +1,65 @@
 /**
- * Parametric Dieline 2D & 3D Hierarchical Folding Engine (PrynX-style)
+ * Parametric Dieline 2D & 3D Hierarchical Folding Engine (ECMA / Editorial-CAD)
  * All coordinates are in mm (origin top-left, +X right, +Y down).
  */
 
+export const DIELINE_CATEGORIES = [
+  { id: 'all', name: 'Tất cả' },
+  { id: 'folding', name: 'Hộp giấy gấp' },
+  { id: 'tray', name: 'Khay giấy' },
+  { id: 'bag', name: 'Túi giấy & Bao bì' },
+];
+
 export const DIELINE_TEMPLATES = {
-  rte: {
-    id: 'rte',
-    name: 'Hộp Nắp Gài Ngược (Reverse Tuck End)',
-    shortName: 'Nắp gài ngược (RTE)',
-    description: 'Mẫu hộp mỹ phẩm, dược phẩm phổ biến nhất — nắp trên và nắp dưới gài ngược chiều nhau.',
-    defaults: { L: 80, W: 50, H: 120, thickness: 0.4, glueTab: 15, tuckFlap: 18 },
-    uprightRotateX: -Math.PI / 2, // Stand Front panel vertically
-  },
   ste: {
     id: 'ste',
-    name: 'Hộp Nắp Gài Cùng Chiều (Straight Tuck End)',
-    shortName: 'Nắp gài cùng chiều (STE)',
+    code: 'ECMA A20.20.01.01',
+    category: 'folding',
+    name: 'Hộp nắp cài hai đầu — hai nắp cùng mặt',
+    shortName: 'Nắp cài · cùng mặt',
     description: 'Nắp trên và nắp dưới cùng gài về mặt sau — mặt trước sạch đẹp, tối ưu trưng bày.',
+    defaults: { L: 100, W: 60, H: 150, thickness: 0.43, glueTab: 15, tuckFlap: 18 },
+    uprightRotateX: -Math.PI / 2,
+  },
+  rte: {
+    id: 'rte',
+    code: 'ECMA A20.20.03.01',
+    category: 'folding',
+    name: 'Hộp nắp cài hai đầu — hai nắp đối xứng',
+    shortName: 'Nắp cài · đối xứng',
+    description: 'Mẫu hộp mỹ phẩm, dược phẩm phổ biến nhất — nắp trên và nắp dưới gài ngược chiều nhau.',
     defaults: { L: 80, W: 50, H: 120, thickness: 0.4, glueTab: 15, tuckFlap: 18 },
     uprightRotateX: -Math.PI / 2,
   },
   tray: {
     id: 'tray',
-    name: 'Khay Hộp Mở Nắp (Open Tray)',
-    shortName: 'Khay hộp (Tray)',
+    code: 'ECMA A60.20.01.01',
+    category: 'tray',
+    name: 'Khay hộp mở nắp 4 vách có tai dán góc',
+    shortName: 'Khay hộp mở nắp',
     description: 'Khay đựng thực phẩm, quà tặng, mỹ phẩm gồm đáy + 4 vách + 4 tai dán góc.',
     defaults: { L: 140, W: 100, H: 35, thickness: 0.5, glueTab: 18, tuckFlap: 0 },
-    uprightRotateX: 0, // Bottom already sits flat on floor
+    uprightRotateX: 0,
+  },
+  sleeve: {
+    id: 'sleeve',
+    code: 'ECMA A01.10.01.01',
+    category: 'folding',
+    name: 'Vỏ bao hộp trượt (Sleeve / Belly Band)',
+    shortName: 'Vỏ bao trượt',
+    description: 'Đai giấy hoặc vỏ bọc trượt ngoài khay hộp — tiết kiệm phôi, dễ in ấn.',
+    defaults: { L: 142, W: 102, H: 37, thickness: 0.35, glueTab: 15, tuckFlap: 0 },
+    uprightRotateX: -Math.PI / 2,
+  },
+  bag: {
+    id: 'bag',
+    code: 'ECMA B10.10.01.01',
+    category: 'bag',
+    name: 'Túi giấy đứng đáy gập (Shopping Bag)',
+    shortName: 'Túi giấy đáy gập',
+    description: 'Túi giấy quai xách tiêu chuẩn gồm 4 mặt hông, mép dán và phần đáy gập.',
+    defaults: { L: 180, W: 80, H: 240, thickness: 0.35, glueTab: 18, tuckFlap: 0 },
+    uprightRotateX: -Math.PI / 2,
   },
 };
 
@@ -39,7 +72,6 @@ function rectPoly(x, y, w, h) {
   ];
 }
 
-// Tapered trapezoid flap (glue tab / dust flap / tuck flap)
 function tuckPoly(x, y, w, h, dir = 'up', taper = 3) {
   const t = Math.min(taper, w * 0.15);
   if (dir === 'up') {
@@ -94,9 +126,6 @@ function glueTabPoly(x, y, w, h, side = 'left') {
   ];
 }
 
-/**
- * Traverse panel tree to collect bounds, 2D cut polylines, and 2D crease segments
- */
 function finalizeDieline(rootPanel, meta) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
@@ -111,7 +140,6 @@ function finalizeDieline(rootPanel, meta) {
   };
   visitBounds(rootPanel);
 
-  // Shift everything so top-left starts at (0, 0)
   const shiftNode = (node) => ({
     ...node,
     polygon: node.polygon.map(([px, py]) => [px - minX, py - minY]),
@@ -128,7 +156,6 @@ function finalizeDieline(rootPanel, meta) {
   const width = Math.round((maxX - minX) * 100) / 100;
   const height = Math.round((maxY - minY) * 100) / 100;
 
-  // Extract Cut edges vs Crease edges
   const creaseSegments = [];
   const creaseKeySet = new Set();
 
@@ -150,7 +177,6 @@ function finalizeDieline(rootPanel, meta) {
   };
   collectCreases(normalizedRoot);
 
-  // Any polygon edge that is NOT a crease segment is a CutContour segment
   const cutSegments = [];
   const cutKeySet = new Set();
 
@@ -179,27 +205,53 @@ function finalizeDieline(rootPanel, meta) {
 }
 
 /**
- * Generate Reverse Tuck End (RTE) or Straight Tuck End (STE) box
+ * Adjust L/W/H by dimensionMode ('production' | 'inner' | 'outer')
  */
-function buildTuckBox(templateId, params) {
-  const L = Math.max(20, Number(params.L) || 80);
-  const W = Math.max(15, Number(params.W) || 50);
-  const H = Math.max(25, Number(params.H) || 120);
+export function resolveManufacturingDims(params, dimensionMode = 'production') {
+  const rawL = Math.max(20, Number(params.L) || 80);
+  const rawW = Math.max(15, Number(params.W) || 50);
+  const rawH = Math.max(12, Number(params.H) || 120);
+  const t = Math.max(0.1, Number(params.thickness) || 0.4);
+
+  let L = rawL, W = rawW, H = rawH;
+  if (dimensionMode === 'inner') {
+    L = rawL + t * 2;
+    W = rawW + t * 2;
+    H = rawH + t * 2;
+  } else if (dimensionMode === 'outer') {
+    L = Math.max(15, rawL - t * 2);
+    W = Math.max(12, rawW - t * 2);
+    H = Math.max(10, rawH - t * 2);
+  }
+
+  return {
+    L: Math.round(L * 100) / 100,
+    W: Math.round(W * 100) / 100,
+    H: Math.round(H * 100) / 100,
+    inner: {
+      L: Math.round((L - t * 2) * 100) / 100,
+      W: Math.round((W - t * 2) * 100) / 100,
+      H: Math.round((H - t * 2) * 100) / 100,
+    },
+    outer: {
+      L: Math.round((L + t * 2) * 100) / 100,
+      W: Math.round((W + t * 2) * 100) / 100,
+      H: Math.round((H + t * 2) * 100) / 100,
+    },
+    thickness: t,
+  };
+}
+
+function buildTuckBox(templateId, params, dimensionMode) {
+  const dims = resolveManufacturingDims(params, dimensionMode);
+  const { L, W, H, thickness } = dims;
   const glueW = Math.max(8, Number(params.glueTab) || 15);
   const tuckH = Math.max(10, Number(params.tuckFlap) || 18);
   const dustH = Math.min(W * 0.72, Math.max(12, W * 0.6));
   const isStraight = templateId === 'ste';
 
-  // Horizontal band layout:
-  // [GlueTab (glueW)] | [LeftSide (W)] | [Front (L) - ROOT] | [RightSide (W)] | [Back (L)]
-  // Place Front (root) at x = 0..L, y = 0..H
-  const frontX = 0;
-  const rightX = L;
-  const backX = L + W;
-  const leftX = -W;
-  const glueX = -W - glueW;
+  const frontX = 0, rightX = L, backX = L + W, leftX = -W, glueX = -W - glueW;
 
-  // Top lid attached to Back (x = backX..backX+L, y = -W..0)
   const topLid = {
     id: 'top-lid',
     name: 'Nắp trên',
@@ -220,7 +272,6 @@ function buildTuckBox(templateId, params) {
     ],
   };
 
-  // Bottom lid: for STE attached to Back (same side); for RTE attached to Front (opposite side)
   const bottomLidParentX = isStraight ? backX : frontX;
   const bottomLid = {
     id: 'bottom-lid',
@@ -332,19 +383,16 @@ function buildTuckBox(templateId, params) {
 
   return finalizeDieline(frontRoot, {
     templateId,
+    code: DIELINE_TEMPLATES[templateId].code,
     templateName: DIELINE_TEMPLATES[templateId].name,
-    params: { L, W, H, thickness: Number(params.thickness) || 0.4, glueTab: glueW, tuckFlap: tuckH },
+    params: { ...dims, glueTab: glueW, tuckFlap: tuckH },
     uprightRotateX: DIELINE_TEMPLATES[templateId].uprightRotateX,
   });
 }
 
-/**
- * Generate Open Tray (Khay hộp mở nắp)
- */
-function buildTrayBox(params) {
-  const L = Math.max(30, Number(params.L) || 140);
-  const W = Math.max(30, Number(params.W) || 100);
-  const H = Math.max(12, Number(params.H) || 35);
+function buildTrayBox(params, dimensionMode) {
+  const dims = resolveManufacturingDims(params, dimensionMode);
+  const { L, W, H } = dims;
   const tabW = Math.min(H, Math.max(10, Number(params.glueTab) || 18));
 
   const topWall = {
@@ -437,14 +485,188 @@ function buildTrayBox(params) {
 
   return finalizeDieline(bottomRoot, {
     templateId: 'tray',
+    code: DIELINE_TEMPLATES.tray.code,
     templateName: DIELINE_TEMPLATES.tray.name,
-    params: { L, W, H, thickness: Number(params.thickness) || 0.5, glueTab: tabW, tuckFlap: 0 },
+    params: { ...dims, glueTab: tabW, tuckFlap: 0 },
     uprightRotateX: DIELINE_TEMPLATES.tray.uprightRotateX,
   });
 }
 
-export function generateDieline(templateId, params) {
-  if (templateId === 'tray') return buildTrayBox(params);
-  if (templateId === 'ste') return buildTuckBox('ste', params);
-  return buildTuckBox('rte', params);
+function buildSleeveBox(params, dimensionMode) {
+  const dims = resolveManufacturingDims(params, dimensionMode);
+  const { L, W, H } = dims;
+  const glueW = Math.max(8, Number(params.glueTab) || 15);
+
+  const frontRoot = {
+    id: 'front',
+    name: 'Mặt trên',
+    polygon: rectPoly(0, 0, L, W),
+    hinge: null,
+    foldAngleDeg: 0,
+    foldWindow: [0, 1],
+    children: [
+      {
+        id: 'left',
+        name: 'Thành trái',
+        polygon: rectPoly(-H, 0, H, W),
+        hinge: { p1: [0, 0], p2: [0, W] },
+        foldAngleDeg: 90,
+        foldWindow: [0, 0.5],
+        children: [
+          {
+            id: 'glue-tab',
+            name: 'Mép dán',
+            polygon: glueTabPoly(-H - glueW, 0, glueW, W, 'left'),
+            hinge: { p1: [-H, 0], p2: [-H, W] },
+            foldAngleDeg: 90,
+            foldWindow: [0.3, 0.8],
+            children: [],
+          },
+        ],
+      },
+      {
+        id: 'right',
+        name: 'Thành phải',
+        polygon: rectPoly(L, 0, H, W),
+        hinge: { p1: [L, 0], p2: [L, W] },
+        foldAngleDeg: 90,
+        foldWindow: [0, 0.5],
+        children: [
+          {
+            id: 'back',
+            name: 'Mặt đáy',
+            polygon: rectPoly(L + H, 0, L, W),
+            hinge: { p1: [L + H, 0], p2: [L + H, W] },
+            foldAngleDeg: 90,
+            foldWindow: [0.35, 1.0],
+            children: [],
+          },
+        ],
+      },
+    ],
+  };
+
+  return finalizeDieline(frontRoot, {
+    templateId: 'sleeve',
+    code: DIELINE_TEMPLATES.sleeve.code,
+    templateName: DIELINE_TEMPLATES.sleeve.name,
+    params: { ...dims, glueTab: glueW, tuckFlap: 0 },
+    uprightRotateX: DIELINE_TEMPLATES.sleeve.uprightRotateX,
+  });
+}
+
+function buildPaperBag(params, dimensionMode) {
+  const dims = resolveManufacturingDims(params, dimensionMode);
+  const { L, W, H } = dims;
+  const glueW = Math.max(10, Number(params.glueTab) || 18);
+  const baseH = Math.max(20, Math.round(W * 0.65));
+
+  const frontRoot = {
+    id: 'front',
+    name: 'Mặt trước túi',
+    polygon: rectPoly(0, 0, L, H),
+    hinge: null,
+    foldAngleDeg: 0,
+    foldWindow: [0, 1],
+    children: [
+      {
+        id: 'left',
+        name: 'Hông trái',
+        polygon: rectPoly(-W, 0, W, H),
+        hinge: { p1: [0, 0], p2: [0, H] },
+        foldAngleDeg: 90,
+        foldWindow: [0, 0.55],
+        children: [
+          {
+            id: 'glue-tab',
+            name: 'Mép dán hông',
+            polygon: glueTabPoly(-W - glueW, 0, glueW, H, 'left'),
+            hinge: { p1: [-W, 0], p2: [-W, H] },
+            foldAngleDeg: 90,
+            foldWindow: [0.25, 0.75],
+            children: [],
+          },
+        ],
+      },
+      {
+        id: 'right',
+        name: 'Hông phải',
+        polygon: rectPoly(L, 0, W, H),
+        hinge: { p1: [L, 0], p2: [L, H] },
+        foldAngleDeg: 90,
+        foldWindow: [0, 0.55],
+        children: [
+          {
+            id: 'back',
+            name: 'Mặt sau túi',
+            polygon: rectPoly(L + W, 0, L, H),
+            hinge: { p1: [L + W, 0], p2: [L + W, H] },
+            foldAngleDeg: 90,
+            foldWindow: [0.3, 0.85],
+            children: [
+              {
+                id: 'bottom-back',
+                name: 'Đáy sau',
+                polygon: rectPoly(L + W, H, L, baseH),
+                hinge: { p1: [L + W, H], p2: [L + W + L, H] },
+                foldAngleDeg: 90,
+                foldWindow: [0.55, 1.0],
+                children: [],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'bottom-front',
+        name: 'Đáy trước',
+        polygon: rectPoly(0, H, L, baseH),
+        hinge: { p1: [0, H], p2: [L, H] },
+        foldAngleDeg: 90,
+        foldWindow: [0.55, 1.0],
+        children: [],
+      },
+    ],
+  };
+
+  return finalizeDieline(frontRoot, {
+    templateId: 'bag',
+    code: DIELINE_TEMPLATES.bag.code,
+    templateName: DIELINE_TEMPLATES.bag.name,
+    params: { ...dims, glueTab: glueW, tuckFlap: 0 },
+    uprightRotateX: DIELINE_TEMPLATES.bag.uprightRotateX,
+  });
+}
+
+export function generateDieline(templateId, params, dimensionMode = 'production') {
+  if (templateId === 'tray') return buildTrayBox(params, dimensionMode);
+  if (templateId === 'sleeve') return buildSleeveBox(params, dimensionMode);
+  if (templateId === 'bag') return buildPaperBag(params, dimensionMode);
+  if (templateId === 'ste') return buildTuckBox('ste', params, dimensionMode);
+  return buildTuckBox('rte', params, dimensionMode);
+}
+
+/**
+ * Generate pure SVG string for 1:1 Dieline export (mm units)
+ */
+export function exportDielineSvg(dieline) {
+  const pad = 10;
+  const vbW = dieline.bounds.width + pad * 2;
+  const vbH = dieline.bounds.height + pad * 2;
+  const creases = dieline.creaseSegments
+    .map(([a, b]) => `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="#dc2626" stroke-width="0.35" stroke-dasharray="2.5 1.8" />`)
+    .join('\n    ');
+  const cuts = dieline.cutSegments
+    .map(([a, b]) => `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="#1d4ed8" stroke-width="0.4" />`)
+    .join('\n    ');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${vbW}mm" height="${vbH}mm" viewBox="${-pad} ${-pad} ${vbW} ${vbH}">
+  <g id="Crease">
+    ${creases}
+  </g>
+  <g id="CutContour">
+    ${cuts}
+  </g>
+</svg>`;
 }

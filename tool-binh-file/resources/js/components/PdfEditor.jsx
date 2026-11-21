@@ -1,32 +1,34 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import PdfCanvasPreview from './PdfCanvasPreview';
 import DielineStudio from './DielineStudio';
+import TemplateLibrary from './TemplateLibrary';
 import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
 import { exportImposedPdf } from '../engine/pdfExporter';
 
 export default function PdfEditor() {
-  // --- Top-level Studio Switcher ('impose' | 'dieline3d') ---
+  // --- Top-Level Navigation ('library' | 'dieline' | 'impose') ---
   const [activeStudio, setActiveStudio] = useState('impose');
+  const [selectedTemplateId, setSelectedTemplateId] = useState('ste');
 
   // --- Multi-File & Gang-Run State ---
-  const [sourceFiles, setSourceFiles] = useState([]); // [{ id, file }]
-  const [pdfPages, setPdfPages] = useState([]); // Flattened global pages
-  const [gangItems, setGangItems] = useState([]); // [{ id, name, frontIndex, backIndex, quantity }]
+  const [sourceFiles, setSourceFiles] = useState([]);
+  const [pdfPages, setPdfPages] = useState([]);
+  const [gangItems, setGangItems] = useState([]);
 
   // --- Core Imposition Mode ---
-  const [mode, setMode] = useState('grid'); // 'grid' | 'booklet'
+  const [mode, setMode] = useState('grid');
   const [paperSizeKey, setPaperSizeKey] = useState('A3');
   const [customPaperWidth, setCustomPaperWidth] = useState('325');
   const [customPaperHeight, setCustomPaperHeight] = useState('430');
   const [orientation, setOrientation] = useState('landscape');
 
   // --- PrynX Grid / Guillotine Settings ---
-  const [layoutType, setLayoutType] = useState('optimal'); // 'optimal' (Dutch Cut) | 'simple' | 'manual'
-  const [collation, setCollation] = useState('stepAndRepeat'); // 'stepAndRepeat' | 'sequential' | 'cutAndStack'
-  const [stackSplit, setStackSplit] = useState(0); // 0 = không chia cọc
-  const [duplexMode, setDuplexMode] = useState('simplex'); // 'simplex' | 'workAndTurn' | 'workAndTumble'
-  const [inkingAxis, setInkingAxis] = useState('none'); // 'none' | 'row' | 'col'
-  const [alignment, setAlignment] = useState('center'); // 'center' | 'bottom-center' | 'top-left'
+  const [layoutType, setLayoutType] = useState('optimal');
+  const [collation, setCollation] = useState('stepAndRepeat');
+  const [stackSplit, setStackSplit] = useState(0);
+  const [duplexMode, setDuplexMode] = useState('simplex');
+  const [inkingAxis, setInkingAxis] = useState('none');
+  const [alignment, setAlignment] = useState('center');
   const [cols, setCols] = useState(4);
   const [rows, setRows] = useState(5);
   const [gutterX, setGutterX] = useState(2);
@@ -35,9 +37,9 @@ export default function PdfEditor() {
   const [keepOriginalSize, setKeepOriginalSize] = useState(true);
 
   // --- Booklet Settings ---
-  const [bookletStyle, setBookletStyle] = useState('saddleStitch'); // 'saddleStitch' | 'perfectBound'
-  const [bookletBinding, setBookletBinding] = useState('left'); // 'left' | 'right'
-  const [bookletCreep, setBookletCreep] = useState(0.2); // mm per sheet
+  const [bookletStyle, setBookletStyle] = useState('saddleStitch');
+  const [bookletBinding, setBookletBinding] = useState('left');
+  const [bookletCreep, setBookletCreep] = useState(0.2);
 
   // --- Margins & Marks ---
   const [marginTop, setMarginTop] = useState(10);
@@ -46,11 +48,11 @@ export default function PdfEditor() {
   const [marginRight, setMarginRight] = useState(10);
   const [marginIncludesMarks, setMarginIncludesMarks] = useState(false);
 
-  const [markStyle, setMarkStyle] = useState('western'); // 'none' | 'western' | 'tonbo'
+  const [markStyle, setMarkStyle] = useState('western');
   const [markLength, setMarkLength] = useState(5);
   const [markOffset, setMarkOffset] = useState(3);
   const [registrationMarks, setRegistrationMarks] = useState(true);
-  const [registrationColor, setRegistrationColor] = useState(false); // false = K100, true = C100M100Y100K100
+  const [registrationColor, setRegistrationColor] = useState(false);
   const [showSlugLine, setShowSlugLine] = useState(true);
   const [showBleedOverlay, setShowBleedOverlay] = useState(true);
 
@@ -71,9 +73,10 @@ export default function PdfEditor() {
     };
   }, []);
 
-  // Add one or multiple PDF files
   const handleAddFiles = (fileList) => {
-    const valid = Array.from(fileList || []).filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    const valid = Array.from(fileList || []).filter(
+      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    );
     if (valid.length === 0) return;
 
     const newEntries = valid.map((file, i) => ({
@@ -85,7 +88,6 @@ export default function PdfEditor() {
     setSuccess(false);
   };
 
-  // Sync gangItems whenever pages are parsed from sourceFiles
   const handlePagesSynced = (flatPages, fileGroups) => {
     setPdfPages(flatPages);
     setCurrentSheetIndex(0);
@@ -95,7 +97,6 @@ export default function PdfEditor() {
       return;
     }
 
-    // Build logical items from fileGroups (preserving quantities for existing files where possible)
     const nextItems = [];
     let hasAnyTwoSided = false;
 
@@ -133,7 +134,6 @@ export default function PdfEditor() {
     }
   };
 
-  // Merge two adjacent 1-sided items (e.g. Front.pdf + Back.pdf) into 1 two-sided item
   const mergeWithNextItem = (idx) => {
     if (idx < 0 || idx >= gangItems.length - 1) return;
     const cur = gangItems[idx];
@@ -152,7 +152,6 @@ export default function PdfEditor() {
     if (duplexMode === 'simplex') setDuplexMode('workAndTurn');
   };
 
-  // Split a 2-sided item back into two 1-sided items
   const splitItem = (idx) => {
     const cur = gangItems[idx];
     if (!cur || cur.backIndex === null) return;
@@ -181,7 +180,6 @@ export default function PdfEditor() {
     setSuccess(false);
   };
 
-  // Single Source of Truth: compute deterministic SheetPlan[]
   const config = useMemo(
     () => ({
       mode,
@@ -256,7 +254,6 @@ export default function PdfEditor() {
 
   const plan = useMemo(() => computeImpositionPlan(pdfPages, config), [pdfPages, config]);
 
-  // Clamp sheet index if plan shrinks
   useEffect(() => {
     if (plan.sheets.length > 0 && currentSheetIndex >= plan.sheets.length) {
       setCurrentSheetIndex(0);
@@ -295,560 +292,638 @@ export default function PdfEditor() {
 
   const firstPage = pdfPages[0];
 
-  if (activeStudio === 'dieline3d') {
-    return <DielineStudio onSwitchToImpose={() => setActiveStudio('impose')} />;
-  }
-
   return (
-    <div className="flex flex-col lg:flex-row min-h-screen bg-[#0c0d10] text-slate-100 font-sans">
-      {/* 1. PrynX-Style Dark Sidebar */}
-      <div className="w-full lg:w-[400px] bg-[#13151a] border-b lg:border-b-0 lg:border-r border-slate-800/80 p-5 flex flex-col gap-4 overflow-y-auto max-h-screen">
-        {/* Header */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-emerald-600 text-white font-black text-base shadow-lg shadow-emerald-600/20">
-              PX
-            </div>
-            <div>
-              <h1 className="text-base font-bold tracking-tight text-white">Bình Bài In Pro</h1>
-              <p className="text-[11px] text-slate-400">Vector Imposition · Dutch Cut · Smart Bleed</p>
-            </div>
-          </div>
+    <div className="min-h-screen flex flex-col bg-[#F4F6F5] text-slate-900 font-sans">
+      {/* GLOBAL DEEP FOREST GREEN TOP APP BAR (#112A24) */}
+      <header className="h-14 bg-[#112A24] text-white px-4 sm:px-6 flex items-center justify-between gap-4 shrink-0 shadow-sm sticky top-0 z-30">
+        <div className="flex items-center gap-6">
+          {/* Brand */}
           <button
-            onClick={() => setActiveStudio('dieline3d')}
-            className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 text-[11px] font-bold transition-colors cursor-pointer shrink-0"
+            onClick={() => setActiveStudio('library')}
+            className="flex items-center gap-2.5 cursor-pointer group"
           >
-            Khuôn Bế 3D →
-          </button>
-        </div>
-
-        {/* Multi-File Upload & Gang-Run Item List */}
-        <div className="flex flex-col gap-2 bg-slate-900/50 p-3 rounded-xl border border-slate-800/80">
-          <div className="relative border border-dashed border-slate-700 hover:border-emerald-500 rounded-xl p-3 flex flex-col items-center justify-center cursor-pointer bg-slate-950/50 transition-colors">
-            <input
-              type="file"
-              accept=".pdf"
-              multiple
-              onChange={(e) => {
-                handleAddFiles(e.target.files);
-                e.target.value = '';
-              }}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-            />
-            <span className="text-xs font-semibold text-slate-200">
-              {sourceFiles.length > 0
-                ? `➕ Thêm file PDF nữa (đang có ${sourceFiles.length} file · ${pdfPages.length} trang)`
-                : '📄 Chọn 1 hoặc nhiều file PDF để ghép bình'}
+            <div className="w-7 h-7 rounded-lg bg-[#146C53] border border-emerald-400/30 flex items-center justify-center font-black text-xs text-white">
+              DL
+            </div>
+            <span className="font-bold tracking-wider text-sm text-white group-hover:text-emerald-200 transition-colors">
+              DIELINE · PRYNX
             </span>
-            {firstPage && (
-              <span className="text-[11px] text-slate-400 font-mono mt-0.5">
-                Gốc: {firstPage.mediaWmm.toFixed(1)}×{firstPage.mediaHmm.toFixed(1)}mm → TP: {plan.summary.trimW}×{plan.summary.trimH}mm
-              </span>
-            )}
-          </div>
-
-          {gangItems.length > 0 && (
-            <div className="flex flex-col gap-1.5 max-h-44 overflow-y-auto pr-1">
-              <div className="flex items-center justify-between text-[11px] text-slate-400 px-0.5">
-                <span>Danh sách mẫu ({gangItems.length} mẫu):</span>
-                <button onClick={clearAllFiles} className="text-rose-400 hover:text-rose-300 cursor-pointer">
-                  Xóa hết
-                </button>
-              </div>
-              {gangItems.map((item, idx) => (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between gap-1.5 bg-slate-950/80 border border-slate-800 rounded-lg px-2 py-1.5 text-[11px]"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-semibold text-slate-200" title={item.name}>
-                      {idx + 1}. {item.name}
-                    </div>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <span
-                        className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                          item.backIndex !== null
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-slate-800 text-slate-400'
-                        }`}
-                      >
-                        {item.backIndex !== null ? '2 Mặt' : '1 Mặt'}
-                      </span>
-                      {item.backIndex === null && idx < gangItems.length - 1 && gangItems[idx + 1].backIndex === null && (
-                        <button
-                          onClick={() => mergeWithNextItem(idx)}
-                          title="Ghép mẫu này (Mặt trước) với mẫu kế tiếp (Mặt sau) thành 1 card 2 mặt"
-                          className="text-[10px] text-amber-400 hover:underline cursor-pointer"
-                        >
-                          Ghép 2 mặt ↓
-                        </button>
-                      )}
-                      {item.backIndex !== null && (
-                        <button
-                          onClick={() => splitItem(idx)}
-                          title="Tách thành 2 mẫu 1 mặt riêng"
-                          className="text-[10px] text-sky-400 hover:underline cursor-pointer"
-                        >
-                          Tách
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  {collation === 'ratioStack' && (
-                    <input
-                      type="number"
-                      min="1"
-                      value={item.quantity}
-                      onChange={(e) => updateItemQuantity(idx, e.target.value)}
-                      title="Số lượng đặt in"
-                      className="w-14 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] font-mono text-right text-amber-300"
-                    />
-                  )}
-                  <button
-                    onClick={() => removeGangItem(idx)}
-                    className="text-slate-500 hover:text-rose-400 px-1 cursor-pointer"
-                    title="Bỏ mẫu này"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Mode Tabs */}
-        <div className="grid grid-cols-2 gap-1.5 bg-slate-900 p-1 rounded-xl border border-slate-800">
-          <button
-            onClick={() => {
-              setMode('grid');
-              setCurrentSheetIndex(0);
-            }}
-            className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-              mode === 'grid' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Bình Bài Xén (N-Up)
           </button>
-          <button
-            onClick={() => {
-              setMode('booklet');
-              setCurrentSheetIndex(0);
-            }}
-            className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-              mode === 'booklet' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Bình Sách (Booklet)
-          </button>
-        </div>
 
-        {/* Paper Settings */}
-        <div className="flex flex-col gap-3 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">1. Khổ giấy & Lề</h3>
-          <div className="grid grid-cols-3 gap-2">
-            <select
-              value={paperSizeKey}
-              onChange={(e) => setPaperSizeKey(e.target.value)}
-              className="col-span-2 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200"
-            >
-              {Object.keys(PAPER_SIZES).map((k) => (
-                <option key={k} value={k}>
-                  {PAPER_SIZES[k].name}
-                </option>
-              ))}
-            </select>
-            <select
-              value={orientation}
-              onChange={(e) => setOrientation(e.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200"
-            >
-              <option value="landscape">Ngang</option>
-              <option value="portrait">Đứng</option>
-            </select>
-          </div>
-
-          {paperSizeKey === 'Custom' && (
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="number"
-                value={customPaperWidth}
-                onChange={(e) => setCustomPaperWidth(e.target.value)}
-                placeholder="Rộng (mm)"
-                className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs"
-              />
-              <input
-                type="number"
-                value={customPaperHeight}
-                onChange={(e) => setCustomPaperHeight(e.target.value)}
-                placeholder="Cao (mm)"
-                className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs"
-              />
-            </div>
-          )}
-
-          <div className="grid grid-cols-4 gap-1.5">
+          {/* Center Nav */}
+          <nav className="flex items-center gap-1 text-xs font-semibold">
             {[
-              ['Trên', marginTop, setMarginTop],
-              ['Dưới/Nhíp', marginBottom, setMarginBottom],
-              ['Trái', marginLeft, setMarginLeft],
-              ['Phải', marginRight, setMarginRight],
-            ].map(([label, val, setter]) => (
-              <div key={label} className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-400">{label}</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={val}
-                  onChange={(e) => setter(Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
-                />
-              </div>
-            ))}
-          </div>
-
-          <label className="flex items-center gap-2 text-[11px] text-slate-300 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={marginIncludesMarks}
-              onChange={(e) => setMarginIncludesMarks(e.target.checked)}
-              className="rounded border-slate-700 bg-slate-900"
-            />
-            Lề bao gồm cả bon cắt (tránh vùng không in được)
-          </label>
-        </div>
-
-        {/* Mode-specific settings */}
-        {mode === 'grid' ? (
-          <div className="flex flex-col gap-3 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">2. Thuật toán Bình Bài Xén</h3>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-slate-400">Cách xếp lưới</label>
-                <select
-                  value={layoutType}
-                  onChange={(e) => setLayoutType(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
-                >
-                  <option value="optimal">Tối ưu Dutch Cut (0°+90°)</option>
-                  <option value="simple">Lưới đơn giản (0°/90°)</option>
-                  <option value="manual">Tùy chỉnh Cột × Hàng</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-slate-400">Cách thức ráp</label>
-                <select
-                  value={collation}
-                  onChange={(e) => setCollation(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
-                >
-                  <option value="stepAndRepeat">Step & Repeat (Lặp mẫu)</option>
-                  <option value="sequential">N-Up (Ghép nhiều mẫu)</option>
-                  <option value="ratioStack">Ratio Stack (Chia tỷ lệ SL)</option>
-                  <option value="cutAndStack">Cut & Stack (Úp xấp)</option>
-                </select>
-              </div>
-            </div>
-
-            {collation === 'cutAndStack' && (
-              <div className="flex items-center justify-between gap-2 bg-slate-950/60 px-2.5 py-1.5 rounded-lg border border-slate-800">
-                <label className="text-[11px] text-slate-300">Chia cọc xén (tờ/cọc, 0 = tất cả):</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={stackSplit}
-                  onChange={(e) => setStackSplit(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                  className="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-right"
-                />
-              </div>
-            )}
-
-            {layoutType === 'manual' && (
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-400">Số cột</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="20"
-                    value={cols}
-                    onChange={(e) => setCols(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                    className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
-                  />
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-400">Số hàng</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="20"
-                    value={rows}
-                    onChange={(e) => setRows(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                    className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-slate-400">Số mặt & Lật gương</label>
-                <select
-                  value={duplexMode}
-                  onChange={(e) => setDuplexMode(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
-                >
-                  <option value="simplex">1 Mặt (Simplex)</option>
-                  <option value="workAndTurn">2 Mặt — Trở nhíp (Mirror X)</option>
-                  <option value="workAndTumble">2 Mặt — Trở đít (Mirror Y+180°)</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-slate-400">Đối đầu 180° (INKING)</label>
-                <select
-                  value={inkingAxis}
-                  onChange={(e) => setInkingAxis(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
-                >
-                  <option value="none">Tắt</option>
-                  <option value="row">Theo hàng</option>
-                  <option value="col">Theo cột</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2">
-              <div className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-400">Tràn lề (Bleed)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  value={bleedMm}
-                  onChange={(e) => setBleedMm(Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
-                />
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-400">Hở X (Gap)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  value={gutterX}
-                  onChange={(e) => setGutterX(Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
-                />
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-400">Hở Y (Gap)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  value={gutterY}
-                  onChange={(e) => setGutterY(Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-2">
-              <label className="text-[11px] text-slate-400">Canh khối:</label>
-              <select
-                value={alignment}
-                onChange={(e) => setAlignment(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs"
+              ['library', 'Thư viện hộp'],
+              ['dieline', 'Khuôn 2D & 3D'],
+              ['impose', 'Bình Bài In'],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setActiveStudio(key)}
+                className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                  activeStudio === key
+                    ? 'bg-[#146C53] text-white'
+                    : 'text-emerald-100/75 hover:text-white hover:bg-white/10'
+                }`}
               >
-                <option value="center">Giữa tờ (In nhanh 2 mặt)</option>
-                <option value="bottom-center">Giữa-Đáy (Nhíp Offset)</option>
-                <option value="top-left">Góc Trên-Trái</option>
-              </select>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">2. Cấu hình Bình Sách</h3>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-slate-400">Kiểu đóng</label>
-                <select
-                  value={bookletStyle}
-                  onChange={(e) => setBookletStyle(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
-                >
-                  <option value="saddleStitch">Bấm kim giữa</option>
-                  <option value="perfectBound">Đóng keo (Tay sách 4p)</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-slate-400">Chiều mở gáy</label>
-                <select
-                  value={bookletBinding}
-                  onChange={(e) => setBookletBinding(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
-                >
-                  <option value="left">Mở Trái (VN/Quốc tế)</option>
-                  <option value="right">Mở Phải (Nhật/Manga)</option>
-                </select>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-400">Bù Creep (mm/tờ)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.05"
-                  value={bookletCreep}
-                  onChange={(e) => setBookletCreep(Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
-                />
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-400">Bleed 3 mép ngoài (mm)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  value={bleedMm}
-                  onChange={(e) => setBleedMm(Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Marks & Output Settings */}
-        <div className="flex flex-col gap-2.5 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">3. Dấu xén & Báo cáo tờ in</h3>
-          <div className="grid grid-cols-3 gap-2">
-            <select
-              value={markStyle}
-              onChange={(e) => setMarkStyle(e.target.value)}
-              className="col-span-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
-            >
-              <option value="western">Bon 1 vạch</option>
-              <option value="tonbo">Tonbo Nhật</option>
-              <option value="none">Tắt bon</option>
-            </select>
-            <div className="flex items-center gap-1">
-              <span className="text-[10px] text-slate-400">Dài:</span>
-              <input
-                type="number"
-                min="1"
-                value={markLength}
-                onChange={(e) => setMarkLength(Math.max(1, parseFloat(e.target.value) || 5))}
-                className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs"
-              />
-            </div>
-            <div className="flex items-center gap-1">
-              <span className="text-[10px] text-slate-400">Cách:</span>
-              <input
-                type="number"
-                min="0.5"
-                step="0.5"
-                value={markOffset}
-                onChange={(e) => setMarkOffset(Math.max(0.5, parseFloat(e.target.value) || 3))}
-                className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={registrationMarks} onChange={(e) => setRegistrationMarks(e.target.checked)} />
-              Ốc chồng màu (4 cạnh)
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={registrationColor} onChange={(e) => setRegistrationColor(e.target.checked)} />
-              Màu Registration 4 bản
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={showSlugLine} onChange={(e) => setShowSlugLine(e.target.checked)} />
-              Báo cáo chân tờ (Slug)
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" checked={showBleedOverlay} onChange={(e) => setShowBleedOverlay(e.target.checked)} />
-              Soi khung Bleed đỏ
-            </label>
-          </div>
+                {label}
+              </button>
+            ))}
+          </nav>
         </div>
-      </div>
 
-      {/* 2. Main Preview Workspace */}
-      <div className="flex-1 flex flex-col p-6 gap-4 justify-between overflow-y-auto">
-        {/* Top Bar + Live Stats */}
-        <div className="flex flex-wrap justify-between items-center gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-emerald-400 font-bold">
-              {plan.summary.itemsPerSheet} con/tờ
-              {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount} ngang + ${plan.summary.secondaryCount} dọc)`}
-            </span>
-            <span className="px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-amber-400">
-              Hiệu suất giấy: {plan.summary.utilizationPct}%
-            </span>
-            <span className="px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-slate-300">
-              Khổ: {plan.sheetDim.width}×{plan.sheetDim.height}mm
-            </span>
-            {plan.summary.ratioSheetsNeeded > 0 && (
-              <span className="px-3 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-xs font-mono text-emerald-300 font-bold">
-                Cần in: {plan.summary.ratioSheetsNeeded} tờ
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-full px-3 py-1">
-              <button onClick={() => setZoom(Math.max(0.5, zoom - 0.15))} className="text-xs px-1.5 text-slate-300 hover:text-white cursor-pointer">
-                −
-              </button>
-              <span className="text-xs font-mono text-slate-200 min-w-[42px] text-center">{Math.round(zoom * 100)}%</span>
-              <button onClick={() => setZoom(Math.min(2.5, zoom + 0.15))} className="text-xs px-1.5 text-slate-300 hover:text-white cursor-pointer">
-                +
-              </button>
-              <button onClick={() => setZoom(1.0)} className="text-[11px] text-emerald-400 font-bold pl-1 cursor-pointer">
-                100%
-              </button>
-            </div>
-
+        {/* Right Quick Action */}
+        <div className="flex items-center gap-2">
+          {activeStudio === 'impose' && (
             <button
               onClick={handleDownload}
               disabled={loading || sourceFiles.length === 0}
-              className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 loading || sourceFiles.length === 0
-                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20'
+                  ? 'bg-white/10 text-emerald-100/40 cursor-not-allowed'
+                  : 'bg-[#146C53] hover:bg-[#198768] text-white shadow-xs'
               }`}
             >
-              {loading ? 'Đang xuất Vector PDF...' : '⚡ Xuất PDF Bình Bài (CMYK)'}
+              {loading ? 'Đang xuất...' : 'Xuất PDF Bình Bài'}
             </button>
-          </div>
+          )}
         </div>
+      </header>
 
-        {error && <div className="p-3 rounded-xl bg-rose-950/50 border border-rose-800 text-rose-300 text-xs">⚠️ {error}</div>}
-        {success && (
-          <div className="p-3 rounded-xl bg-emerald-950/50 border border-emerald-800 text-emerald-300 text-xs">
-            🎉 Đã xuất file PDF vector chuẩn CMYK (giữ nguyên Bleed & Smart Clipping)!
-          </div>
-        )}
+      {/* BODY CONTENT */}
+      {activeStudio === 'library' && (
+        <TemplateLibrary
+          onSelectTemplate={(id) => {
+            setSelectedTemplateId(id);
+            setActiveStudio('dieline');
+          }}
+          onOpenImpose={() => setActiveStudio('impose')}
+        />
+      )}
 
-        <div className="flex-1 flex items-center justify-center">
-          <PdfCanvasPreview
-            sourceFiles={sourceFiles}
-            plan={plan}
-            margins={{ top: marginTop, bottom: marginBottom, left: marginLeft, right: marginRight }}
-            bleedMm={bleedMm}
-            showBleedOverlay={showBleedOverlay}
-            currentSheetIndex={currentSheetIndex}
-            setCurrentSheetIndex={setCurrentSheetIndex}
-            onPagesSynced={handlePagesSynced}
-            zoom={zoom}
-          />
+      {activeStudio === 'dieline' && (
+        <DielineStudio
+          templateId={selectedTemplateId}
+          onChangeTemplate={(id) => setSelectedTemplateId(id)}
+          onOpenLibrary={() => setActiveStudio('library')}
+          onOpenImpose={() => setActiveStudio('impose')}
+        />
+      )}
+
+      {activeStudio === 'impose' && (
+        <div className="flex flex-col lg:flex-row gap-4 p-4 flex-1">
+          {/* 1. LEFT PARAMETER SIDEBAR (~330px) */}
+          <aside className="w-full lg:w-[340px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3.5 overflow-y-auto max-h-[calc(100vh-88px)] shrink-0 shadow-xs">
+            {/* Multi-File Upload & Gang-Run Item List */}
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800">1. File PDF nguồn</span>
+                {pdfPages.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-[#E6F4EF] text-[#146C53] text-[10px] font-mono font-bold">
+                    {pdfPages.length} trang
+                  </span>
+                )}
+              </div>
+
+              <div className="relative border border-dashed border-slate-300 hover:border-[#146C53] rounded-xl p-3 flex flex-col items-center justify-center cursor-pointer bg-[#FAFBF9] transition-colors">
+                <input
+                  type="file"
+                  accept=".pdf"
+                  multiple
+                  onChange={(e) => {
+                    handleAddFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                <span className="text-xs font-semibold text-slate-700 text-center">
+                  {sourceFiles.length > 0
+                    ? `➕ Thêm file PDF (${sourceFiles.length} file · ${pdfPages.length} trang)`
+                    : '📄 Chọn 1 hoặc nhiều file PDF để bình'}
+                </span>
+                {firstPage && (
+                  <span className="text-[11px] text-slate-500 font-mono mt-0.5">
+                    Gốc: {firstPage.mediaWmm.toFixed(1)}×{firstPage.mediaHmm.toFixed(1)} → TP: {plan.summary.trimW}×{plan.summary.trimH}mm
+                  </span>
+                )}
+              </div>
+
+              {gangItems.length > 0 && (
+                <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-1">
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>Danh sách mẫu ({gangItems.length}):</span>
+                    <button onClick={clearAllFiles} className="text-rose-600 hover:underline font-semibold cursor-pointer">
+                      Xóa hết
+                    </button>
+                  </div>
+                  {gangItems.map((item, idx) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between gap-1.5 bg-[#FAFBF9] border border-slate-200 rounded-lg px-2.5 py-1.5 text-[11px]"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-semibold text-slate-800" title={item.name}>
+                          {idx + 1}. {item.name}
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span
+                            className={`px-1.5 rounded text-[10px] font-bold ${
+                              item.backIndex !== null
+                                ? 'bg-[#E6F4EF] text-[#146C53]'
+                                : 'bg-slate-200/70 text-slate-600'
+                            }`}
+                          >
+                            {item.backIndex !== null ? '2 Mặt' : '1 Mặt'}
+                          </span>
+                          {item.backIndex === null && idx < gangItems.length - 1 && gangItems[idx + 1].backIndex === null && (
+                            <button
+                              onClick={() => mergeWithNextItem(idx)}
+                              className="text-[10px] text-amber-600 font-semibold hover:underline cursor-pointer"
+                            >
+                              Ghép 2 mặt ↓
+                            </button>
+                          )}
+                          {item.backIndex !== null && (
+                            <button
+                              onClick={() => splitItem(idx)}
+                              className="text-[10px] text-sky-600 font-semibold hover:underline cursor-pointer"
+                            >
+                              Tách
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {collation === 'ratioStack' && (
+                        <input
+                          type="number"
+                          min="1"
+                          value={item.quantity}
+                          onChange={(e) => updateItemQuantity(idx, e.target.value)}
+                          className="w-14 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px] font-mono text-right text-[#146C53] font-bold"
+                        />
+                      )}
+                      <button
+                        onClick={() => removeGangItem(idx)}
+                        className="text-slate-400 hover:text-rose-600 px-1 cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Mode Switcher */}
+            <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-xl">
+              <button
+                onClick={() => {
+                  setMode('grid');
+                  setCurrentSheetIndex(0);
+                }}
+                className={`py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  mode === 'grid' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Bình Bài Xén (N-Up)
+              </button>
+              <button
+                onClick={() => {
+                  setMode('booklet');
+                  setCurrentSheetIndex(0);
+                }}
+                className={`py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  mode === 'booklet' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Bình Sách (Booklet)
+              </button>
+            </div>
+
+            {/* Paper & Margins */}
+            <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
+              <span className="text-xs font-bold text-slate-800">2. Khổ giấy &amp; Lề (mm)</span>
+              <div className="grid grid-cols-3 gap-2">
+                <select
+                  value={paperSizeKey}
+                  onChange={(e) => setPaperSizeKey(e.target.value)}
+                  className="col-span-2 bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs text-slate-800"
+                >
+                  {Object.keys(PAPER_SIZES).map((k) => (
+                    <option key={k} value={k}>
+                      {PAPER_SIZES[k].name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={orientation}
+                  onChange={(e) => setOrientation(e.target.value)}
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs text-slate-800"
+                >
+                  <option value="landscape">Ngang</option>
+                  <option value="portrait">Đứng</option>
+                </select>
+              </div>
+
+              {paperSizeKey === 'Custom' && (
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="number"
+                    value={customPaperWidth}
+                    onChange={(e) => setCustomPaperWidth(e.target.value)}
+                    placeholder="Rộng (mm)"
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                  <input
+                    type="number"
+                    value={customPaperHeight}
+                    onChange={(e) => setCustomPaperHeight(e.target.value)}
+                    placeholder="Cao (mm)"
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  ['Trên', marginTop, setMarginTop],
+                  ['Dưới', marginBottom, setMarginBottom],
+                  ['Trái', marginLeft, setMarginLeft],
+                  ['Phải', marginRight, setMarginRight],
+                ].map(([label, val, setter]) => (
+                  <div key={label} className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">{label}</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={val}
+                      onChange={(e) => setter(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={marginIncludesMarks}
+                  onChange={(e) => setMarginIncludesMarks(e.target.checked)}
+                  className="accent-[#146C53]"
+                />
+                Lề bao gồm cả bon cắt
+              </label>
+            </div>
+
+            {/* Mode Controls */}
+            {mode === 'grid' ? (
+              <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
+                <span className="text-xs font-bold text-slate-800">3. Thuật toán xếp &amp; Lật mặt</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-500">Cách xếp lưới</label>
+                    <select
+                      value={layoutType}
+                      onChange={(e) => setLayoutType(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    >
+                      <option value="optimal">Dutch Cut (0°+90°)</option>
+                      <option value="simple">Lưới đơn giản</option>
+                      <option value="manual">Tùy chỉnh Cột×Hàng</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-500">Cách thức ráp</label>
+                    <select
+                      value={collation}
+                      onChange={(e) => setCollation(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    >
+                      <option value="stepAndRepeat">Step &amp; Repeat</option>
+                      <option value="sequential">N-Up ghép mẫu</option>
+                      <option value="ratioStack">Ratio Stack (Tỷ lệ)</option>
+                      <option value="cutAndStack">Cut &amp; Stack</option>
+                    </select>
+                  </div>
+                </div>
+
+                {collation === 'cutAndStack' && (
+                  <div className="flex items-center justify-between gap-2 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200">
+                    <label className="text-[11px] text-slate-600">Chia cọc xén (tờ/cọc):</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={stackSplit}
+                      onChange={(e) => setStackSplit(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                      className="w-16 bg-white border border-slate-300 rounded px-2 py-0.5 text-xs font-mono text-right"
+                    />
+                  </div>
+                )}
+
+                {layoutType === 'manual' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="flex flex-col gap-0.5">
+                      <label className="text-[10px] text-slate-500">Số cột</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={cols}
+                        onChange={(e) => setCols(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      <label className="text-[10px] text-slate-500">Số hàng</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={rows}
+                        onChange={(e) => setRows(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-500">Số mặt &amp; Lật gương</label>
+                    <select
+                      value={duplexMode}
+                      onChange={(e) => setDuplexMode(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    >
+                      <option value="simplex">1 Mặt (Simplex)</option>
+                      <option value="workAndTurn">2 Mặt — Trở nhíp</option>
+                      <option value="workAndTumble">2 Mặt — Trở đít</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-500">Đối đầu 180°</label>
+                    <select
+                      value={inkingAxis}
+                      onChange={(e) => setInkingAxis(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    >
+                      <option value="none">Tắt</option>
+                      <option value="row">Theo hàng</option>
+                      <option value="col">Theo cột</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">Bleed (mm)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={bleedMm}
+                      onChange={(e) => setBleedMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">Gap X</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={gutterX}
+                      onChange={(e) => setGutterX(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">Gap Y</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={gutterY}
+                      onChange={(e) => setGutterY(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
+                <span className="text-xs font-bold text-slate-800">3. Cấu hình Bình Sách</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    value={bookletStyle}
+                    onChange={(e) => setBookletStyle(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                  >
+                    <option value="saddleStitch">Bấm kim giữa</option>
+                    <option value="perfectBound">Đóng keo (Tay 4p)</option>
+                  </select>
+                  <select
+                    value={bookletBinding}
+                    onChange={(e) => setBookletBinding(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                  >
+                    <option value="left">Mở Trái</option>
+                    <option value="right">Mở Phải</option>
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">Creep (mm/tờ)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.05"
+                      value={bookletCreep}
+                      onChange={(e) => setBookletCreep(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">Bleed 3 mép</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={bleedMm}
+                      onChange={(e) => setBleedMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Marks */}
+            <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
+              <span className="text-xs font-bold text-slate-800">4. Dấu xén &amp; Báo cáo</span>
+              <div className="grid grid-cols-3 gap-2">
+                <select
+                  value={markStyle}
+                  onChange={(e) => setMarkStyle(e.target.value)}
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs"
+                >
+                  <option value="western">Bon 1 vạch</option>
+                  <option value="tonbo">Tonbo Nhật</option>
+                  <option value="none">Tắt bon</option>
+                </select>
+                <input
+                  type="number"
+                  min="1"
+                  value={markLength}
+                  onChange={(e) => setMarkLength(Math.max(1, parseFloat(e.target.value) || 5))}
+                  title="Chiều dài bon (mm)"
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                />
+                <input
+                  type="number"
+                  min="0.5"
+                  step="0.5"
+                  value={markOffset}
+                  onChange={(e) => setMarkOffset(Math.max(0.5, parseFloat(e.target.value) || 3))}
+                  title="Khoảng cách bon (mm)"
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 text-[11px] text-slate-600">
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" className="accent-[#146C53]" checked={registrationMarks} onChange={(e) => setRegistrationMarks(e.target.checked)} />
+                  Ốc chồng màu
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" className="accent-[#146C53]" checked={registrationColor} onChange={(e) => setRegistrationColor(e.target.checked)} />
+                  Registration 4 màu
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" className="accent-[#146C53]" checked={showSlugLine} onChange={(e) => setShowSlugLine(e.target.checked)} />
+                  Slug chân tờ
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" className="accent-[#146C53]" checked={showBleedOverlay} onChange={(e) => setShowBleedOverlay(e.target.checked)} />
+                  Soi Bleed đỏ
+                </label>
+              </div>
+            </div>
+          </aside>
+
+          {/* 2. CENTER WORKSPACE */}
+          <main className="flex-1 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3 shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+              <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
+                  {plan.summary.itemsPerSheet} con/tờ
+                  {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount} ngang + ${plan.summary.secondaryCount} dọc)`}
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-semibold">
+                  Hiệu suất: {plan.summary.utilizationPct}%
+                </span>
+                {plan.summary.ratioSheetsNeeded > 0 && (
+                  <span className="px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 font-bold">
+                    Cần in: {plan.summary.ratioSheetsNeeded} tờ
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs font-mono text-slate-600">
+                <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
+                  Fit
+                </button>
+                <button onClick={() => setZoom(Math.max(0.5, zoom - 0.15))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                  −
+                </button>
+                <span className="min-w-[40px] text-center font-bold">{Math.round(zoom * 100)}%</span>
+                <button onClick={() => setZoom(Math.min(2.5, zoom + 0.15))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                  +
+                </button>
+              </div>
+            </div>
+
+            {error && <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs">⚠️ {error}</div>}
+            {success && (
+              <div className="p-2.5 rounded-xl bg-[#E6F4EF] border border-emerald-200 text-[#146C53] text-xs font-semibold">
+                🎉 Đã xuất file PDF vector chuẩn CMYK (giữ nguyên Bleed &amp; Smart Clipping)!
+              </div>
+            )}
+
+            <div className="flex-1 flex items-center justify-center">
+              <PdfCanvasPreview
+                sourceFiles={sourceFiles}
+                plan={plan}
+                margins={{ top: marginTop, bottom: marginBottom, left: marginLeft, right: marginRight }}
+                bleedMm={bleedMm}
+                showBleedOverlay={showBleedOverlay}
+                currentSheetIndex={currentSheetIndex}
+                setCurrentSheetIndex={setCurrentSheetIndex}
+                onPagesSynced={handlePagesSynced}
+                zoom={zoom}
+              />
+            </div>
+          </main>
+
+          {/* 3. RIGHT SUMMARY SIDEBAR (~260px) */}
+          <aside className="w-full lg:w-[260px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-4 shrink-0 shadow-xs">
+            <div className="flex flex-col gap-3">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">BẢN BÌNH BÀI</span>
+                <h3 className="text-sm font-bold text-slate-800 mt-0.5">Tóm tắt thông số</h3>
+              </div>
+
+              <div className="divide-y divide-slate-100 text-xs">
+                <div className="py-2 flex justify-between">
+                  <span className="text-slate-500">Khổ giấy in</span>
+                  <span className="font-mono font-bold text-slate-800">
+                    {plan.sheetDim.width}×{plan.sheetDim.height} mm
+                  </span>
+                </div>
+                <div className="py-2 flex justify-between">
+                  <span className="text-slate-500">Thành phẩm</span>
+                  <span className="font-mono font-semibold text-slate-800">
+                    {plan.summary.trimW}×{plan.summary.trimH} mm
+                  </span>
+                </div>
+                <div className="py-2 flex justify-between">
+                  <span className="text-slate-500">Số con / tờ</span>
+                  <span className="font-mono font-bold text-[#146C53]">{plan.summary.itemsPerSheet} con</span>
+                </div>
+                <div className="py-2 flex justify-between">
+                  <span className="text-slate-500">Số tờ PDF xuất</span>
+                  <span className="font-mono font-semibold text-slate-800">{plan.sheets.length} trang</span>
+                </div>
+                <div className="py-2 flex justify-between">
+                  <span className="text-slate-500">Hao phí giấy</span>
+                  <span className="font-mono font-semibold text-amber-600">
+                    {Math.max(0, Math.round((100 - plan.summary.utilizationPct) * 10) / 10)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-3 border-t border-slate-100">
+              <button
+                onClick={handleDownload}
+                disabled={loading || sourceFiles.length === 0}
+                className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                  loading || sourceFiles.length === 0
+                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                    : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
+                }`}
+              >
+                {loading ? 'Đang xuất Vector PDF...' : '⚡ Xuất PDF Bình Bài (CMYK)'}
+              </button>
+              <button
+                onClick={() => setActiveStudio('library')}
+                className="w-full py-2 rounded-xl border border-slate-200 hover:border-[#146C53] text-slate-700 text-xs font-semibold cursor-pointer"
+              >
+                Mở Thư viện Khuôn Bế →
+              </button>
+            </div>
+          </aside>
         </div>
-      </div>
+      )}
     </div>
   );
 }

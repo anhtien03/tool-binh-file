@@ -1,32 +1,58 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
-import { DIELINE_TEMPLATES, generateDieline } from '../engine/dielineEngine';
+import { DIELINE_TEMPLATES, generateDieline, exportDielineSvg } from '../engine/dielineEngine';
 import { exportDielinePdf } from '../engine/dielinePdfExporter';
+import { solveDutchCut } from '../engine/impositionEngine';
 import Box3DViewer, { PAPER_MATERIALS } from './Box3DViewer';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
 
-export default function DielineStudio({ onSwitchToImpose }) {
-  const [templateId, setTemplateId] = useState('rte');
-  const [params, setParams] = useState(DIELINE_TEMPLATES.rte.defaults);
-  const [foldProgress, setFoldProgress] = useState(0.95);
-  const [isAnimating, setIsAnimating] = useState(false);
+export default function DielineStudio({
+  templateId,
+  onChangeTemplate,
+  onOpenLibrary,
+  onOpenImpose,
+}) {
+  const tpl = DIELINE_TEMPLATES[templateId] || DIELINE_TEMPLATES.ste;
+  const [params, setParams] = useState(tpl.defaults);
+  const [dimensionMode, setDimensionMode] = useState('production'); // 'production' | 'inner' | 'outer'
   const [materialKey, setMaterialKey] = useState('ivory');
-  const [viewMode, setViewMode] = useState('3d'); // '3d' | '2d' | 'split'
+  const [canvasMode, setCanvasMode] = useState('2d'); // '2d' | '3d' | 'split'
+  const [zoom2D, setZoom2D] = useState(1.0);
+
+  // 3D Controls
+  const [foldProgress, setFoldProgress] = useState(0.92);
+  const [isAnimating, setIsAnimating] = useState(false);
   const [cameraPreset, setCameraPreset] = useState('iso');
+  const [autoRotate, setAutoRotate] = useState(false);
+  const [showEdges3D, setShowEdges3D] = useState(true);
+
+  // Artwork & Export
   const [artworkDataUrl, setArtworkDataUrl] = useState(null);
   const [artworkName, setArtworkName] = useState('');
   const [exporting, setExporting] = useState(false);
 
-  const dieline = useMemo(() => generateDieline(templateId, params), [templateId, params]);
+  // Sync defaults when user switches template from Library
+  useEffect(() => {
+    setParams(DIELINE_TEMPLATES[templateId]?.defaults || DIELINE_TEMPLATES.ste.defaults);
+  }, [templateId]);
 
-  // Auto fold/unfold animation loop
+  const dieline = useMemo(() => generateDieline(templateId, params, dimensionMode), [templateId, params, dimensionMode]);
+
+  // Estimate how many blanks fit on an SRA3 (320 x 450 mm) or 650 x 860 mm offset sheet
+  const sheetStats = useMemo(() => {
+    const sra3 = solveDutchCut(300, 430, dieline.bounds.width, dieline.bounds.height, 4, 4);
+    const areaBlank = dieline.bounds.width * dieline.bounds.height;
+    const utilSra3 = Math.min(100, Math.round(((sra3.total * areaBlank) / (320 * 450)) * 1000) / 10);
+    const wasteSra3 = Math.max(0, Math.round((100 - utilSra3) * 10) / 10);
+    return { sra3Count: sra3.total, utilSra3, wasteSra3 };
+  }, [dieline]);
+
   useEffect(() => {
     if (!isAnimating) return;
     let raf = 0;
     let dir = foldProgress >= 0.99 ? -1 : 1;
     let cur = foldProgress;
-
     const tick = () => {
       cur += dir * 0.012;
       if (cur >= 1) {
@@ -43,16 +69,10 @@ export default function DielineStudio({ onSwitchToImpose }) {
     return () => cancelAnimationFrame(raf);
   }, [isAnimating]);
 
-  const handleTemplateChange = (id) => {
-    setTemplateId(id);
-    setParams(DIELINE_TEMPLATES[id].defaults);
-  };
-
   const updateParam = (key, value) => {
     setParams((prev) => ({ ...prev, [key]: Math.max(0, parseFloat(value) || 0) }));
   };
 
-  // Upload PNG/JPG/PDF artwork and map onto 3D box faces
   const handleArtworkUpload = async (file) => {
     if (!file) return;
     setArtworkName(file.name);
@@ -81,7 +101,7 @@ export default function DielineStudio({ onSwitchToImpose }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `KhuonBe_${templateId}_${params.L}x${params.W}x${params.H}mm.pdf`;
+      a.download = `${tpl.code}_${params.L}x${params.W}x${params.H}mm.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -91,316 +111,496 @@ export default function DielineStudio({ onSwitchToImpose }) {
     }
   };
 
+  const handleExportSvg = () => {
+    const svgText = exportDielineSvg(dieline);
+    const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${tpl.code}_${params.L}x${params.W}x${params.H}mm.svg`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const matInfo = PAPER_MATERIALS[materialKey] || PAPER_MATERIALS.ivory;
+
   return (
-    <div className="flex flex-col lg:flex-row min-h-screen bg-[#0c0d10] text-slate-100 font-sans">
-      {/* Sidebar */}
-      <div className="w-full lg:w-[400px] bg-[#13151a] border-b lg:border-b-0 lg:border-r border-slate-800/80 p-5 flex flex-col gap-4 overflow-y-auto max-h-screen">
-        {/* Top Module Switcher */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-amber-500 text-slate-950 font-black flex items-center justify-center shadow-lg shadow-amber-500/20">
-              3D
-            </div>
+    <div className="flex flex-col lg:flex-row gap-4 p-4 min-h-[calc(100vh-56px)] bg-[#F4F6F5]">
+      {/* 1. LEFT PARAMETER SIDEBAR (~300px) */}
+      <aside className="w-full lg:w-[305px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-4 overflow-y-auto max-h-[calc(100vh-88px)] shrink-0 shadow-xs">
+        {/* Selected Template Card */}
+        <div className="rounded-xl border border-slate-200 bg-[#FAFBF9] p-3">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">MẪU ĐANG CHỌN</span>
+            <span className="px-1.5 py-0.5 rounded bg-[#E6F4EF] text-[#146C53] text-[10px] font-mono font-bold">
+              {tpl.code}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
             <div>
-              <h1 className="text-base font-bold text-white">Khuôn Bế & Mockup 3D</h1>
-              <p className="text-[11px] text-slate-400">Parametric Dieline · Gấp 3D · Xuất PDF 1:1</p>
+              <div className="text-sm font-bold text-slate-800">{tpl.shortName}</div>
+              <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">{tpl.name}</div>
             </div>
+            <button
+              onClick={onOpenLibrary}
+              className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-[#146C53] text-xs font-semibold text-[#146C53] cursor-pointer shrink-0"
+            >
+              Đổi
+            </button>
           </div>
-          <button
-            onClick={onSwitchToImpose}
-            className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-semibold text-emerald-400 cursor-pointer"
+          {/* Quick Template Switcher */}
+          <select
+            value={templateId}
+            onChange={(e) => onChangeTemplate(e.target.value)}
+            className="mt-2.5 w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700"
           >
-            ← Bình Bài In
-          </button>
-        </div>
-
-        {/* 1. Template Selector */}
-        <div className="flex flex-col gap-2 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-amber-400">1. Chọn mẫu khuôn hộp</h3>
-          <div className="flex flex-col gap-1.5">
-            {Object.values(DIELINE_TEMPLATES).map((tpl) => (
-              <button
-                key={tpl.id}
-                onClick={() => handleTemplateChange(tpl.id)}
-                className={`text-left px-3 py-2 rounded-lg border transition-all cursor-pointer ${
-                  templateId === tpl.id
-                    ? 'bg-amber-500/15 border-amber-500/60 text-white'
-                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <div className="text-xs font-bold">{tpl.shortName}</div>
-                <div className="text-[10px] opacity-75 mt-0.5">{tpl.description}</div>
-              </button>
+            {Object.values(DIELINE_TEMPLATES).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.shortName} ({t.code})
+              </option>
             ))}
-          </div>
+          </select>
         </div>
 
-        {/* 2. Dimensions (mm) */}
-        <div className="flex flex-col gap-3 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-amber-400">2. Thông số kích thước (mm)</h3>
+        {/* Dimensions */}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-800">Kích thước</span>
+            <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] font-mono font-bold">mm</span>
+          </div>
           <div className="grid grid-cols-3 gap-2">
             {[
               ['Dài (L)', 'L'],
               ['Rộng (W)', 'W'],
               ['Cao (H)', 'H'],
             ].map(([label, key]) => (
-              <div key={key} className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-400">{label}</label>
+              <div key={key} className="flex flex-col gap-1">
+                <label className="text-[11px] text-slate-500 font-medium">{label}</label>
                 <input
                   type="number"
                   min="10"
                   value={params[key]}
                   onChange={(e) => updateParam(key, e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white"
+                  className="bg-white border border-slate-200 focus:border-[#146C53] focus:outline-none rounded-lg px-2.5 py-1.5 text-xs font-mono font-semibold text-slate-800"
                 />
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Dimension Mode (3 Systems) */}
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-800">Chế độ kích thước</span>
+            <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] font-bold">3 HỆ SỐ</span>
+          </div>
+          <div className="grid grid-cols-3 gap-1 bg-slate-100 p-1 rounded-xl">
+            {[
+              ['production', 'Sản xuất'],
+              ['inner', 'Lọt lòng'],
+              ['outer', 'Phủ bì'],
+            ].map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setDimensionMode(k)}
+                className={`py-1.5 rounded-lg text-[11px] font-semibold transition-all cursor-pointer ${
+                  dimensionMode === k ? 'bg-white text-[#146C53] shadow-xs font-bold' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Paper & Caliper */}
+        <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-800">Loại giấy hộp</span>
+            <span className="px-1.5 py-0.5 rounded bg-[#E6F4EF] text-[#146C53] text-[10px] font-bold">5 LOẠI</span>
+          </div>
+          <select
+            value={materialKey}
+            onChange={(e) => setMaterialKey(e.target.value)}
+            className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800"
+          >
+            {Object.entries(PAPER_MATERIALS).map(([k, m]) => (
+              <option key={k} value={k}>
+                {m.name}
+              </option>
+            ))}
+          </select>
 
           <div className="grid grid-cols-3 gap-2">
             <div className="flex flex-col gap-0.5">
-              <label className="text-[10px] text-slate-400">Dày giấy</label>
+              <label className="text-[10px] text-slate-500">Độ dày (mm)</label>
               <input
                 type="number"
                 min="0.1"
-                step="0.1"
+                step="0.05"
                 value={params.thickness}
                 onChange={(e) => updateParam('thickness', e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono"
+                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
               />
             </div>
             <div className="flex flex-col gap-0.5">
-              <label className="text-[10px] text-slate-400">Mép dán</label>
+              <label className="text-[10px] text-slate-500">Mép dán</label>
               <input
                 type="number"
                 min="8"
                 value={params.glueTab}
                 onChange={(e) => updateParam('glueTab', e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono"
+                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
               />
             </div>
-            {templateId !== 'tray' && (
-              <div className="flex flex-col gap-0.5">
-                <label className="text-[10px] text-slate-400">Tai gài</label>
-                <input
-                  type="number"
-                  min="8"
-                  value={params.tuckFlap}
-                  onChange={(e) => updateParam('tuckFlap', e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono"
-                />
-              </div>
-            )}
+            <div className="flex flex-col gap-0.5">
+              <label className="text-[10px] text-slate-500">Tai gài</label>
+              <input
+                type="number"
+                min="0"
+                disabled={templateId === 'tray' || templateId === 'sleeve' || templateId === 'bag'}
+                value={params.tuckFlap}
+                onChange={(e) => updateParam('tuckFlap', e.target.value)}
+                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono disabled:bg-slate-50 disabled:text-slate-400"
+              />
+            </div>
           </div>
         </div>
 
-        {/* 3. Fold & Material & Artwork */}
-        <div className="flex flex-col gap-3 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-amber-400">3. Gấp 3D & Chất liệu / Thiết kế</h3>
-
-          <div className="flex flex-col gap-1.5">
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-300">Độ gấp hộp</span>
-              <span className="font-mono text-amber-400 font-bold">{Math.round(foldProgress * 100)}%</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={foldProgress}
-              onChange={(e) => {
-                setIsAnimating(false);
-                setFoldProgress(parseFloat(e.target.value));
-              }}
-              className="w-full accent-amber-500 cursor-pointer"
-            />
-            <div className="grid grid-cols-3 gap-1.5">
+        {/* Artwork Upload */}
+        <div className="flex flex-col gap-1.5 pt-2 border-t border-slate-100">
+          <span className="text-xs font-bold text-slate-800">Ốp thiết kế lên mặt hộp</span>
+          <div className="flex items-center gap-2">
+            <label className="flex-1 text-center py-2 px-3 rounded-xl border border-dashed border-slate-300 hover:border-[#146C53] bg-[#FAFBF9] text-xs font-medium text-slate-600 cursor-pointer truncate">
+              {artworkName ? `🎨 ${artworkName}` : '⬆️ Chọn ảnh / PDF bản trải'}
+              <input
+                type="file"
+                accept="image/*,.pdf"
+                className="hidden"
+                onChange={(e) => handleArtworkUpload(e.target.files[0])}
+              />
+            </label>
+            {artworkDataUrl && (
               <button
                 onClick={() => {
-                  setIsAnimating(false);
-                  setFoldProgress(0);
+                  setArtworkDataUrl(null);
+                  setArtworkName('');
                 }}
-                className="py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] cursor-pointer"
+                className="px-2.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-xs font-semibold text-rose-600 cursor-pointer"
               >
-                Trải phẳng 0%
+                Xóa
               </button>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      {/* 2. CENTER MAIN CANVAS */}
+      <main className="flex-1 bg-white rounded-2xl border border-slate-200 flex flex-col overflow-hidden shadow-xs min-h-[580px]">
+        {/* Canvas Top Bar */}
+        <div className="px-4 py-2.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-white">
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+            {[
+              ['2d', 'Khuôn 2D'],
+              ['3d', 'Mô phỏng 3D'],
+              ['split', 'Song song 2D + 3D'],
+            ].map(([k, label]) => (
               <button
-                onClick={() => setIsAnimating((v) => !v)}
-                className={`py-1 rounded text-[11px] font-bold cursor-pointer ${
-                  isAnimating ? 'bg-rose-600 text-white' : 'bg-amber-500 text-slate-950'
+                key={k}
+                onClick={() => setCanvasMode(k)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  canvasMode === k ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
-                {isAnimating ? '⏸ Dừng' : '▶ Tự gấp'}
+                {label}
               </button>
-              <button
-                onClick={() => {
-                  setIsAnimating(false);
-                  setFoldProgress(1);
-                }}
-                className="py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] cursor-pointer"
-              >
-                Đóng hộp 100%
+            ))}
+            <button
+              onClick={onOpenImpose}
+              className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:text-[#146C53] hover:bg-white/60 cursor-pointer"
+            >
+              Bình khuôn / Bình bài →
+            </button>
+          </div>
+
+          {canvasMode !== '3d' && (
+            <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs font-mono text-slate-600">
+              <button onClick={() => setZoom2D(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
+                Fit
+              </button>
+              <button onClick={() => setZoom2D((z) => Math.max(0.5, z - 0.15))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                −
+              </button>
+              <span className="min-w-[40px] text-center font-bold">{Math.round(zoom2D * 100)}%</span>
+              <button onClick={() => setZoom2D((z) => Math.min(2.5, z + 0.15))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                +
               </button>
             </div>
-          </div>
+          )}
+        </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-slate-400">Chất liệu giấy</label>
-            <select
-              value={materialKey}
-              onChange={(e) => setMaterialKey(e.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs"
+        {/* Canvas Body */}
+        <div className={`flex-1 grid ${canvasMode === 'split' ? 'grid-cols-1 xl:grid-cols-2 divide-y xl:divide-y-0 xl:divide-x divide-slate-200' : 'grid-cols-1'}`}>
+          {(canvasMode === '2d' || canvasMode === 'split') && (
+            <div
+              className="relative flex items-center justify-center p-6 overflow-auto min-h-[500px]"
+              style={{
+                backgroundColor: '#fcfdfc',
+                backgroundImage:
+                  'linear-gradient(to right, #eef2f1 1px, transparent 1px), linear-gradient(to bottom, #eef2f1 1px, transparent 1px)',
+                backgroundSize: '24px 24px',
+              }}
             >
-              {Object.entries(PAPER_MATERIALS).map(([k, m]) => (
-                <option key={k} value={k}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          </div>
+              {/* Spec Header */}
+              <div className="absolute top-3 left-4 text-[11px] font-mono font-semibold text-slate-500">
+                {tpl.code} — L{dieline.params.L}×W{dieline.params.W}×H{dieline.params.H} mm · CAL {dieline.params.thickness}
+              </div>
 
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[11px] text-slate-400">Ốp file thiết kế (PNG / JPG / PDF) lên mặt hộp</label>
-            <div className="flex items-center gap-2">
-              <label className="flex-1 text-center py-2 px-3 rounded-lg border border-dashed border-slate-700 hover:border-amber-500 bg-slate-950/60 text-xs cursor-pointer truncate">
-                {artworkName ? `🎨 ${artworkName}` : '⬆️ Chọn ảnh / PDF bản trải'}
-                <input
-                  type="file"
-                  accept="image/*,.pdf"
-                  className="hidden"
-                  onChange={(e) => handleArtworkUpload(e.target.files[0])}
-                />
-              </label>
-              {artworkDataUrl && (
+              <div style={{ transform: `scale(${zoom2D})`, transformOrigin: 'center center' }} className="transition-transform">
+                <svg
+                  viewBox={`-18 -18 ${dieline.bounds.width + 36} ${dieline.bounds.height + 36}`}
+                  className="w-[520px] max-w-full h-auto max-h-[440px]"
+                >
+                  {/* Overall bounding Bleed indicator */}
+                  <rect
+                    x="-2"
+                    y="-2"
+                    width={dieline.bounds.width + 4}
+                    height={dieline.bounds.height + 4}
+                    fill="none"
+                    stroke="#16a34a"
+                    strokeWidth="0.45"
+                    strokeDasharray="2 2"
+                    opacity="0.55"
+                  />
+                  {artworkDataUrl && (
+                    <image
+                      href={artworkDataUrl}
+                      x="0"
+                      y="0"
+                      width={dieline.bounds.width}
+                      height={dieline.bounds.height}
+                      preserveAspectRatio="none"
+                      opacity="0.78"
+                    />
+                  )}
+                  {dieline.creaseSegments.map(([a, b], i) => (
+                    <line
+                      key={`cr-${i}`}
+                      x1={a[0]}
+                      y1={a[1]}
+                      x2={b[0]}
+                      y2={b[1]}
+                      stroke="#dc2626"
+                      strokeWidth="0.7"
+                      strokeDasharray="3 2"
+                    />
+                  ))}
+                  {dieline.cutSegments.map(([a, b], i) => (
+                    <line key={`ct-${i}`} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#1d4ed8" strokeWidth="0.9" />
+                  ))}
+
+                  {/* Dimension Callout Top */}
+                  <line x1="0" y1="-9" x2={dieline.bounds.width} y2="-9" stroke="#0284c7" strokeWidth="0.5" />
+                  <text
+                    x={dieline.bounds.width / 2}
+                    y="-12"
+                    textAnchor="middle"
+                    fill="#0284c7"
+                    fontSize="6"
+                    fontFamily="monospace"
+                    fontWeight="bold"
+                  >
+                    {dieline.bounds.width} mm
+                  </text>
+
+                  {/* Dimension Callout Left */}
+                  <line x1="-9" y1="0" x2="-9" y2={dieline.bounds.height} stroke="#0284c7" strokeWidth="0.5" />
+                  <text
+                    x="-12"
+                    y={dieline.bounds.height / 2}
+                    textAnchor="middle"
+                    fill="#0284c7"
+                    fontSize="6"
+                    fontFamily="monospace"
+                    fontWeight="bold"
+                    transform={`rotate(-90 -12 ${dieline.bounds.height / 2})`}
+                  >
+                    {dieline.bounds.height} mm
+                  </text>
+                </svg>
+              </div>
+
+              {/* Floating Bottom-Left Legend Pill */}
+              <div className="absolute bottom-3 left-3 bg-white/95 backdrop-blur border border-slate-200 rounded-full px-3.5 py-1.5 flex items-center gap-3 text-[11px] font-semibold text-slate-600 shadow-xs">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3.5 h-0.5 border-t border-dashed border-emerald-600 inline-block" /> Bleed
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3.5 h-0.5 bg-blue-700 inline-block" /> Trim / Cut
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3.5 h-0.5 border-t border-dashed border-red-600 inline-block" /> Crease
+                </span>
+              </div>
+            </div>
+          )}
+
+          {(canvasMode === '3d' || canvasMode === 'split') && (
+            <div className="relative flex flex-col min-h-[500px] bg-[#eef2f0]">
+              {/* Floating Top Pill (Specs & Camera Angles) */}
+              <div className="absolute top-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
+                <div className="pointer-events-auto bg-white/92 backdrop-blur border border-slate-200 rounded-full px-3 py-1 text-[10px] font-mono text-slate-700 shadow-xs">
+                  Cal {dieline.params.thickness} · Lọt lòng {dieline.params.inner.L}×{dieline.params.inner.W}×{dieline.params.inner.H} · Phủ bì {dieline.params.outer.L}×{dieline.params.outer.W}×{dieline.params.outer.H}
+                </div>
+                <div className="pointer-events-auto bg-white/92 backdrop-blur border border-slate-200 rounded-full p-1 flex flex-wrap items-center gap-0.5 text-[10px] font-semibold shadow-xs">
+                  {[
+                    ['iso', 'Phối cảnh'],
+                    ['front', 'Trước'],
+                    ['back', 'Sau'],
+                    ['left', 'Trái'],
+                    ['right', 'Phải'],
+                    ['top', 'Trên'],
+                    ['bottom', 'Dưới'],
+                  ].map(([k, label]) => (
+                    <button
+                      key={k}
+                      onClick={() => setCameraPreset(k)}
+                      className={`px-2 py-0.5 rounded-full cursor-pointer ${
+                        cameraPreset === k ? 'bg-[#146C53] text-white' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                  <span className="w-px h-3 bg-slate-200 mx-1" />
+                  <button
+                    onClick={() => setAutoRotate((v) => !v)}
+                    className={`px-2 py-0.5 rounded-full cursor-pointer ${
+                      autoRotate ? 'bg-[#E6F4EF] text-[#146C53]' : 'text-slate-500'
+                    }`}
+                  >
+                    Tự xoay
+                  </button>
+                  <button
+                    onClick={() => setShowEdges3D((v) => !v)}
+                    className={`px-2 py-0.5 rounded-full cursor-pointer ${
+                      showEdges3D ? 'bg-[#E6F4EF] text-[#146C53]' : 'text-slate-500'
+                    }`}
+                  >
+                    Nét bế
+                  </button>
+                </div>
+              </div>
+
+              <Box3DViewer
+                dieline={dieline}
+                foldProgress={foldProgress}
+                materialKey={materialKey}
+                artworkDataUrl={artworkDataUrl}
+                cameraPreset={cameraPreset}
+                autoRotate={autoRotate}
+                showEdges={showEdges3D}
+              />
+
+              {/* Floating Bottom Pill (Fold Playback) */}
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 bg-white/95 backdrop-blur border border-slate-200 rounded-full px-4 py-1.5 flex items-center gap-3 shadow-md max-w-[95%]">
+                <button
+                  onClick={() => setIsAnimating((v) => !v)}
+                  className="px-3 py-1 rounded-full bg-[#146C53] text-white text-xs font-bold cursor-pointer shrink-0"
+                >
+                  {isAnimating ? '⏸ Dừng' : '▶ Chạy'}
+                </button>
                 <button
                   onClick={() => {
-                    setArtworkDataUrl(null);
-                    setArtworkName('');
+                    setIsAnimating(false);
+                    setFoldProgress(0);
                   }}
-                  className="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-rose-900/60 text-xs text-rose-300 cursor-pointer"
+                  className="px-2.5 py-1 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer shrink-0"
                 >
-                  Xóa
+                  Đặt phẳng
                 </button>
-              )}
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={foldProgress}
+                  onChange={(e) => {
+                    setIsAnimating(false);
+                    setFoldProgress(parseFloat(e.target.value));
+                  }}
+                  className="w-32 sm:w-44 accent-[#146C53] cursor-pointer"
+                />
+                <span className="text-xs font-mono font-bold text-[#146C53] min-w-[38px] text-right">
+                  {Math.round(foldProgress * 100)}%
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* 3. RIGHT DESIGN SUMMARY SIDEBAR (~280px) */}
+      <aside className="w-full lg:w-[280px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-4 shrink-0 shadow-xs">
+        <div className="flex flex-col gap-4">
+          <div>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">BẢN THIẾT KẾ</span>
+            <h3 className="text-sm font-bold text-slate-800 mt-0.5">Thiết kế hiện tại</h3>
+          </div>
+
+          <div className="divide-y divide-slate-100 text-xs">
+            <div className="py-2.5 flex justify-between gap-2">
+              <span className="text-slate-500">Vật liệu</span>
+              <span className="font-semibold text-slate-800 text-right">{matInfo.name}</span>
+            </div>
+            <div className="py-2.5 flex justify-between gap-2">
+              <span className="text-slate-500">Khổ phôi trải</span>
+              <span className="font-mono font-bold text-slate-800">
+                {dieline.bounds.width} × {dieline.bounds.height} mm
+              </span>
+            </div>
+            <div className="py-2.5 flex justify-between gap-2">
+              <span className="text-slate-500">Kích thước sản xuất</span>
+              <span className="font-mono font-semibold text-slate-700">
+                {dieline.params.L} × {dieline.params.W} × {dieline.params.H}
+              </span>
+            </div>
+            <div className="py-2.5 flex justify-between gap-2">
+              <span className="text-slate-500">Xếp tờ SRA3 (320×450)</span>
+              <span className="font-mono font-bold text-[#146C53]">{sheetStats.sra3Count} khuôn/tờ</span>
+            </div>
+            <div className="py-2.5 flex justify-between gap-2">
+              <span className="text-slate-500">Hao phí tờ SRA3</span>
+              <span className="font-mono font-semibold text-amber-600">{sheetStats.wasteSra3}%</span>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Main Workspace */}
-      <div className="flex-1 flex flex-col p-6 gap-4 overflow-y-auto">
-        <div className="flex flex-wrap justify-between items-center gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-amber-400 font-bold">
-              Bản trải: {dieline.bounds.width} × {dieline.bounds.height} mm
-            </span>
-            <div className="flex bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-xs">
-              {[
-                ['3d', 'Xem 3D'],
-                ['2d', 'Khuôn 2D'],
-                ['split', 'Song song 2D + 3D'],
-              ].map(([k, label]) => (
-                <button
-                  key={k}
-                  onClick={() => setViewMode(k)}
-                  className={`px-3 py-1 rounded-md font-semibold cursor-pointer ${
-                    viewMode === k ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            {viewMode !== '2d' && (
-              <div className="flex gap-1 text-[11px]">
-                {[
-                  ['iso', 'Góc 3/4'],
-                  ['front', 'Mặt trước'],
-                  ['top', 'Từ trên'],
-                ].map(([k, label]) => (
-                  <button
-                    key={k}
-                    onClick={() => setCameraPreset(k)}
-                    className={`px-2.5 py-1 rounded-lg border cursor-pointer ${
-                      cameraPreset === k
-                        ? 'bg-slate-800 border-amber-500/60 text-amber-300'
-                        : 'bg-slate-900 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
+        <div className="flex flex-col gap-2 pt-3 border-t border-slate-100">
           <button
             onClick={handleExportPdf}
             disabled={exporting}
-            className="px-5 py-2.5 rounded-xl text-sm font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-lg shadow-amber-500/20 cursor-pointer"
+            className="w-full py-2.5 rounded-xl bg-[#146C53] hover:bg-[#0f5440] text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
           >
-            {exporting ? 'Đang tạo PDF...' : '📐 Xuất Khuôn Bế PDF 1:1'}
+            {exporting ? 'Đang xuất PDF...' : '📐 Xuất Khuôn Bế PDF 1:1'}
+          </button>
+          <button
+            onClick={handleExportSvg}
+            className="w-full py-2.5 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold transition-colors cursor-pointer"
+          >
+            🧩 Xuất SVG Vector (AI / Corel)
+          </button>
+          <button
+            onClick={onOpenImpose}
+            className="w-full py-2 rounded-xl border border-slate-200 hover:border-[#146C53] text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
+          >
+            Chuyển sang Bình Bài In →
           </button>
         </div>
-
-        {/* View Area */}
-        <div className={`grid gap-4 flex-1 items-center ${viewMode === 'split' ? 'grid-cols-1 xl:grid-cols-2' : 'grid-cols-1'}`}>
-          {(viewMode === '2d' || viewMode === 'split') && (
-            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col items-center justify-center h-[520px]">
-              <svg
-                viewBox={`-10 -10 ${dieline.bounds.width + 20} ${dieline.bounds.height + 20}`}
-                className="w-full h-full max-h-[440px]"
-              >
-                {artworkDataUrl && (
-                  <image
-                    href={artworkDataUrl}
-                    x="0"
-                    y="0"
-                    width={dieline.bounds.width}
-                    height={dieline.bounds.height}
-                    preserveAspectRatio="none"
-                    opacity="0.75"
-                  />
-                )}
-                {dieline.creaseSegments.map(([a, b], i) => (
-                  <line
-                    key={`cr-${i}`}
-                    x1={a[0]}
-                    y1={a[1]}
-                    x2={b[0]}
-                    y2={b[1]}
-                    stroke="#38bdf8"
-                    strokeWidth="0.8"
-                    strokeDasharray="3 2"
-                  />
-                ))}
-                {dieline.cutSegments.map(([a, b], i) => (
-                  <line key={`ct-${i}`} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#f43f5e" strokeWidth="1" />
-                ))}
-              </svg>
-              <div className="flex gap-4 mt-2 text-[11px] text-slate-400">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-4 h-0.5 bg-rose-500 inline-block" /> Đường cắt (CutContour)
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-4 h-0.5 border-t border-dashed border-sky-400 inline-block" /> Đường cấn gấp (Crease)
-                </span>
-              </div>
-            </div>
-          )}
-
-          {(viewMode === '3d' || viewMode === 'split') && (
-            <Box3DViewer
-              dieline={dieline}
-              foldProgress={foldProgress}
-              materialKey={materialKey}
-              artworkDataUrl={artworkDataUrl}
-              cameraPreset={cameraPreset}
-            />
-          )}
-        </div>
-      </div>
+      </aside>
     </div>
   );
 }

@@ -350,33 +350,41 @@ export default function PdfCanvasPreview({
   return (
     <div className="flex flex-col items-center w-full relative">
       {pdfLoading && (
-        <div className="flex items-center gap-2 text-slate-400 mb-3 animate-pulse">
-          <span className="text-sm">Đang phân tích TrimBox/Bleed & trích xuất trang PDF...</span>
+        <div className="flex items-center gap-2 text-[#146C53] mb-3 animate-pulse">
+          <span className="text-xs font-semibold">Đang phân tích TrimBox/Bleed &amp; trích xuất trang PDF...</span>
         </div>
       )}
 
-      <div className="bg-slate-950 p-6 rounded-2xl border border-slate-800 shadow-2xl flex justify-center items-center w-full overflow-auto max-h-[620px] min-h-[420px]">
+      <div
+        className="p-6 rounded-2xl border border-slate-200 flex justify-center items-center w-full overflow-auto max-h-[600px] min-h-[420px]"
+        style={{
+          backgroundColor: '#fafbf9',
+          backgroundImage:
+            'linear-gradient(to right, #eef2f1 1px, transparent 1px), linear-gradient(to bottom, #eef2f1 1px, transparent 1px)',
+          backgroundSize: '24px 24px',
+        }}
+      >
         <div style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}>
           <canvas
             ref={canvasRef}
-            className="shadow-2xl bg-white rounded border border-slate-700"
+            className="shadow-lg bg-white rounded border border-slate-300"
             style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
           />
         </div>
       </div>
 
       {sheets.length > 0 && (
-        <div className="flex items-center gap-4 mt-4 bg-slate-800/60 px-5 py-2 rounded-xl border border-slate-700/60">
+        <div className="flex items-center gap-4 mt-4 bg-white px-5 py-2 rounded-full border border-slate-200 shadow-xs">
           <button
             onClick={() => setCurrentSheetIndex(Math.max(0, safeIndex - 1))}
             disabled={safeIndex === 0}
-            className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-30 cursor-pointer"
+            className="px-3 py-1 bg-slate-100 hover:bg-slate-200 rounded-full text-xs font-semibold text-slate-700 disabled:opacity-30 cursor-pointer"
           >
             ◀ Tờ trước
           </button>
-          <div className="text-xs font-bold text-slate-200 text-center min-w-[160px]">
+          <div className="text-xs font-bold text-slate-800 text-center min-w-[160px]">
             Tờ {activeSheet.physicalSheet} / {plan.summary.physicalSheets || sheets.length}
-            <span className="text-[11px] font-medium text-emerald-400 block">
+            <span className="text-[11px] font-semibold text-[#146C53] block">
               {activeSheet.side === 'Front'
                 ? 'Mặt trước (Front)'
                 : activeSheet.side === 'Back'
@@ -388,7 +396,7 @@ export default function PdfCanvasPreview({
           <button
             onClick={() => setCurrentSheetIndex(Math.min(sheets.length - 1, safeIndex + 1))}
             disabled={safeIndex >= sheets.length - 1}
-            className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-30 cursor-pointer"
+            className="px-3 py-1 bg-slate-100 hover:bg-slate-200 rounded-full text-xs font-semibold text-slate-700 disabled:opacity-30 cursor-pointer"
           >
             Tờ sau ▶
           </button>
