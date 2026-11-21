@@ -16,6 +16,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
   const [renderedCanvas, setRenderedCanvas] = useState(null);
   const [sizeMm, setSizeMm] = useState({ w: 150, h: 150 });
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   // Contour Tracer Options
   const [offsetMm, setOffsetMm] = useState(2.0);
@@ -35,6 +36,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
   const handleUpload = async (file) => {
     if (!file) return;
     setSourceFile(file);
+    setError(null);
     setLoading(true);
     try {
       if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
@@ -47,7 +49,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
           w: Math.round((vp1.width / MM_TO_PT) * 10) / 10,
           h: Math.round((vp1.height / MM_TO_PT) * 10) / 10,
         });
-        const vp = page.getViewport({ scale: 2.0 });
+        const vp = page.getViewport({ scale: Math.min(2.0, 1400 / Math.max(1, vp1.width, vp1.height)) });
         const c = document.createElement('canvas');
         c.width = vp.width;
         c.height = vp.height;
@@ -73,24 +75,35 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
         setRenderedCanvas(c);
         URL.revokeObjectURL(url);
       }
+    } catch (err) {
+      console.error(err);
+      setError(err?.message || 'Không thể đọc file này. Vui lòng thử file PDF/PNG khác.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Re-trace contours whenever parameters or image change
+  // Re-trace contours asynchronously so UI never freezes on complex PDFs
   useEffect(() => {
     if (!renderedCanvas || subMode !== 'contour') {
       setContoursMm([]);
       return;
     }
-    const traced = extractStickerContoursFromImage(renderedCanvas, sizeMm.w, sizeMm.h, {
-      offsetMm,
-      smoothLevel,
-      simplifyMm,
-      minAreaMm2,
-    });
-    setContoursMm(traced);
+    const timer = setTimeout(() => {
+      try {
+        const traced = extractStickerContoursFromImage(renderedCanvas, sizeMm.w, sizeMm.h, {
+          offsetMm,
+          smoothLevel,
+          simplifyMm,
+          minAreaMm2,
+        });
+        setContoursMm(traced);
+      } catch (err) {
+        console.error(err);
+        setError('Lỗi khi dò đường bế từ hình ảnh.');
+      }
+    }, 20);
+    return () => clearTimeout(timer);
   }, [renderedCanvas, subMode, sizeMm.w, sizeMm.h, offsetMm, smoothLevel, simplifyMm, minAreaMm2]);
 
   // Draw live preview canvas
@@ -277,11 +290,14 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
           <input
             type="file"
             accept=".png,.jpg,.jpeg,.pdf"
-            onChange={(e) => handleUpload(e.target.files[0])}
+            onChange={(e) => {
+              handleUpload(e.target.files[0]);
+              e.target.value = '';
+            }}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
           />
           <div className="text-xs font-semibold text-slate-700 truncate">
-            {sourceFile ? `📄 ${sourceFile.name}` : '⬆️ Chọn ảnh PNG sticker hoặc file PDF'}
+            {loading ? '⏳ Đang xử lý file...' : sourceFile ? `📄 ${sourceFile.name}` : '⬆️ Chọn ảnh PNG sticker hoặc file PDF'}
           </div>
           {renderedCanvas && (
             <div className="text-[11px] font-mono text-slate-400 mt-0.5">
@@ -289,6 +305,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
             </div>
           )}
         </div>
+        {error && <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px]">⚠️ {error}</div>}
 
         <div className="grid grid-cols-2 gap-2">
           <div className="flex flex-col gap-0.5">

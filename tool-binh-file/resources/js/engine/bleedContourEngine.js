@@ -44,7 +44,7 @@ function computeDistanceField(binaryMask, w, h) {
         const gr = g[rowOff + r];
         const gr2 = gr >= INF ? INF : gr * gr;
         s = (gq2 + q * q - (gr2 + r * r)) / (2 * q - 2 * r);
-        if (s > z[k]) break;
+        if (s > z[k] || k === 0) break;
         k--;
       }
       k++;
@@ -177,7 +177,7 @@ function traceConnectedContours(mask, w, h, minAreaPx) {
         const poly = [];
         let cx = x, cy = y;
         let backDir = 0; // came from West
-        const maxSteps = w * h * 2;
+        const maxSteps = Math.min(12000, (w + h) * 8);
         let steps = 0;
 
         do {
@@ -201,6 +201,7 @@ function traceConnectedContours(mask, w, h, minAreaPx) {
 
         if (poly.length >= 6) {
           contours.push(poly);
+          if (contours.length >= 80) return contours;
         }
       }
     }
