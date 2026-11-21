@@ -9,7 +9,7 @@ import {
   clip,
   endPath,
 } from 'pdf-lib';
-import { MM_TO_PT } from './impositionEngine';
+import { MM_TO_PT } from './impositionEngine.js';
 
 /**
  * Inspect MediaBox and TrimBox of each source page WITHOUT destroying Bleed.
