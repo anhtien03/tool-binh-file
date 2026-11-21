@@ -57,6 +57,7 @@ export default function PdfEditor() {
   const [pontSizeMm, setPontSizeMm] = useState(5);
   const [avoidCornerMarks, setAvoidCornerMarks] = useState(true);
   const [singleCut1Dao, setSingleCut1Dao] = useState(true);
+  const [splitStickerPreview, setSplitStickerPreview] = useState(false);
 
   // --- Margins & Marks ---
   const [marginTop, setMarginTop] = useState(10);
@@ -1064,6 +1065,16 @@ export default function PdfEditor() {
                     Cắt 1 dao (Gộp nét trùng khi Gap = 0)
                   </label>
                 )}
+
+                <label className="flex items-center gap-2 text-[11px] font-semibold text-[#146C53] cursor-pointer pt-1 border-t border-slate-100">
+                  <input
+                    type="checkbox"
+                    className="accent-[#146C53]"
+                    checked={splitStickerPreview}
+                    onChange={(e) => setSplitStickerPreview(e.target.checked)}
+                  />
+                  Tách xem song song Bài In + Khuôn Bế
+                </label>
               </div>
             ) : (
               <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
@@ -1260,6 +1271,7 @@ export default function PdfEditor() {
                 showBleedOverlay={showBleedOverlay}
                 showSafeArea={showSafeArea}
                 safeInsetMm={safeInsetMm}
+                splitStickerPreview={mode === 'sticker' && splitStickerPreview}
                 currentSheetIndex={currentSheetIndex}
                 setCurrentSheetIndex={setCurrentSheetIndex}
                 onPagesSynced={handlePagesSynced}

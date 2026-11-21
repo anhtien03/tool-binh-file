@@ -16,6 +16,7 @@ export default function PdfCanvasPreview({
   showBleedOverlay = true,
   showSafeArea = true,
   safeInsetMm = 3,
+  splitStickerPreview = false,
   currentSheetIndex,
   setCurrentSheetIndex,
   onPagesSynced,
@@ -26,6 +27,7 @@ export default function PdfCanvasPreview({
   const [pdfLoading, setPdfLoading] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const canvasRef = useRef(null);
+  const cutCanvasRef = useRef(null);
   const viewportRef = useRef(null);
   const panStateRef = useRef({ active: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 });
   const fileCacheRef = useRef(new Map()); // id -> parsed pages array
@@ -183,8 +185,8 @@ export default function PdfCanvasPreview({
   const safeIndex = Math.min(currentSheetIndex, Math.max(0, sheets.length - 1));
   const activeSheet = sheets[safeIndex] || null;
 
-  const BASE_WIDTH = 780;
-  const BASE_HEIGHT = 560;
+  const BASE_WIDTH = splitStickerPreview ? 460 : 780;
+  const BASE_HEIGHT = splitStickerPreview ? 500 : 560;
   const previewAspect = sheetDim.width / Math.max(1, sheetDim.height);
   const containerAspect = BASE_WIDTH / BASE_HEIGHT;
 
@@ -201,237 +203,241 @@ export default function PdfCanvasPreview({
   const canvasWidth = Math.round(baseWidth * zoom);
   const canvasHeight = Math.round(baseHeight * zoom);
 
-  // 2. Render active SheetPlan directly onto Canvas (100% synced with pdfExporter)
+  // 2. Render active SheetPlan onto Canvas (supports single combined or split Print + Cut)
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const drawSheetToCanvas = (canvas, layerFilter) => {
+      if (!canvas) return;
 
-    const ratio = window.devicePixelRatio || 2;
-    canvas.width = canvasWidth * ratio;
-    canvas.height = canvasHeight * ratio;
+      const ratio = window.devicePixelRatio || 2;
+      canvas.width = canvasWidth * ratio;
+      canvas.height = canvasHeight * ratio;
 
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
 
-    const scale = canvasWidth / sheetDim.width; // px per mm
+      const scale = canvasWidth / sheetDim.width;
 
-    // Sheet paper background
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-    ctx.strokeStyle = '#94a3b8';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(0, 0, canvasWidth, canvasHeight);
-
-    // Margins dashed boundary
-    const mL = Number(margins?.left) || 0;
-    const mR = Number(margins?.right) || 0;
-    const mT = Number(margins?.top) || 0;
-    const mB = Number(margins?.bottom) || 0;
-    ctx.strokeStyle = 'rgba(99, 102, 241, 0.35)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
-    ctx.strokeRect(mL * scale, mT * scale, (sheetDim.width - mL - mR) * scale, (sheetDim.height - mT - mB) * scale);
-    ctx.setLineDash([]);
-
-    if (!activeSheet || pages.length === 0) {
-      ctx.fillStyle = '#64748b';
-      ctx.font = '15px Inter, system-ui';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('Tải lên file PDF để xem sơ đồ bình bài thời gian thực', canvasWidth / 2, canvasHeight / 2);
-      return;
-    }
-
-    // Draw each placement with Smart Bleed Clipping
-    for (const p of activeSheet.placements) {
-      const pageInfo = pages[p.pageIndex];
-      if (!pageInfo || !pageInfo.img) continue;
-
-      const xPx = p.x * scale;
-      const yPx = p.y * scale;
-      const wPx = p.trimW * scale;
-      const hPx = p.trimH * scale;
-
-      const clipX = (p.x - p.clipBleed.left) * scale;
-      const clipY = (p.y - p.clipBleed.top) * scale;
-      const clipW = (p.trimW + p.clipBleed.left + p.clipBleed.right) * scale;
-      const clipH = (p.trimH + p.clipBleed.top + p.clipBleed.bottom) * scale;
-
-      // Source image full MediaBox geometry relative to its TrimBox
-      const declaredB = Math.max(0, Number(bleedMm) || 0);
-      const srcTrimW = pageInfo.hasExplicitTrimBox ? pageInfo.trimWmm : Math.max(1, pageInfo.mediaWmm - 2 * declaredB);
-      const srcTrimH = pageInfo.hasExplicitTrimBox ? pageInfo.trimHmm : Math.max(1, pageInfo.mediaHmm - 2 * declaredB);
-      const offLeft = pageInfo.hasExplicitTrimBox ? pageInfo.trimOffsetLeftMm : declaredB;
-      const offTop = pageInfo.hasExplicitTrimBox ? pageInfo.trimOffsetTopMm : declaredB;
-
-      const rot = ((p.rotate % 360) + 360) % 360;
-      const isRot90 = rot === 90 || rot === 270;
-      const unrotTrimW = isRot90 ? p.trimH : p.trimW;
-      const unrotTrimH = isRot90 ? p.trimW : p.trimH;
-      const sx = unrotTrimW / Math.max(0.01, srcTrimW);
-      const sy = unrotTrimH / Math.max(0.01, srcTrimH);
-
-      const fullDrawW = pageInfo.mediaWmm * sx * scale;
-      const fullDrawH = pageInfo.mediaHmm * sy * scale;
-      const trimCenterXInMedia = (offLeft + srcTrimW / 2) * sx * scale;
-      const trimCenterYInMedia = (offTop + srcTrimH / 2) * sy * scale;
-
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(clipX, clipY, clipW, clipH);
-      ctx.clip();
-
-      // Transform around TrimBox center; note Canvas clockwise = -PDF CCW
-      ctx.translate(xPx + wPx / 2, yPx + hPx / 2);
-      ctx.rotate((-rot * Math.PI) / 180);
-      ctx.drawImage(pageInfo.img, -trimCenterXInMedia, -trimCenterYInMedia, fullDrawW, fullDrawH);
-      ctx.restore();
-
-      // TrimBox border
-      ctx.strokeStyle = p.block === 'secondary' ? 'rgba(245, 158, 11, 0.85)' : 'rgba(100, 116, 139, 0.6)';
-      ctx.lineWidth = 0.85;
-      ctx.strokeRect(xPx, yPx, wPx, hPx);
-
-      // Optional Red Dashed Bleed Overlay (like PrynX 👁 toggle)
-      if (showBleedOverlay && (p.clipBleed.left > 0 || p.clipBleed.right > 0 || p.clipBleed.top > 0 || p.clipBleed.bottom > 0)) {
-        ctx.save();
-        ctx.strokeStyle = 'rgba(239, 68, 68, 0.75)';
-        ctx.lineWidth = 0.8;
-        ctx.setLineDash([3, 2]);
-        ctx.strokeRect(clipX, clipY, clipW, clipH);
-        ctx.restore();
-      }
-
-      // Optional Green Dashed Safe Area Overlay (inset from TrimBox)
-      const safeMm = Math.max(0, Number(safeInsetMm) || 0);
-      if (showSafeArea && safeMm > 0 && p.trimW > 2 * safeMm && p.trimH > 2 * safeMm) {
-        const sPx = safeMm * scale;
-        ctx.save();
-        ctx.strokeStyle = 'rgba(20, 108, 83, 0.85)';
-        ctx.lineWidth = 0.85;
-        ctx.setLineDash([3, 2]);
-        ctx.strokeRect(xPx + sPx, yPx + sPx, wPx - 2 * sPx, hPx - 2 * sPx);
-        ctx.restore();
-      }
-
-      // Page number & orientation badge
-      const badgeRadius = Math.max(9, Math.min(13, Math.min(wPx, hPx) * 0.22));
-      ctx.fillStyle = p.block === 'secondary' ? 'rgba(180, 83, 9, 0.82)' : 'rgba(15, 23, 42, 0.75)';
-      ctx.beginPath();
-      ctx.arc(xPx + wPx / 2, yPx + hPx / 2, badgeRadius, 0, Math.PI * 2);
-      ctx.fill();
-
+      // Sheet paper background
       ctx.fillStyle = '#ffffff';
-      ctx.font = `bold ${Math.round(badgeRadius * 0.9)}px Inter, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const arrow = rot === 0 ? '↑' : rot === 90 ? '←' : rot === 180 ? '↓' : '→';
-      ctx.fillText(`${p.pageIndex + 1}${arrow}`, xPx + wPx / 2, yPx + hPx / 2);
-    }
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(0, 0, canvasWidth, canvasHeight);
 
-    // Draw Crop Marks (Western / Tonbo) — single scale multiplication!
-    for (const line of activeSheet.marks.lines) {
-      ctx.strokeStyle = line.kind === 'bleed' ? '#0ea5e9' : '#0f172a';
-      ctx.lineWidth = line.kind === 'bleed' ? 0.75 : 1.0;
-      ctx.beginPath();
-      ctx.moveTo(line.x1 * scale, line.y1 * scale);
-      ctx.lineTo(line.x2 * scale, line.y2 * scale);
-      ctx.stroke();
-    }
+      // Margins dashed boundary
+      const mL = Number(margins?.left) || 0;
+      const mR = Number(margins?.right) || 0;
+      const mT = Number(margins?.top) || 0;
+      const mB = Number(margins?.bottom) || 0;
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(mL * scale, mT * scale, (sheetDim.width - mL - mR) * scale, (sheetDim.height - mT - mB) * scale);
+      ctx.setLineDash([]);
 
-    // Draw Registration Targets (Ốc chồng màu)
-    for (const reg of activeSheet.marks.registrations) {
-      const cx = reg.cx * scale;
-      const cy = reg.cy * scale;
-      const r = reg.radius * scale;
-      const half = (reg.crossLen / 2) * scale;
-      ctx.strokeStyle = '#0f172a';
-      ctx.lineWidth = 0.9;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.moveTo(cx - half, cy);
-      ctx.lineTo(cx + half, cy);
-      ctx.moveTo(cx, cy - half);
-      ctx.lineTo(cx, cy + half);
-      ctx.stroke();
-    }
-
-    // Draw Optical Registration Marks (Boong máy bế decal)
-    for (const pm of activeSheet.pontMarks || []) {
-      const cx = pm.cx * scale;
-      const cy = pm.cy * scale;
-      const r = (pm.size / 2) * scale;
-      ctx.save();
-      if (pm.type === 'circle5mm') {
-        ctx.fillStyle = '#0f172a';
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (pm.type === 'circleHollow') {
-        ctx.strokeStyle = '#0f172a';
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (pm.type === 'graphtec') {
-        const arm = 10 * scale;
-        const sx = pm.corner.includes('L') ? 1 : -1;
-        const sy = pm.corner.includes('T') ? 1 : -1;
-        ctx.strokeStyle = '#0f172a';
-        ctx.lineWidth = 2.0;
-        ctx.beginPath();
-        ctx.moveTo(cx + sx * arm, cy);
-        ctx.lineTo(cx, cy);
-        ctx.lineTo(cx, cy + sy * arm);
-        ctx.stroke();
+      if (!activeSheet || pages.length === 0) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = '14px Inter, system-ui';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Tải lên file PDF để xem sơ đồ bình bài thời gian thực', canvasWidth / 2, canvasHeight / 2);
+        return;
       }
-      ctx.restore();
-    }
 
-    // Draw Sticker CutContour Paths (Magenta)
-    if (activeSheet.stickerCutPaths && activeSheet.stickerCutPaths.length > 0) {
-      ctx.save();
-      ctx.strokeStyle = '#e11d48';
-      ctx.lineWidth = 1.25;
-      for (const cp of activeSheet.stickerCutPaths) {
-        ctx.beginPath();
-        if (cp.kind === 'line') {
-          ctx.moveTo(cp.x1 * scale, cp.y1 * scale);
-          ctx.lineTo(cp.x2 * scale, cp.y2 * scale);
-        } else if (cp.kind === 'poly') {
-          if (cp.pts && cp.pts.length >= 2) {
-            cp.pts.forEach(([px, py], idx) => {
-              if (idx === 0) ctx.moveTo(px * scale, py * scale);
-              else ctx.lineTo(px * scale, py * scale);
-            });
-            if (cp.closed) ctx.closePath();
-          }
-        } else if (cp.kind === 'ellipse') {
-          ctx.ellipse(cp.cx * scale, cp.cy * scale, cp.rx * scale, cp.ry * scale, 0, 0, Math.PI * 2);
-        } else if (cp.kind === 'rect') {
-          const rx = cp.x * scale, ry = cp.y * scale, rw = cp.w * scale, rh = cp.h * scale;
-          const rad = Math.min((cp.r || 0) * scale, rw / 2, rh / 2);
-          if (rad > 0 && ctx.roundRect) {
-            ctx.roundRect(rx, ry, rw, rh, rad);
-          } else {
-            ctx.rect(rx, ry, rw, rh);
+      // Draw artwork placements (unless cutOnly)
+      if (layerFilter !== 'cutOnly') {
+        for (const p of activeSheet.placements) {
+          const pageInfo = pages[p.pageIndex];
+          if (!pageInfo || !pageInfo.img) continue;
+
+          const xPx = p.x * scale;
+          const yPx = p.y * scale;
+          const wPx = p.trimW * scale;
+          const hPx = p.trimH * scale;
+
+          const clipX = (p.x - p.clipBleed.left) * scale;
+          const clipY = (p.y - p.clipBleed.top) * scale;
+          const clipW = (p.trimW + p.clipBleed.left + p.clipBleed.right) * scale;
+          const clipH = (p.trimH + p.clipBleed.top + p.clipBleed.bottom) * scale;
+
+          const declaredB = Math.max(0, Number(bleedMm) || 0);
+          const srcTrimW = pageInfo.hasExplicitTrimBox ? pageInfo.trimWmm : Math.max(1, pageInfo.mediaWmm - 2 * declaredB);
+          const srcTrimH = pageInfo.hasExplicitTrimBox ? pageInfo.trimHmm : Math.max(1, pageInfo.mediaHmm - 2 * declaredB);
+          const offLeft = pageInfo.hasExplicitTrimBox ? pageInfo.trimOffsetLeftMm : declaredB;
+          const offTop = pageInfo.hasExplicitTrimBox ? pageInfo.trimOffsetTopMm : declaredB;
+
+          const rot = ((p.rotate % 360) + 360) % 360;
+          const isRot90 = rot === 90 || rot === 270;
+          const unrotTrimW = isRot90 ? p.trimH : p.trimW;
+          const unrotTrimH = isRot90 ? p.trimW : p.trimH;
+          const sx = unrotTrimW / Math.max(0.01, srcTrimW);
+          const sy = unrotTrimH / Math.max(0.01, srcTrimH);
+
+          const fullDrawW = pageInfo.mediaWmm * sx * scale;
+          const fullDrawH = pageInfo.mediaHmm * sy * scale;
+          const trimCenterXInMedia = (offLeft + srcTrimW / 2) * sx * scale;
+          const trimCenterYInMedia = (offTop + srcTrimH / 2) * sy * scale;
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(clipX, clipY, clipW, clipH);
+          ctx.clip();
+
+          ctx.translate(xPx + wPx / 2, yPx + hPx / 2);
+          ctx.rotate((-rot * Math.PI) / 180);
+          ctx.drawImage(pageInfo.img, -trimCenterXInMedia, -trimCenterYInMedia, fullDrawW, fullDrawH);
+          ctx.restore();
+
+          if (layerFilter === 'all') {
+            ctx.strokeStyle = p.block === 'secondary' ? 'rgba(245, 158, 11, 0.85)' : 'rgba(100, 116, 139, 0.6)';
+            ctx.lineWidth = 0.85;
+            ctx.strokeRect(xPx, yPx, wPx, hPx);
+
+            if (showBleedOverlay && (p.clipBleed.left > 0 || p.clipBleed.right > 0 || p.clipBleed.top > 0 || p.clipBleed.bottom > 0)) {
+              ctx.save();
+              ctx.strokeStyle = 'rgba(239, 68, 68, 0.75)';
+              ctx.lineWidth = 0.8;
+              ctx.setLineDash([3, 2]);
+              ctx.strokeRect(clipX, clipY, clipW, clipH);
+              ctx.restore();
+            }
+
+            const safeMm = Math.max(0, Number(safeInsetMm) || 0);
+            if (showSafeArea && safeMm > 0 && p.trimW > 2 * safeMm && p.trimH > 2 * safeMm) {
+              const sPx = safeMm * scale;
+              ctx.save();
+              ctx.strokeStyle = 'rgba(20, 108, 83, 0.85)';
+              ctx.lineWidth = 0.85;
+              ctx.setLineDash([3, 2]);
+              ctx.strokeRect(xPx + sPx, yPx + sPx, wPx - 2 * sPx, hPx - 2 * sPx);
+              ctx.restore();
+            }
+
+            const badgeRadius = Math.max(9, Math.min(13, Math.min(wPx, hPx) * 0.22));
+            ctx.fillStyle = p.block === 'secondary' ? 'rgba(180, 83, 9, 0.82)' : 'rgba(15, 23, 42, 0.75)';
+            ctx.beginPath();
+            ctx.arc(xPx + wPx / 2, yPx + hPx / 2, badgeRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold ${Math.round(badgeRadius * 0.9)}px Inter, sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const arrow = rot === 0 ? '↑' : rot === 90 ? '←' : rot === 180 ? '↓' : '→';
+            ctx.fillText(`${p.pageIndex + 1}${arrow}`, xPx + wPx / 2, yPx + hPx / 2);
           }
         }
+      }
+
+      // Draw Crop Marks & Registration Targets
+      for (const line of activeSheet.marks.lines) {
+        ctx.strokeStyle = line.kind === 'bleed' ? '#0ea5e9' : '#0f172a';
+        ctx.lineWidth = line.kind === 'bleed' ? 0.75 : 1.0;
+        ctx.beginPath();
+        ctx.moveTo(line.x1 * scale, line.y1 * scale);
+        ctx.lineTo(line.x2 * scale, line.y2 * scale);
         ctx.stroke();
       }
-      ctx.restore();
-    }
 
-    // Draw Slug Line
-    if (activeSheet.slugText) {
-      ctx.fillStyle = '#334155';
-      ctx.font = `${Math.max(8, Math.round(2.4 * scale))}px monospace`;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(activeSheet.slugText, 6 * scale, canvasHeight - 2 * scale);
+      for (const reg of activeSheet.marks.registrations) {
+        const cx = reg.cx * scale;
+        const cy = reg.cy * scale;
+        const r = reg.radius * scale;
+        const half = (reg.crossLen / 2) * scale;
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 0.9;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.moveTo(cx - half, cy);
+        ctx.lineTo(cx + half, cy);
+        ctx.moveTo(cx, cy - half);
+        ctx.lineTo(cx, cy + half);
+        ctx.stroke();
+      }
+
+      // Always draw 4 Pont Marks on both Print and Cut sheets
+      for (const pm of activeSheet.pontMarks || []) {
+        const cx = pm.cx * scale;
+        const cy = pm.cy * scale;
+        const r = (pm.size / 2) * scale;
+        ctx.save();
+        if (pm.type === 'circle5mm') {
+          ctx.fillStyle = '#0f172a';
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (pm.type === 'circleHollow') {
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.stroke();
+        } else if (pm.type === 'graphtec') {
+          const arm = 10 * scale;
+          const sx = pm.corner.includes('L') ? 1 : -1;
+          const sy = pm.corner.includes('T') ? 1 : -1;
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 2.0;
+          ctx.beginPath();
+          ctx.moveTo(cx + sx * arm, cy);
+          ctx.lineTo(cx, cy);
+          ctx.lineTo(cx, cy + sy * arm);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // Draw Sticker CutContour Paths (unless printOnly)
+      if (layerFilter !== 'printOnly' && activeSheet.stickerCutPaths && activeSheet.stickerCutPaths.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = '#e11d48';
+        ctx.lineWidth = 1.25;
+        for (const cp of activeSheet.stickerCutPaths) {
+          ctx.beginPath();
+          if (cp.kind === 'line') {
+            ctx.moveTo(cp.x1 * scale, cp.y1 * scale);
+            ctx.lineTo(cp.x2 * scale, cp.y2 * scale);
+          } else if (cp.kind === 'poly') {
+            if (cp.pts && cp.pts.length >= 2) {
+              cp.pts.forEach(([px, py], idx) => {
+                if (idx === 0) ctx.moveTo(px * scale, py * scale);
+                else ctx.lineTo(px * scale, py * scale);
+              });
+              if (cp.closed) ctx.closePath();
+            }
+          } else if (cp.kind === 'ellipse') {
+            ctx.ellipse(cp.cx * scale, cp.cy * scale, cp.rx * scale, cp.ry * scale, 0, 0, Math.PI * 2);
+          } else if (cp.kind === 'rect') {
+            const rx = cp.x * scale, ry = cp.y * scale, rw = cp.w * scale, rh = cp.h * scale;
+            const rad = Math.min((cp.r || 0) * scale, rw / 2, rh / 2);
+            if (rad > 0 && ctx.roundRect) {
+              ctx.roundRect(rx, ry, rw, rh, rad);
+            } else {
+              ctx.rect(rx, ry, rw, rh);
+            }
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      if (activeSheet.slugText) {
+        ctx.fillStyle = '#334155';
+        ctx.font = `${Math.max(8, Math.round(2.4 * scale))}px monospace`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(activeSheet.slugText, 6 * scale, canvasHeight - 2 * scale);
+      }
+    };
+
+    if (splitStickerPreview) {
+      drawSheetToCanvas(canvasRef.current, 'printOnly');
+      drawSheetToCanvas(cutCanvasRef.current, 'cutOnly');
+    } else {
+      drawSheetToCanvas(canvasRef.current, 'all');
     }
-  }, [activeSheet, pages, sheetDim, margins, bleedMm, showBleedOverlay, showSafeArea, safeInsetMm, canvasWidth, canvasHeight]);
+  }, [activeSheet, pages, sheetDim, margins, bleedMm, showBleedOverlay, showSafeArea, safeInsetMm, splitStickerPreview, canvasWidth, canvasHeight]);
 
   // 3. Ctrl + Wheel Zoom (non-passive so browser page zoom is prevented)
   useEffect(() => {
@@ -503,16 +509,41 @@ export default function PdfCanvasPreview({
           backgroundSize: '24px 24px',
         }}
       >
-        <div
-          className="m-auto shrink-0"
-          style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
-        >
-          <canvas
-            ref={canvasRef}
-            className="shadow-lg bg-white rounded border border-slate-300 block"
+        {splitStickerPreview ? (
+          <div className="flex flex-wrap xl:flex-nowrap items-start justify-center gap-5 m-auto w-fit">
+            <div className="flex flex-col items-center gap-1.5 shrink-0">
+              <span className="px-2.5 py-0.5 rounded-full bg-[#146C53] text-white text-[11px] font-bold">
+                🖨️ BÀI IN (PRINT)
+              </span>
+              <canvas
+                ref={canvasRef}
+                className="shadow-lg bg-white rounded border border-slate-300 block"
+                style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
+              />
+            </div>
+            <div className="flex flex-col items-center gap-1.5 shrink-0">
+              <span className="px-2.5 py-0.5 rounded-full bg-rose-600 text-white text-[11px] font-bold">
+                ✂️ KHUÔN BẾ (CUT)
+              </span>
+              <canvas
+                ref={cutCanvasRef}
+                className="shadow-lg bg-white rounded border border-slate-300 block"
+                style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
+              />
+            </div>
+          </div>
+        ) : (
+          <div
+            className="m-auto shrink-0"
             style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
-          />
-        </div>
+          >
+            <canvas
+              ref={canvasRef}
+              className="shadow-lg bg-white rounded border border-slate-300 block"
+              style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
+            />
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center justify-center gap-4 mt-2.5 text-[11px] text-slate-500">
