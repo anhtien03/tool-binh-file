@@ -71,13 +71,19 @@ function computeDrawPageOptions(placement, boxInfo, sheetHeightPt) {
   const targetUnrotW = (isRotated90 ? placement.trimH : placement.trimW) * MM_TO_PT;
   const targetUnrotH = (isRotated90 ? placement.trimW : placement.trimH) * MM_TO_PT;
 
-  const sx = targetUnrotW / Math.max(0.001, boxInfo.trimW);
-  const sy = targetUnrotH / Math.max(0.001, boxInfo.trimH);
+  const customBox = placement.srcTrimBoxMm;
+  const srcTrimWPt = customBox ? customBox.trimW * MM_TO_PT : boxInfo.trimW;
+  const srcTrimHPt = customBox ? customBox.trimH * MM_TO_PT : boxInfo.trimH;
+  const srcOffXPt = customBox ? customBox.offsetLeft * MM_TO_PT : boxInfo.trimOffsetX;
+  const srcOffYPt = customBox ? customBox.offsetBottom * MM_TO_PT : boxInfo.trimOffsetY;
+
+  const sx = targetUnrotW / Math.max(0.001, srcTrimWPt);
+  const sy = targetUnrotH / Math.max(0.001, srcTrimHPt);
 
   const drawW = boxInfo.mediaW * sx;
   const drawH = boxInfo.mediaH * sy;
-  const offX = boxInfo.trimOffsetX * sx;
-  const offY = boxInfo.trimOffsetY * sy;
+  const offX = srcOffXPt * sx;
+  const offY = srcOffYPt * sy;
 
   // Map unrotated MediaBox origin (0,0) such that unrotated TrimBox (offX, offY) lands at TrimRect
   if (rot === 0) {

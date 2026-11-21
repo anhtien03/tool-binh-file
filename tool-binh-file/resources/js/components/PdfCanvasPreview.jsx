@@ -118,6 +118,48 @@ export default function PdfCanvasPreview({
           hasExplicitTrimBox: false,
         };
 
+        // Detect tight Ink Bounding Box (Auto-Crop whitespace around artwork)
+        let inkBox = null;
+        try {
+          const ctx2d = offscreen.getContext('2d');
+          const cw = offscreen.width;
+          const ch = offscreen.height;
+          const imgData = ctx2d.getImageData(0, 0, cw, ch).data;
+          let minX = cw, minY = ch, maxX = -1, maxY = -1;
+          for (let py = 0; py < ch; py += 2) {
+            for (let px = 0; px < cw; px += 2) {
+              const idx = (py * cw + px) * 4;
+              const r = imgData[idx], g = imgData[idx + 1], b = imgData[idx + 2], a = imgData[idx + 3];
+              if (a > 25 && (r < 244 || g < 244 || b < 244)) {
+                if (px < minX) minX = px;
+                if (py < minY) minY = py;
+                if (px > maxX) maxX = px;
+                if (py > maxY) maxY = py;
+              }
+            }
+          }
+          if (maxX > minX && maxY > minY) {
+            const pxToMmX = meta.mediaWmm / Math.max(1, cw);
+            const pxToMmY = meta.mediaHmm / Math.max(1, ch);
+            const padMm = 1.0;
+            const leftMm = Math.max(0, minX * pxToMmX - padMm);
+            const topMm = Math.max(0, minY * pxToMmY - padMm);
+            const rightMm = Math.min(meta.mediaWmm, (maxX + 2) * pxToMmX + padMm);
+            const bottomEdgeMm = Math.min(meta.mediaHmm, (maxY + 2) * pxToMmY + padMm);
+            const trimWmm = Math.round(Math.max(2, rightMm - leftMm) * 100) / 100;
+            const trimHmm = Math.round(Math.max(2, bottomEdgeMm - topMm) * 100) / 100;
+            inkBox = {
+              trimWmm,
+              trimHmm,
+              offsetLeftMm: Math.round(leftMm * 100) / 100,
+              offsetTopMm: Math.round(topMm * 100) / 100,
+              offsetBottomMm: Math.round(Math.max(0, meta.mediaHmm - bottomEdgeMm) * 100) / 100,
+            };
+          }
+        } catch {
+          // ignore ink detection error
+        }
+
         renderedPages.push({
           img,
           dataUrl,
@@ -126,6 +168,7 @@ export default function PdfCanvasPreview({
           fileId: entry.id,
           fileName: entry.file.name,
           localPageNumber: i,
+          inkBox,
           ...meta,
         });
       }
@@ -262,10 +305,27 @@ export default function PdfCanvasPreview({
           const clipH = (p.trimH + p.clipBleed.top + p.clipBleed.bottom) * scale;
 
           const declaredB = Math.max(0, Number(bleedMm) || 0);
-          const srcTrimW = pageInfo.hasExplicitTrimBox ? pageInfo.trimWmm : Math.max(1, pageInfo.mediaWmm - 2 * declaredB);
-          const srcTrimH = pageInfo.hasExplicitTrimBox ? pageInfo.trimHmm : Math.max(1, pageInfo.mediaHmm - 2 * declaredB);
-          const offLeft = pageInfo.hasExplicitTrimBox ? pageInfo.trimOffsetLeftMm : declaredB;
-          const offTop = pageInfo.hasExplicitTrimBox ? pageInfo.trimOffsetTopMm : declaredB;
+          const customBox = p.srcTrimBoxMm;
+          const srcTrimW = customBox
+            ? customBox.trimW
+            : pageInfo.hasExplicitTrimBox
+            ? pageInfo.trimWmm
+            : Math.max(1, pageInfo.mediaWmm - 2 * declaredB);
+          const srcTrimH = customBox
+            ? customBox.trimH
+            : pageInfo.hasExplicitTrimBox
+            ? pageInfo.trimHmm
+            : Math.max(1, pageInfo.mediaHmm - 2 * declaredB);
+          const offLeft = customBox
+            ? customBox.offsetLeft
+            : pageInfo.hasExplicitTrimBox
+            ? pageInfo.trimOffsetLeftMm
+            : declaredB;
+          const offTop = customBox
+            ? customBox.offsetTop
+            : pageInfo.hasExplicitTrimBox
+            ? pageInfo.trimOffsetTopMm
+            : declaredB;
 
           const rot = ((p.rotate % 360) + 360) % 360;
           const isRot90 = rot === 90 || rot === 270;
@@ -429,6 +489,40 @@ export default function PdfCanvasPreview({
         ctx.textBaseline = 'bottom';
         ctx.fillText(activeSheet.slugText, 6 * scale, canvasHeight - 2 * scale);
       }
+
+      // Draw mm ruler ticks along top and left borders (0, 20, 40, 60, 80, 100... mm)
+      ctx.save();
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.35)';
+      ctx.lineWidth = 0.75;
+      ctx.font = '9px monospace';
+      for (let mm = 0; mm <= sheetDim.width; mm += 10) {
+        const px = mm * scale;
+        const isMajor = mm % 20 === 0;
+        ctx.beginPath();
+        ctx.moveTo(px, 0);
+        ctx.lineTo(px, isMajor ? 6 : 3.5);
+        ctx.stroke();
+        if (isMajor && mm > 0 && px < canvasWidth - 18) {
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillText(`${mm}`, px, 6.5);
+        }
+      }
+      for (let mm = 0; mm <= sheetDim.height; mm += 10) {
+        const py = mm * scale;
+        const isMajor = mm % 20 === 0;
+        ctx.beginPath();
+        ctx.moveTo(0, py);
+        ctx.lineTo(isMajor ? 6 : 3.5, py);
+        ctx.stroke();
+        if (isMajor && mm > 0 && py < canvasHeight - 12) {
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`${mm}`, 7.5, py);
+        }
+      }
+      ctx.restore();
     };
 
     if (splitStickerPreview) {

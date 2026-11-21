@@ -824,22 +824,60 @@ export function computeImpositionPlan(pagesMeta, config) {
   const availW = Math.max(10, sheetDim.width - effMargins.left - effMargins.right);
   const availH = Math.max(10, sheetDim.height - effMargins.top - effMargins.bottom);
   const bleedMm = Math.max(0, Number(config.bleedMm) || 0);
+  const autoCropInk = Boolean(config.autoCropInk);
 
-  const first = pagesMeta[0];
-  // Use explicit targetTrimW/H if forced by user (e.g. Namecard 90x54), else TrimBox or MediaBox - 2*Bleed
-  const rawW = first.mediaWmm ?? first.width / MM_TO_PT;
-  const rawH = first.mediaHmm ?? first.height / MM_TO_PT;
+  const getPageEffectiveBox = (meta) => {
+    if (!meta) {
+      return { trimW: 50, trimH: 50, offsetLeft: 0, offsetTop: 0, offsetBottom: 0, isCustom: false };
+    }
+    const mW = meta.mediaWmm ?? (meta.width ? meta.width / MM_TO_PT : 50);
+    const mH = meta.mediaHmm ?? (meta.height ? meta.height / MM_TO_PT : 50);
+    if (autoCropInk && meta.inkBox && meta.inkBox.trimWmm > 2 && meta.inkBox.trimHmm > 2) {
+      return {
+        trimW: meta.inkBox.trimWmm,
+        trimH: meta.inkBox.trimHmm,
+        offsetLeft: meta.inkBox.offsetLeftMm,
+        offsetTop: meta.inkBox.offsetTopMm,
+        offsetBottom: meta.inkBox.offsetBottomMm,
+        isCustom: true,
+      };
+    }
+    if (meta.hasExplicitTrimBox) {
+      return {
+        trimW: meta.trimWmm,
+        trimH: meta.trimHmm,
+        offsetLeft: meta.trimOffsetLeftMm || 0,
+        offsetTop: meta.trimOffsetTopMm || 0,
+        offsetBottom: meta.trimOffsetBottomMm || 0,
+        isCustom: false,
+      };
+    }
+    return {
+      trimW: Math.max(1, mW - 2 * bleedMm),
+      trimH: Math.max(1, mH - 2 * bleedMm),
+      offsetLeft: bleedMm,
+      offsetTop: bleedMm,
+      offsetBottom: bleedMm,
+      isCustom: false,
+    };
+  };
+
+  // Pick reference page from active gangItems first (ignoring accidental <22mm corner mark pages if normal pages exist)
+  const activeIndices =
+    Array.isArray(config.gangItems) && config.gangItems.length > 0
+      ? config.gangItems.map((it) => it.frontIndex).filter((idx) => idx >= 0 && idx < pagesMeta.length)
+      : pagesMeta.map((_, idx) => idx);
+  const candidatePages = activeIndices.map((idx) => pagesMeta[idx]).filter(Boolean);
+  const nonMarkPage = candidatePages.find((p) => {
+    const b = getPageEffectiveBox(p);
+    return b.trimW >= 22 || b.trimH >= 22;
+  });
+  const first = nonMarkPage || candidatePages[0] || pagesMeta[0];
+  const firstBox = getPageEffectiveBox(first);
+
   const hasForcedTrim = Number(config.targetTrimW) > 0 && Number(config.targetTrimH) > 0;
-  const trimW = hasForcedTrim
-    ? Number(config.targetTrimW)
-    : first.hasExplicitTrimBox
-    ? first.trimWmm
-    : Math.max(1, rawW - 2 * bleedMm);
-  const trimH = hasForcedTrim
-    ? Number(config.targetTrimH)
-    : first.hasExplicitTrimBox
-    ? first.trimHmm
-    : Math.max(1, rawH - 2 * bleedMm);
+  const trimW = hasForcedTrim ? Number(config.targetTrimW) : firstBox.trimW;
+  const trimH = hasForcedTrim ? Number(config.targetTrimH) : firstBox.trimH;
 
   const sheets = [];
 
@@ -851,9 +889,9 @@ export function computeImpositionPlan(pagesMeta, config) {
     const pontMargin = Math.max(5, Number(config.pontMarginMm) || 10);
     const pontSize = Math.max(3, Number(config.pontSizeMm) || 5);
     const avoidCornerMarks = config.avoidCornerMarks !== false && pontType !== 'none';
-    const stickerShape = config.stickerShape || 'rect'; // 'rect' | 'circle' | 'oval'
+    const stickerShape = config.stickerShape || 'rect'; // 'rect' | 'circle' | 'oval' | 'pdfContour'
     const cornerRadius = Math.max(0, Number(config.cornerRadiusMm) || 0);
-    const stickerLayout = config.stickerLayout || 'optimal'; // 'honeycomb' | 'optimal' | 'simple'
+    const stickerLayout = config.stickerLayout || 'optimal'; // 'nesting' | 'honeycomb' | 'optimal' | 'simple'
     const singleCut1Dao = Boolean(config.singleCut1Dao);
 
     const pontMarks = generatePontMarks(sheetDim.width, sheetDim.height, pontType, pontMargin, pontSize);
@@ -874,70 +912,331 @@ export function computeImpositionPlan(pagesMeta, config) {
       return false;
     };
 
-    let rawSlots = [];
-    if (stickerLayout === 'honeycomb') {
-      // Staggered Honeycomb packing for round/oval stickers
-      const stepX = trimW + gX;
-      // Vertical pitch for hexagonal/circle packing: sqrt(3)/2 * (h + gY) when circular, or 0.88 * (h + gY)
-      const ratio = Math.abs(trimW - trimH) < 2 ? 0.866 : 0.88;
-      const stepY = Math.max(trimH * 0.72, (trimH + gY) * ratio);
-      const maxRows = Math.max(1, Math.floor((availH - trimH) / stepY) + 1);
-
-      for (let r = 0; r < maxRows; r++) {
-        const y = effMargins.top + r * stepY;
-        if (y + trimH > sheetDim.height - effMargins.bottom + 0.1) break;
-        const rowOffset = r % 2 === 1 ? stepX / 2 : 0;
-        const maxCols = Math.max(1, Math.floor((availW - rowOffset - trimW) / stepX) + 1);
-        for (let c = 0; c < maxCols; c++) {
-          const x = effMargins.left + rowOffset + c * stepX;
-          if (x + trimW > sheetDim.width - effMargins.right + 0.1) break;
-          if (!hitsCorner(x, y, trimW, trimH)) {
-            rawSlots.push({ x, y, trimW, trimH, rotate: 0, scale: 1, block: 'primary' });
-          }
-        }
-      }
-    } else {
-      const { slots } = buildRawSlots(
-        { ...config, layoutType: stickerLayout === 'simple' ? 'simple' : 'optimal', keepOriginalSize: true },
-        availW,
-        availH,
-        trimW,
-        trimH
-      );
-      const aligned = alignSlots(slots, sheetDim.width, sheetDim.height, effMargins, 'center');
-      rawSlots = aligned.filter((s) => !hitsCorner(s.x, s.y, s.trimW, s.trimH));
-    }
-
-    const slotsWithClip = applySmartBleedClipping(rawSlots, bleedMm);
-    const M = slotsWithClip.length;
-
     // Build logical items (1-sided stickers)
-    const gang = Array.isArray(config.gangItems) && config.gangItems.length > 0
-      ? config.gangItems.map((it) => ({ front: it.frontIndex }))
-      : pagesMeta.map((_, i) => ({ front: i }));
+    const gang =
+      Array.isArray(config.gangItems) && config.gangItems.length > 0
+        ? config.gangItems.map((it) => ({ front: it.frontIndex, quantity: Math.max(1, parseInt(it.quantity, 10) || 1) }))
+        : pagesMeta.map((_, i) => ({ front: i, quantity: 1 }));
 
     const collation = config.collation || 'stepAndRepeat';
     const sheetLists = [];
-    if (collation === 'sequential' && gang.length > 1) {
-      const S = Math.ceil(gang.length / Math.max(1, M));
-      for (let s = 0; s < S; s++) {
-        sheetLists.push(
-          slotsWithClip.map((slot, idx) => {
-            const gIdx = s * M + idx;
-            return gIdx < gang.length ? { ...slot, pageIndex: gang[gIdx].front } : null;
-          }).filter(Boolean)
-        );
+    let slotsWithClip = [];
+    let M = 0;
+
+    if (stickerLayout === 'nesting') {
+      // TRUE-SHAPE POLYGON & MULTI-SIZE 1:1 NESTING SOLVER
+      const cellMm = 1.5;
+      const gridW = Math.max(10, Math.ceil(sheetDim.width / cellMm));
+      const gridH = Math.max(10, Math.ceil(sheetDim.height / cellMm));
+      const halfGutterX = gX / 2;
+      const halfGutterY = gY / 2;
+
+      const createBaseGrid = () => {
+        const g = new Uint8Array(gridW * gridH);
+        const minGX = Math.floor(effMargins.left / cellMm);
+        const maxGX = Math.ceil((sheetDim.width - effMargins.right) / cellMm);
+        const minGY = Math.floor(effMargins.top / cellMm);
+        const maxGY = Math.ceil((sheetDim.height - effMargins.bottom) / cellMm);
+        for (let gy = 0; gy < gridH; gy++) {
+          for (let gx = 0; gx < gridW; gx++) {
+            const xMm = (gx + 0.5) * cellMm;
+            const yMm = (gy + 0.5) * cellMm;
+            if (gx < minGX || gx >= maxGX || gy < minGY || gy >= maxGY || hitsCorner(xMm - cellMm / 2, yMm - cellMm / 2, cellMm, cellMm)) {
+              g[gy * gridW + gx] = 1;
+            }
+          }
+        }
+        return g;
+      };
+
+      const pointInPoly = (px, py, pts) => {
+        let inside = false;
+        for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+          const xi = pts[i][0], yi = pts[i][1];
+          const xj = pts[j][0], yj = pts[j][1];
+          const intersect = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-9) + xi;
+          if (intersect) inside = !inside;
+        }
+        return inside;
+      };
+
+      // Cache rasterized polygon bitmasks per (pageIndex, rot)
+      const maskCache = new Map();
+      const getRotatedItemMask = (pageIndex, rot) => {
+        const key = `${pageIndex}:${rot}`;
+        if (maskCache.has(key)) return maskCache.get(key);
+        const meta = pagesMeta[pageIndex];
+        const box = getPageEffectiveBox(meta);
+        const itemW = hasForcedTrim ? trimW : box.trimW;
+        const itemH = hasForcedTrim ? trimH : box.trimH;
+        const isRot90 = rot === 90 || rot === 270;
+        const drawW = isRot90 ? itemH : itemW;
+        const drawH = isRot90 ? itemW : itemH;
+
+        const padW = drawW + gX;
+        const padH = drawH + gY;
+        const mw = Math.max(1, Math.ceil(padW / cellMm));
+        const mh = Math.max(1, Math.ceil(padH / cellMm));
+        const mask = new Uint8Array(mw * mh);
+
+        const contours = meta?.extractedContours || [];
+        if (stickerShape === 'pdfContour' && contours.length > 0) {
+          const sx = itemW / Math.max(0.01, box.trimW);
+          const sy = itemH / Math.max(0.01, box.trimH);
+          const rotPolys = contours
+            .filter((c) => c.ptsMm && c.ptsMm.length >= 3)
+            .map((c) =>
+              c.ptsMm.map(([mx, my]) => {
+                const ux = (mx - box.offsetLeft) * sx;
+                const uy = (my - box.offsetTop) * sy;
+                if (rot === 90) return [uy, drawH - ux];
+                if (rot === 180) return [drawW - ux, drawH - uy];
+                if (rot === 270) return [drawW - uy, ux];
+                return [ux, uy];
+              })
+            );
+
+          if (rotPolys.length > 0) {
+            for (let my = 0; my < mh; my++) {
+              const py = (my + 0.5) * cellMm - halfGutterY;
+              for (let mx = 0; mx < mw; mx++) {
+                const px = (mx + 0.5) * cellMm - halfGutterX;
+                if (rotPolys.some((poly) => pointInPoly(px, py, poly))) {
+                  mask[my * mw + mx] = 1;
+                }
+              }
+            }
+            // Dilate by 1 cell if gutter > 0 so neighbors keep gap
+            if (gX > 0.2 || gY > 0.2) {
+              const dilated = new Uint8Array(mw * mh);
+              for (let y = 0; y < mh; y++) {
+                for (let x = 0; x < mw; x++) {
+                  if (!mask[y * mw + x]) continue;
+                  for (let dy = -1; dy <= 1; dy++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                      const nx = x + dx, ny = y + dy;
+                      if (nx >= 0 && nx < mw && ny >= 0 && ny < mh) dilated[ny * mw + nx] = 1;
+                    }
+                  }
+                }
+              }
+              const res = { mw, mh, mask: dilated, drawW, drawH, box };
+              maskCache.set(key, res);
+              return res;
+            }
+          } else {
+            mask.fill(1);
+          }
+        } else if (stickerShape === 'circle' || stickerShape === 'oval') {
+          const rx = padW / 2;
+          const ry = padH / 2;
+          for (let my = 0; my < mh; my++) {
+            const dy = ((my + 0.5) * cellMm - ry) / Math.max(0.1, ry);
+            for (let mx = 0; mx < mw; mx++) {
+              const dx = ((mx + 0.5) * cellMm - rx) / Math.max(0.1, rx);
+              if (dx * dx + dy * dy <= 1.0) mask[my * mw + mx] = 1;
+            }
+          }
+        } else {
+          mask.fill(1);
+        }
+
+        const res = { mw, mh, mask, drawW, drawH, box };
+        maskCache.set(key, res);
+        return res;
+      };
+
+      const canPlaceMask = (grid, gx0, gy0, mw, mh, mask) => {
+        if (gx0 < 0 || gy0 < 0 || gx0 + mw > gridW || gy0 + mh > gridH) return false;
+        for (let my = 0; my < mh; my++) {
+          const rowG = (gy0 + my) * gridW + gx0;
+          const rowM = my * mw;
+          for (let mx = 0; mx < mw; mx++) {
+            if (mask[rowM + mx] && grid[rowG + mx]) return false;
+          }
+        }
+        return true;
+      };
+
+      const stampMask = (grid, gx0, gy0, mw, mh, mask) => {
+        for (let my = 0; my < mh; my++) {
+          const rowG = (gy0 + my) * gridW + gx0;
+          const rowM = my * mw;
+          for (let mx = 0; mx < mw; mx++) {
+            if (mask[rowM + mx]) grid[rowG + mx] = 1;
+          }
+        }
+      };
+
+      const findBestPlacement = (grid, pageIndex) => {
+        let best = null;
+        const rots = [0, 90, 180, 270];
+        for (const rot of rots) {
+          const m = getRotatedItemMask(pageIndex, rot);
+          if (m.mw > gridW || m.mh > gridH) continue;
+          for (let gy = 0; gy <= gridH - m.mh; gy++) {
+            for (let gx = 0; gx <= gridW - m.mw; gx++) {
+              if (canPlaceMask(grid, gx, gy, m.mw, m.mh, m.mask)) {
+                const score = gy * 1.25 + gx * 0.35;
+                if (!best || score < best.score) {
+                  best = { gx, gy, rot, m, score };
+                }
+                break; // First valid gx in this row is optimal for this gy
+              }
+            }
+            if (best && gy * 1.25 > best.score) break;
+          }
+        }
+        return best;
+      };
+
+      if (collation === 'stepAndRepeat' && gang.length >= 1) {
+        // Fill 1 sheet per item by repeating that item as many times as fits
+        for (const gItem of gang) {
+          const grid = createBaseGrid();
+          const sheetPlacements = [];
+          while (sheetPlacements.length < 250) {
+            const found = findBestPlacement(grid, gItem.front);
+            if (!found) break;
+            stampMask(grid, found.gx, found.gy, found.m.mw, found.m.mh, found.m.mask);
+            sheetPlacements.push({
+              x: Math.round((found.gx * cellMm + halfGutterX) * 100) / 100,
+              y: Math.round((found.gy * cellMm + halfGutterY) * 100) / 100,
+              trimW: Math.round(found.m.drawW * 100) / 100,
+              trimH: Math.round(found.m.drawH * 100) / 100,
+              rotate: found.rot,
+              scale: 1,
+              block: found.rot === 90 || found.rot === 270 ? 'secondary' : 'primary',
+              pageIndex: gItem.front,
+              srcTrimBoxMm: found.m.box.isCustom ? found.m.box : undefined,
+              clipBleed: { top: bleedMm, bottom: bleedMm, left: bleedMm, right: bleedMm },
+            });
+          }
+          if (sheetPlacements.length > 0) sheetLists.push(sheetPlacements);
+        }
+      } else {
+        // Multi-item true-shape nesting: sort items by area descending so large fish pack first and smaller fish nest into gaps
+        const queue = gang
+          .map((g, orderIdx) => {
+            const b = getPageEffectiveBox(pagesMeta[g.front]);
+            return { pageIndex: g.front, area: b.trimW * b.trimH, orderIdx };
+          })
+          .sort((a, b) => b.area - a.area);
+
+        const remaining = [...queue];
+        while (remaining.length > 0 && sheetLists.length < 50) {
+          const grid = createBaseGrid();
+          const sheetPlacements = [];
+          for (let i = 0; i < remaining.length; ) {
+            const item = remaining[i];
+            const found = findBestPlacement(grid, item.pageIndex);
+            if (found) {
+              stampMask(grid, found.gx, found.gy, found.m.mw, found.m.mh, found.m.mask);
+              sheetPlacements.push({
+                x: Math.round((found.gx * cellMm + halfGutterX) * 100) / 100,
+                y: Math.round((found.gy * cellMm + halfGutterY) * 100) / 100,
+                trimW: Math.round(found.m.drawW * 100) / 100,
+                trimH: Math.round(found.m.drawH * 100) / 100,
+                rotate: found.rot,
+                scale: 1,
+                block: found.rot === 90 || found.rot === 270 ? 'secondary' : 'primary',
+                pageIndex: item.pageIndex,
+                srcTrimBoxMm: found.m.box.isCustom ? found.m.box : undefined,
+                clipBleed: { top: bleedMm, bottom: bleedMm, left: bleedMm, right: bleedMm },
+              });
+              remaining.splice(i, 1);
+            } else {
+              i++;
+            }
+          }
+          if (sheetPlacements.length === 0) {
+            // Item larger than sheet: place 1 centered on its own sheet so we never infinite-loop
+            const fallbackItem = remaining.shift();
+            const m = getRotatedItemMask(fallbackItem.pageIndex, 0);
+            sheetPlacements.push({
+              x: Math.max(effMargins.left, (sheetDim.width - m.drawW) / 2),
+              y: Math.max(effMargins.top, (sheetDim.height - m.drawH) / 2),
+              trimW: Math.round(m.drawW * 100) / 100,
+              trimH: Math.round(m.drawH * 100) / 100,
+              rotate: 0,
+              scale: 1,
+              block: 'primary',
+              pageIndex: fallbackItem.pageIndex,
+              srcTrimBoxMm: m.box.isCustom ? m.box : undefined,
+              clipBleed: { top: bleedMm, bottom: bleedMm, left: bleedMm, right: bleedMm },
+            });
+          }
+          sheetLists.push(sheetPlacements);
+        }
       }
+      slotsWithClip = sheetLists[0] || [];
+      M = slotsWithClip.length;
     } else {
-      for (let i = 0; i < gang.length; i++) {
-        sheetLists.push(slotsWithClip.map((slot) => ({ ...slot, pageIndex: gang[i].front })));
+      let rawSlots = [];
+      if (stickerLayout === 'honeycomb') {
+        // Staggered Honeycomb packing for round/oval stickers
+        const stepX = trimW + gX;
+        const ratio = Math.abs(trimW - trimH) < 2 ? 0.866 : 0.88;
+        const stepY = Math.max(trimH * 0.72, (trimH + gY) * ratio);
+        const maxRows = Math.max(1, Math.floor((availH - trimH) / stepY) + 1);
+
+        for (let r = 0; r < maxRows; r++) {
+          const y = effMargins.top + r * stepY;
+          if (y + trimH > sheetDim.height - effMargins.bottom + 0.1) break;
+          const rowOffset = r % 2 === 1 ? stepX / 2 : 0;
+          const maxCols = Math.max(1, Math.floor((availW - rowOffset - trimW) / stepX) + 1);
+          for (let c = 0; c < maxCols; c++) {
+            const x = effMargins.left + rowOffset + c * stepX;
+            if (x + trimW > sheetDim.width - effMargins.right + 0.1) break;
+            if (!hitsCorner(x, y, trimW, trimH)) {
+              rawSlots.push({ x, y, trimW, trimH, rotate: 0, scale: 1, block: 'primary' });
+            }
+          }
+        }
+      } else {
+        const { slots } = buildRawSlots(
+          { ...config, layoutType: stickerLayout === 'simple' ? 'simple' : 'optimal', keepOriginalSize: true },
+          availW,
+          availH,
+          trimW,
+          trimH
+        );
+        const aligned = alignSlots(slots, sheetDim.width, sheetDim.height, effMargins, 'center');
+        rawSlots = aligned.filter((s) => !hitsCorner(s.x, s.y, s.trimW, s.trimH));
+      }
+
+      slotsWithClip = applySmartBleedClipping(rawSlots, bleedMm);
+      M = slotsWithClip.length;
+
+      if (collation === 'sequential' && gang.length > 1) {
+        const S = Math.ceil(gang.length / Math.max(1, M));
+        for (let s = 0; s < S; s++) {
+          sheetLists.push(
+            slotsWithClip
+              .map((slot, idx) => {
+                const gIdx = s * M + idx;
+                if (gIdx >= gang.length) return null;
+                const pIdx = gang[gIdx].front;
+                const b = getPageEffectiveBox(pagesMeta[pIdx]);
+                return { ...slot, pageIndex: pIdx, srcTrimBoxMm: b.isCustom ? b : undefined };
+              })
+              .filter(Boolean)
+          );
+        }
+      } else {
+        for (let i = 0; i < gang.length; i++) {
+          const pIdx = gang[i].front;
+          const b = getPageEffectiveBox(pagesMeta[pIdx]);
+          sheetLists.push(
+            slotsWithClip.map((slot) => ({ ...slot, pageIndex: pIdx, srcTrimBoxMm: b.isCustom ? b : undefined }))
+          );
+        }
       }
     }
 
     sheetLists.forEach((placements, idx) => {
       let stickerCutPaths = [];
       if (stickerShape === 'pdfContour') {
-        const declaredB = Math.max(0, Number(bleedMm) || 0);
         for (const p of placements) {
           const srcMeta = pagesMeta[p.pageIndex];
           const contours = srcMeta?.extractedContours || [];
@@ -945,14 +1244,11 @@ export function computeImpositionPlan(pagesMeta, config) {
             stickerCutPaths.push({ kind: 'rect', x: p.x, y: p.y, w: p.trimW, h: p.trimH, r: cornerRadius });
             continue;
           }
-          const offL = srcMeta.hasExplicitTrimBox ? srcMeta.trimOffsetLeftMm || 0 : declaredB;
-          const offT = srcMeta.hasExplicitTrimBox ? srcMeta.trimOffsetTopMm || 0 : declaredB;
-          const srcTrimW = srcMeta.hasExplicitTrimBox
-            ? srcMeta.trimWmm
-            : Math.max(1, (srcMeta.mediaWmm || trimW) - 2 * declaredB);
-          const srcTrimH = srcMeta.hasExplicitTrimBox
-            ? srcMeta.trimHmm
-            : Math.max(1, (srcMeta.mediaHmm || trimH) - 2 * declaredB);
+          const effBox = p.srcTrimBoxMm || getPageEffectiveBox(srcMeta);
+          const offL = effBox.offsetLeft;
+          const offT = effBox.offsetTop;
+          const srcTrimW = effBox.trimW;
+          const srcTrimH = effBox.trimH;
 
           const rot = ((p.rotate % 360) + 360) % 360;
           const isRot90 = rot === 90 || rot === 270;
@@ -1387,9 +1683,11 @@ export function computeImpositionPlan(pagesMeta, config) {
     for (let slotIdx = 0; slotIdx < M; slotIdx++) {
       const item = assigned[slotIdx];
       if (!item) continue;
+      const effB = getPageEffectiveBox(pagesMeta[item.front]);
       frontPlacements.push({
         ...slotsWithClip[slotIdx],
         pageIndex: item.front,
+        srcTrimBoxMm: effB.isCustom ? effB : undefined,
       });
       backPageIndices.push(item.back);
     }

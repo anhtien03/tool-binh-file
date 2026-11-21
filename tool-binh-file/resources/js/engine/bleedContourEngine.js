@@ -314,7 +314,10 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
   const bgB = imgData[(padPx * cw + padPx) * 4 + 2];
 
   const fgMask = new Uint8Array(cw * ch);
-  const cornerIgnorePx = ignoreCornerMarks ? Math.round(cornerIgnoreMm * pxPerMm) : 0;
+  const effCornerMm = ignoreCornerMarks
+    ? Math.max(cornerIgnoreMm, Math.min(totalWidthMm, totalHeightMm) * 0.08)
+    : 0;
+  const cornerIgnorePx = ignoreCornerMarks ? Math.round(effCornerMm * pxPerMm) : 0;
 
   for (let y = padPx; y < padPx + workH; y++) {
     for (let x = padPx; x < padPx + workW; x++) {
@@ -367,7 +370,7 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
   const rawLoops = traceConnectedContours(finalMask, cw, ch, minAreaPx);
 
   const simplifyPx = Math.max(0.6, simplifyMm * pxPerMm);
-  const contoursMm = rawLoops.map((loop) => {
+  let contoursMm = rawLoops.map((loop) => {
     const simplified = rdpSimplify([...loop, loop[0]], simplifyPx).slice(0, -1);
     const smoothed = smoothLevel > 0 ? chaikinSmoothClosed(simplified, smoothLevel) : simplified;
     const ptsMm = smoothed.map(([px, py]) => [
@@ -376,6 +379,34 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     ]);
     return shapeMode !== 'auto' ? buildGeometricContourMm(ptsMm, shapeMode) : ptsMm;
   });
+
+  // Post-filter residual corner registration marks (e.g. L-marks/crop marks near 4 sheet corners)
+  if (ignoreCornerMarks && contoursMm.length > 1) {
+    const cornerZoneX = Math.max(26, totalWidthMm * 0.095);
+    const cornerZoneY = Math.max(26, totalHeightMm * 0.095);
+    const maxMarkSize = Math.max(28, Math.min(totalWidthMm, totalHeightMm) * 0.085);
+    contoursMm = contoursMm.filter((poly) => {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const [x, y] of poly) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+      const w = maxX - minX;
+      const h = maxY - minY;
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      const nearLeft = cx < cornerZoneX;
+      const nearRight = cx > totalWidthMm - cornerZoneX;
+      const nearTop = cy < cornerZoneY;
+      const nearBottom = cy > totalHeightMm - cornerZoneY;
+      if ((nearLeft || nearRight) && (nearTop || nearBottom) && w < maxMarkSize && h < maxMarkSize) {
+        return false;
+      }
+      return true;
+    });
+  }
 
   return contoursMm;
 }

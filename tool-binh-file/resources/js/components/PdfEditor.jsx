@@ -51,15 +51,17 @@ export default function PdfEditor() {
   const [coverPagesAtEnd, setCoverPagesAtEnd] = useState(0);
 
   // --- Sticker Die-Cut Settings ('sticker' mode) ---
-  const [stickerShape, setStickerShape] = useState('rect'); // 'rect' | 'circle' | 'oval'
+  const [stickerShape, setStickerShape] = useState('rect'); // 'rect' | 'circle' | 'oval' | 'pdfContour'
   const [cornerRadiusMm, setCornerRadiusMm] = useState(3);
-  const [stickerLayout, setStickerLayout] = useState('optimal'); // 'optimal' | 'honeycomb' | 'simple'
+  const [stickerLayout, setStickerLayout] = useState('nesting'); // 'nesting' | 'optimal' | 'honeycomb' | 'simple'
   const [pontType, setPontType] = useState('circle5mm'); // 'circle5mm' | 'circleHollow' | 'graphtec' | 'none'
   const [pontMarginMm, setPontMarginMm] = useState(10);
   const [pontSizeMm, setPontSizeMm] = useState(5);
   const [avoidCornerMarks, setAvoidCornerMarks] = useState(true);
   const [singleCut1Dao, setSingleCut1Dao] = useState(true);
   const [splitStickerPreview, setSplitStickerPreview] = useState(false);
+  const [autoCropInk, setAutoCropInk] = useState(false);
+  const [pageRangeExpr, setPageRangeExpr] = useState('');
 
   // --- Margins & Marks ---
   const [marginTop, setMarginTop] = useState(10);
@@ -191,6 +193,108 @@ export default function PdfEditor() {
     setGangItems((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  // Imposio-style Page Range & Multiplier Filter (e.g. "3-15", "1-3, 7", "odd", "even", "3*", "3-15*2")
+  const applyPageRangeFilter = (rawExpr = pageRangeExpr) => {
+    const expr = (rawExpr || '').trim().toLowerCase();
+    if (!expr || pdfPages.length === 0) return;
+
+    const total = pdfPages.length;
+    const selectedIndices = [];
+    const tokens = expr.split(/[,;]+/).map((t) => t.trim()).filter(Boolean);
+
+    for (const tok of tokens) {
+      let part = tok;
+      let mult = 1;
+      if (tok.includes('*')) {
+        const [lhs, rhs] = tok.split('*').map((s) => s.trim());
+        // Support both "3*" (page 3 x1 or all x3) and "3-15*2"
+        if (lhs && rhs) {
+          part = lhs;
+          mult = Math.max(1, Math.min(200, parseInt(rhs, 10) || 1));
+        } else if (lhs && !rhs) {
+          const n = parseInt(lhs, 10);
+          if (total === 1 && n > 1) {
+            part = '1';
+            mult = Math.min(200, n);
+          } else {
+            part = lhs;
+            mult = 2;
+          }
+        }
+      }
+
+      let rangeIndices = [];
+      if (part === 'odd' || part === 'le' || part === 'lẻ') {
+        for (let p = 1; p <= total; p += 2) rangeIndices.push(p - 1);
+      } else if (part === 'even' || part === 'chan' || part === 'chẵn') {
+        for (let p = 2; p <= total; p += 2) rangeIndices.push(p - 1);
+      } else if (part === 'all' || part === '*') {
+        for (let p = 1; p <= total; p++) rangeIndices.push(p - 1);
+      } else if (part.includes('-')) {
+        const [aStr, bStr] = part.split('-').map((s) => s.trim());
+        const a = Math.max(1, parseInt(aStr, 10) || 1);
+        const b = Math.min(total, parseInt(bStr, 10) || total);
+        const step = a <= b ? 1 : -1;
+        for (let p = a; a <= b ? p <= b : p >= b; p += step) {
+          if (p >= 1 && p <= total) rangeIndices.push(p - 1);
+        }
+      } else {
+        const p = parseInt(part, 10);
+        if (p >= 1 && p <= total) rangeIndices.push(p - 1);
+      }
+
+      for (let m = 0; m < mult; m++) {
+        selectedIndices.push(...rangeIndices);
+      }
+    }
+
+    if (selectedIndices.length > 0) {
+      setGangItems(
+        selectedIndices.map((pIdx, i) => {
+          const pg = pdfPages[pIdx];
+          const base = (pg?.fileName || 'Trang').replace(/\.pdf$/i, '');
+          return {
+            id: `filter-${Date.now()}-${i}-${pIdx}`,
+            name: `${base} (T${pIdx + 1})`,
+            frontIndex: pIdx,
+            backIndex: null,
+            quantity: 100,
+          };
+        })
+      );
+      setCurrentSheetIndex(0);
+    }
+  };
+
+  const removeSmallMarkPages = () => {
+    if (pdfPages.length === 0) return;
+    setGangItems((prev) =>
+      prev.filter((it) => {
+        const pg = pdfPages[it.frontIndex];
+        if (!pg) return false;
+        const w = autoCropInk && pg.inkBox ? pg.inkBox.trimWmm : pg.trimWmm || pg.mediaWmm;
+        const h = autoCropInk && pg.inkBox ? pg.inkBox.trimHmm : pg.trimHmm || pg.mediaHmm;
+        return w >= 25 || h >= 25;
+      })
+    );
+    setCurrentSheetIndex(0);
+  };
+
+  const resetAllGangPages = () => {
+    if (pdfPages.length === 0) return;
+    setGangItems(
+      pdfPages.map((pg, idx) => ({
+        id: `reset-${Date.now()}-${idx}`,
+        name: `${(pg.fileName || 'Trang').replace(/\.pdf$/i, '')} (T${idx + 1})`,
+        frontIndex: idx,
+        backIndex: null,
+        quantity: 100,
+      }))
+    );
+    setPageRangeExpr('');
+    setCurrentSheetIndex(0);
+  };
+
   const updateItemQuantity = (idx, qty) => {
     setGangItems((prev) =>
       prev.map((it, i) => (i === idx ? { ...it, quantity: Math.max(1, parseInt(qty, 10) || 1) } : it))
@@ -313,6 +417,7 @@ export default function PdfEditor() {
       showSlugLine,
       safeInsetMm,
       markThicknessPt: 0.25,
+      autoCropInk,
       gangItems,
     }),
     [
@@ -362,6 +467,7 @@ export default function PdfEditor() {
       registrationColor,
       showSlugLine,
       safeInsetMm,
+      autoCropInk,
       gangItems,
     ]
   );
@@ -538,6 +644,7 @@ export default function PdfEditor() {
             onSendSplitStickersToImpose={(splitPdfFile) => {
               setSourceFiles([{ id: `split-${Date.now()}`, file: splitPdfFile }]);
               setStickerShape('pdfContour');
+              setStickerLayout('nesting');
               setCollation('sequential');
               setActiveStudio('sticker');
               setCurrentSheetIndex(0);
@@ -663,6 +770,59 @@ export default function PdfEditor() {
                 )}
               </div>
 
+              {pdfPages.length > 0 && (
+                <div className="flex flex-col gap-1.5 bg-slate-50 border border-slate-200 rounded-xl p-2">
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={pageRangeExpr}
+                      onChange={(e) => setPageRangeExpr(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') applyPageRangeFilter();
+                      }}
+                      placeholder="Lọc trang: VD 3-15, odd, 3*"
+                      className="flex-1 min-w-0 bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px] font-mono text-slate-800 focus:outline-none focus:border-[#146C53]"
+                    />
+                    <button
+                      onClick={() => applyPageRangeFilter()}
+                      className="px-2.5 py-1 rounded-lg bg-[#146C53] hover:bg-[#115e48] text-white text-[11px] font-bold cursor-pointer shrink-0"
+                    >
+                      Lọc
+                    </button>
+                    {gangItems.length !== pdfPages.length && (
+                      <button
+                        onClick={resetAllGangPages}
+                        title="Lấy lại toàn bộ trang"
+                        className="px-2 py-1 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 text-[10px] font-semibold cursor-pointer shrink-0"
+                      >
+                        Tất cả
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-slate-200/70">
+                    <label className="flex items-center gap-1.5 text-[11px] font-semibold text-[#146C53] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoCropInk}
+                        onChange={(e) => setAutoCropInk(e.target.checked)}
+                        className="accent-[#146C53]"
+                      />
+                      ✂️ Tự cắt sát vùng mực (Auto-Crop)
+                    </label>
+                    {pdfPages.length > 1 && (
+                      <button
+                        onClick={removeSmallMarkPages}
+                        title="Loại bỏ các trang rác / dấu bon góc nhỏ hơn 25mm"
+                        className="px-2 py-0.5 rounded bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 text-[10px] font-semibold cursor-pointer"
+                      >
+                        🧹 Bỏ bon góc (&lt;25mm)
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {gangItems.length > 0 && (
                 <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-1">
                   <div className="flex items-center justify-between text-[11px] text-slate-400">
@@ -671,7 +831,23 @@ export default function PdfEditor() {
                       Xóa hết
                     </button>
                   </div>
-                  {gangItems.map((item, idx) => (
+                  {gangItems.map((item, idx) => {
+                    const pgMeta = pdfPages[item.frontIndex];
+                    const itemW = pgMeta
+                      ? autoCropInk && pgMeta.inkBox
+                        ? pgMeta.inkBox.trimWmm
+                        : pgMeta.hasExplicitTrimBox
+                        ? pgMeta.trimWmm
+                        : pgMeta.mediaWmm
+                      : 0;
+                    const itemH = pgMeta
+                      ? autoCropInk && pgMeta.inkBox
+                        ? pgMeta.inkBox.trimHmm
+                        : pgMeta.hasExplicitTrimBox
+                        ? pgMeta.trimHmm
+                        : pgMeta.mediaHmm
+                      : 0;
+                    return (
                     <div
                       key={item.id}
                       className="flex items-center justify-between gap-1.5 bg-[#FAFBF9] border border-slate-200 rounded-lg px-2.5 py-1.5 text-[11px]"
@@ -690,6 +866,11 @@ export default function PdfEditor() {
                           >
                             {item.backIndex !== null ? '2 Mặt' : '1 Mặt'}
                           </span>
+                          {itemW > 0 && (
+                            <span className="text-[10px] font-mono text-slate-500">
+                              {itemW.toFixed(1)}×{itemH.toFixed(1)}mm
+                            </span>
+                          )}
                           {item.backIndex === null && idx < gangItems.length - 1 && gangItems[idx + 1].backIndex === null && (
                             <button
                               onClick={() => mergeWithNextItem(idx)}
@@ -724,7 +905,8 @@ export default function PdfEditor() {
                         ✕
                       </button>
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               )}
             </div>
@@ -1047,6 +1229,7 @@ export default function PdfEditor() {
                       onChange={(e) => setStickerLayout(e.target.value)}
                       className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
                     >
+                      <option value="nesting">Xếp lồng 1:1 (Nesting đa cỡ)</option>
                       <option value="optimal">Trộn 0°+90°</option>
                       <option value="honeycomb">Tổ ong so le</option>
                       <option value="simple">Lưới thẳng</option>
