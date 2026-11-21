@@ -103,10 +103,26 @@ function rdpSimplify(points, eps) {
 }
 
 /**
- * Chaikin corner-cutting smoothing for closed loops
+ * Chaikin corner-cutting + Laplacian relaxation smoothing for silky-smooth closed loops
  */
 function chaikinSmoothClosed(pts, iterations = 2) {
   let cur = pts;
+  // First pass: light Laplacian relaxation to remove pixel staircase jitter
+  if (cur.length >= 5 && iterations > 0) {
+    const relaxed = [];
+    const n = cur.length;
+    for (let i = 0; i < n; i++) {
+      const prev = cur[(i - 1 + n) % n];
+      const curr = cur[i];
+      const next = cur[(i + 1) % n];
+      relaxed.push([
+        prev[0] * 0.25 + curr[0] * 0.5 + next[0] * 0.25,
+        prev[1] * 0.25 + curr[1] * 0.5 + next[1] * 0.25,
+      ]);
+    }
+    cur = relaxed;
+  }
+
   for (let it = 0; it < iterations; it++) {
     if (cur.length < 3) break;
     const next = [];
@@ -120,6 +136,49 @@ function chaikinSmoothClosed(pts, iterations = 2) {
     cur = next;
   }
   return cur;
+}
+
+/**
+ * Sample a perfect mathematical Circle / Ellipse / Rounded Rect polygon (in mm)
+ */
+function buildGeometricContourMm(ptsMm, shapeMode) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of ptsMm) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const rx = (maxX - minX) / 2;
+  const ry = (maxY - minY) / 2;
+
+  if (shapeMode === 'circle' || shapeMode === 'oval') {
+    const useRx = shapeMode === 'circle' ? Math.max(rx, ry) : rx;
+    const useRy = shapeMode === 'circle' ? Math.max(rx, ry) : ry;
+    const segs = 72;
+    const out = [];
+    for (let i = 0; i < segs; i++) {
+      const a = (i / segs) * Math.PI * 2;
+      out.push([
+        Math.round((cx + useRx * Math.cos(a)) * 100) / 100,
+        Math.round((cy + useRy * Math.sin(a)) * 100) / 100,
+      ]);
+    }
+    return out;
+  }
+
+  if (shapeMode === 'rect') {
+    return [
+      [Math.round(minX * 100) / 100, Math.round(minY * 100) / 100],
+      [Math.round(maxX * 100) / 100, Math.round(minY * 100) / 100],
+      [Math.round(maxX * 100) / 100, Math.round(maxY * 100) / 100],
+      [Math.round(minX * 100) / 100, Math.round(maxY * 100) / 100],
+    ];
+  }
+
+  return ptsMm;
 }
 
 /**
@@ -217,8 +276,9 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
   const {
     offsetMm = 2.0,
     smoothLevel = 2, // 0..3 Chaikin iterations
-    simplifyMm = 0.45,
+    simplifyMm = 0.65,
     minAreaMm2 = 4.0,
+    shapeMode = 'auto', // 'auto' | 'circle' | 'oval' | 'rect'
     alphaThreshold = 30,
     bgTolerance = 28,
   } = options;
@@ -297,10 +357,11 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
   const contoursMm = rawLoops.map((loop) => {
     const simplified = rdpSimplify([...loop, loop[0]], simplifyPx).slice(0, -1);
     const smoothed = smoothLevel > 0 ? chaikinSmoothClosed(simplified, smoothLevel) : simplified;
-    return smoothed.map(([px, py]) => [
+    const ptsMm = smoothed.map(([px, py]) => [
       Math.round(((px - padPx) / pxPerMm) * 100) / 100,
       Math.round(((py - padPx) / pxPerMm) * 100) / 100,
     ]);
+    return shapeMode !== 'auto' ? buildGeometricContourMm(ptsMm, shapeMode) : ptsMm;
   });
 
   return contoursMm;

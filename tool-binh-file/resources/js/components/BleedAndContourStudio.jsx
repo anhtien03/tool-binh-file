@@ -19,9 +19,10 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
   const [error, setError] = useState(null);
 
   // Contour Tracer Options
+  const [shapeMode, setShapeMode] = useState('auto'); // 'auto' | 'circle' | 'oval' | 'rect'
   const [offsetMm, setOffsetMm] = useState(2.0);
   const [smoothLevel, setSmoothLevel] = useState(2);
-  const [simplifyMm, setSimplifyMm] = useState(0.45);
+  const [simplifyMm, setSimplifyMm] = useState(0.65);
   const [minAreaMm2, setMinAreaMm2] = useState(4.0);
   const [contoursMm, setContoursMm] = useState([]);
 
@@ -96,6 +97,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
           smoothLevel,
           simplifyMm,
           minAreaMm2,
+          shapeMode,
         });
         setContoursMm(traced);
       } catch (err) {
@@ -104,7 +106,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
       }
     }, 20);
     return () => clearTimeout(timer);
-  }, [renderedCanvas, subMode, sizeMm.w, sizeMm.h, offsetMm, smoothLevel, simplifyMm, minAreaMm2]);
+  }, [renderedCanvas, subMode, sizeMm.w, sizeMm.h, offsetMm, smoothLevel, simplifyMm, minAreaMm2, shapeMode]);
 
   // Draw live preview canvas
   useEffect(() => {
@@ -339,6 +341,20 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
                   Đã nhận diện {contoursMm.length} tem
                 </span>
               )}
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] text-slate-500">Hình dáng đường bế</label>
+              <select
+                value={shapeMode}
+                onChange={(e) => setShapeMode(e.target.value)}
+                className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-800"
+              >
+                <option value="auto">Tự do theo hình (Freeform)</option>
+                <option value="circle">Ép Tròn chuẩn (Circle đều 100%)</option>
+                <option value="oval">Ép Oval / Elip chuẩn</option>
+                <option value="rect">Ép Chữ nhật vuông</option>
+              </select>
             </div>
 
             <div className="flex flex-col gap-1">
