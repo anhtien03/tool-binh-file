@@ -532,6 +532,120 @@ function stripVietnamese(str) {
 }
 
 /**
+ * Concise, practical Job Checks (Preflight & Geometry diagnostics)
+ */
+export function runJobChecks(pagesMeta, sheets, sheetDim, config, summary) {
+  const checks = [];
+  if (!pagesMeta || pagesMeta.length === 0 || sheets.length === 0) return checks;
+
+  const bleedMm = Math.max(0, Number(config.bleedMm) || 0);
+  const safeMm = Math.max(0, Number(config.safeInsetMm) ?? 3);
+
+  // 1. Sheet boundary & mark overflow check
+  let outOfBounds = false;
+  for (const s of sheets) {
+    for (const p of s.placements) {
+      if (
+        p.x - p.clipBleed.left < -0.1 ||
+        p.y - p.clipBleed.top < -0.1 ||
+        p.x + p.trimW + p.clipBleed.right > sheetDim.width + 0.1 ||
+        p.y + p.trimH + p.clipBleed.bottom > sheetDim.height + 0.1
+      ) {
+        outOfBounds = true;
+        break;
+      }
+    }
+    if (outOfBounds) break;
+  }
+
+  if (outOfBounds) {
+    checks.push({
+      id: 'bounds',
+      level: 'error',
+      title: 'Tràn ra ngoài khổ giấy',
+      detail: 'Một số ô hoặc phần Bleed vượt quá mép tờ in. Hãy giảm số cột/hàng hoặc tăng lề.',
+    });
+  } else {
+    checks.push({
+      id: 'bounds',
+      level: 'ok',
+      title: 'Khổ giấy & lề hợp lệ',
+      detail: `Toàn bộ ${summary.itemsPerSheet} con/tờ nằm gọn trong khổ ${sheetDim.width}×${sheetDim.height} mm.`,
+    });
+  }
+
+  // 2. Source Bleed check
+  const first = pagesMeta[0];
+  const rawW = first.mediaWmm ?? first.width / MM_TO_PT;
+  const rawH = first.mediaHmm ?? first.height / MM_TO_PT;
+  const hasForcedTrim = Number(config.targetTrimW) > 0 && Number(config.targetTrimH) > 0;
+  if (bleedMm > 0 && !first.hasExplicitTrimBox && !hasForcedTrim) {
+    checks.push({
+      id: 'bleed',
+      level: 'warn',
+      title: `Khai báo Bleed ${bleedMm} mm (chưa có TrimBox)`,
+      detail: `File gốc (${rawW.toFixed(1)}×${rawH.toFixed(1)} mm) không có TrimBox; hệ thống tự lùi ${bleedMm} mm mỗi cạnh để làm thành phẩm ${summary.trimW}×${summary.trimH} mm.`,
+    });
+  } else if (bleedMm > 0) {
+    checks.push({
+      id: 'bleed',
+      level: 'ok',
+      title: `Bleed ${bleedMm} mm đã sẵn sàng`,
+      detail: 'Smart Bleed Clipping tự cắt gọn phần tràn lề tại giữa khe hở.',
+    });
+  }
+
+  // 3. Mixed page dimensions check
+  if (pagesMeta.length > 1) {
+    let mismatch = false;
+    for (let i = 1; i < pagesMeta.length; i++) {
+      const pw = pagesMeta[i].mediaWmm ?? pagesMeta[i].width / MM_TO_PT;
+      const ph = pagesMeta[i].mediaHmm ?? pagesMeta[i].height / MM_TO_PT;
+      if (Math.abs(pw - rawW) > 1.0 || Math.abs(ph - rawH) > 1.0) {
+        mismatch = true;
+        break;
+      }
+    }
+    if (mismatch) {
+      checks.push({
+        id: 'size-mismatch',
+        level: 'warn',
+        title: 'Kích thước các trang/file không đồng nhất',
+        detail: 'Các trang nguồn lệch nhau > 1 mm; có thể bật "Ép Trim Size" (VD: 90×54 mm) để đồng bộ.',
+      });
+    }
+  }
+
+  // 4. Duplex mixed 1-sided / 2-sided check
+  if (config.mode !== 'booklet' && config.duplexMode && config.duplexMode !== 'simplex') {
+    const gang = config.gangItems || [];
+    const oneSidedCount = gang.filter((it) => it.backIndex === null).length;
+    if (oneSidedCount > 0) {
+      checks.push({
+        id: 'duplex-mixed',
+        level: 'warn',
+        title: `Trộn ${oneSidedCount} mẫu 1 mặt trên tờ 2 mặt`,
+        detail: 'Các ô mặt sau tương ứng với mẫu 1 mặt sẽ tự động để trắng.',
+      });
+    }
+  }
+
+  // 5. Safe Area check summary
+  if (safeMm > 0) {
+    const innerW = Math.max(0, Math.round((summary.trimW - 2 * safeMm) * 10) / 10);
+    const innerH = Math.max(0, Math.round((summary.trimH - 2 * safeMm) * 10) / 10);
+    checks.push({
+      id: 'safe-area',
+      level: innerW <= 0 || innerH <= 0 ? 'warn' : 'ok',
+      title: `Vùng an toàn ${safeMm} mm (${innerW}×${innerH} mm)`,
+      detail: 'Đảm bảo chữ/logo/QR nằm trong khung nét đứt xanh lá trên bản xem trước.',
+    });
+  }
+
+  return checks;
+}
+
+/**
  * Binary-search Ratio Stack allocator:
  * Given M slots on a sheet and items with quantities Q_i, find minimum sheet count S
  * such that sum(ceil(Q_i / S)) <= M.
@@ -758,19 +872,21 @@ export function computeImpositionPlan(pagesMeta, config) {
 
     const usedArea = 2 * drawW * drawH;
     const sheetArea = sheetDim.width * sheetDim.height;
+    const bookletSummary = {
+      totalSheets: sheets.length,
+      physicalSheets,
+      itemsPerSheet: 2,
+      utilizationPct: Math.min(100, Math.round((usedArea / sheetArea) * 1000) / 10),
+      trimW: Math.round(trimW * 100) / 100,
+      trimH: Math.round(trimH * 100) / 100,
+      primaryCount: 2,
+      secondaryCount: 0,
+    };
     return {
       sheetDim,
       sheets,
-      summary: {
-        totalSheets: sheets.length,
-        physicalSheets,
-        itemsPerSheet: 2,
-        utilizationPct: Math.min(100, Math.round((usedArea / sheetArea) * 1000) / 10),
-        trimW: Math.round(trimW * 100) / 100,
-        trimH: Math.round(trimH * 100) / 100,
-        primaryCount: 2,
-        secondaryCount: 0,
-      },
+      summary: bookletSummary,
+      jobChecks: runJobChecks(pagesMeta, sheets, sheetDim, config, bookletSummary),
     };
   }
 
@@ -970,22 +1086,24 @@ export function computeImpositionPlan(pagesMeta, config) {
 
   const usedArea = slotsWithClip.reduce((acc, s) => acc + s.trimW * s.trimH, 0);
   const sheetArea = sheetDim.width * sheetDim.height;
+  const gridSummary = {
+    totalSheets: sheets.length,
+    physicalSheets: totalPhysical,
+    ratioSheetsNeeded,
+    itemsPerSheet: M,
+    utilizationPct: Math.min(100, Math.round((usedArea / sheetArea) * 1000) / 10),
+    trimW: Math.round(trimW * 100) / 100,
+    trimH: Math.round(trimH * 100) / 100,
+    primaryCount: layoutMeta.primaryCount,
+    secondaryCount: layoutMeta.secondaryCount,
+    cols: layoutMeta.cols,
+    rows: layoutMeta.rows,
+  };
 
   return {
     sheetDim,
     sheets,
-    summary: {
-      totalSheets: sheets.length,
-      physicalSheets: totalPhysical,
-      ratioSheetsNeeded,
-      itemsPerSheet: M,
-      utilizationPct: Math.min(100, Math.round((usedArea / sheetArea) * 1000) / 10),
-      trimW: Math.round(trimW * 100) / 100,
-      trimH: Math.round(trimH * 100) / 100,
-      primaryCount: layoutMeta.primaryCount,
-      secondaryCount: layoutMeta.secondaryCount,
-      cols: layoutMeta.cols,
-      rows: layoutMeta.rows,
-    },
+    summary: gridSummary,
+    jobChecks: runJobChecks(pagesMeta, sheets, sheetDim, config, gridSummary),
   };
 }

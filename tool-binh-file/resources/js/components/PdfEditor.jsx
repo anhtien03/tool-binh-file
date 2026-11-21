@@ -59,6 +59,8 @@ export default function PdfEditor() {
   const [registrationColor, setRegistrationColor] = useState(false);
   const [showSlugLine, setShowSlugLine] = useState(true);
   const [showBleedOverlay, setShowBleedOverlay] = useState(true);
+  const [showSafeArea, setShowSafeArea] = useState(true);
+  const [safeInsetMm, setSafeInsetMm] = useState(3);
 
   // --- UI State ---
   const [currentSheetIndex, setCurrentSheetIndex] = useState(0);
@@ -280,6 +282,7 @@ export default function PdfEditor() {
       registrationMarks,
       registrationColor,
       showSlugLine,
+      safeInsetMm,
       markThicknessPt: 0.25,
       gangItems,
     }),
@@ -319,6 +322,7 @@ export default function PdfEditor() {
       registrationMarks,
       registrationColor,
       showSlugLine,
+      safeInsetMm,
       gangItems,
     ]
   );
@@ -961,6 +965,21 @@ export default function PdfEditor() {
                   <input type="checkbox" className="accent-[#146C53]" checked={showBleedOverlay} onChange={(e) => setShowBleedOverlay(e.target.checked)} />
                   Soi Bleed đỏ
                 </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" className="accent-[#146C53]" checked={showSafeArea} onChange={(e) => setShowSafeArea(e.target.checked)} />
+                  Vùng an toàn
+                </label>
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-slate-500">Safe (mm):</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={safeInsetMm}
+                    onChange={(e) => setSafeInsetMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                    className="w-12 bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[11px] font-mono"
+                  />
+                </div>
               </div>
             </div>
           </aside>
@@ -1011,6 +1030,8 @@ export default function PdfEditor() {
                 margins={{ top: marginTop, bottom: marginBottom, left: marginLeft, right: marginRight }}
                 bleedMm={bleedMm}
                 showBleedOverlay={showBleedOverlay}
+                showSafeArea={showSafeArea}
+                safeInsetMm={safeInsetMm}
                 currentSheetIndex={currentSheetIndex}
                 setCurrentSheetIndex={setCurrentSheetIndex}
                 onPagesSynced={handlePagesSynced}
@@ -1055,6 +1076,60 @@ export default function PdfEditor() {
                   </span>
                 </div>
               </div>
+
+              {/* Job Checks Section */}
+              {plan.jobChecks && plan.jobChecks.length > 0 && (
+                <div className="pt-3 border-t border-slate-100 flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      KIỂM TRA BÀI (JOB CHECKS)
+                    </span>
+                    {(() => {
+                      const warnCount = plan.jobChecks.filter((c) => c.level !== 'ok').length;
+                      return (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            warnCount === 0
+                              ? 'bg-[#E6F4EF] text-[#146C53]'
+                              : 'bg-amber-50 text-amber-700 border border-amber-200'
+                          }`}
+                        >
+                          {warnCount === 0 ? 'Đạt chuẩn' : `${warnCount} lưu ý`}
+                        </span>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-0.5">
+                    {plan.jobChecks.map((chk) => (
+                      <div
+                        key={chk.id}
+                        className={`rounded-lg px-2.5 py-2 border text-[11px] ${
+                          chk.level === 'error'
+                            ? 'bg-rose-50 border-rose-200 text-rose-800'
+                            : chk.level === 'warn'
+                            ? 'bg-amber-50/70 border-amber-200 text-amber-900'
+                            : 'bg-[#FAFBF9] border-slate-200 text-slate-700'
+                        }`}
+                      >
+                        <div className="font-bold flex items-center gap-1.5">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              chk.level === 'error'
+                                ? 'bg-rose-500'
+                                : chk.level === 'warn'
+                                ? 'bg-amber-500'
+                                : 'bg-[#146C53]'
+                            }`}
+                          />
+                          <span>{chk.title}</span>
+                        </div>
+                        <div className="text-[10px] opacity-80 mt-0.5 leading-relaxed">{chk.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col gap-2 pt-3 border-t border-slate-100">

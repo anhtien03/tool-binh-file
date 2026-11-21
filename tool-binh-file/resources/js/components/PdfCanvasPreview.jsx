@@ -13,6 +13,8 @@ export default function PdfCanvasPreview({
   margins,
   bleedMm = 0,
   showBleedOverlay = true,
+  showSafeArea = true,
+  safeInsetMm = 3,
   currentSheetIndex,
   setCurrentSheetIndex,
   onPagesSynced,
@@ -295,6 +297,18 @@ export default function PdfCanvasPreview({
         ctx.restore();
       }
 
+      // Optional Green Dashed Safe Area Overlay (inset from TrimBox)
+      const safeMm = Math.max(0, Number(safeInsetMm) || 0);
+      if (showSafeArea && safeMm > 0 && p.trimW > 2 * safeMm && p.trimH > 2 * safeMm) {
+        const sPx = safeMm * scale;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(20, 108, 83, 0.85)';
+        ctx.lineWidth = 0.85;
+        ctx.setLineDash([3, 2]);
+        ctx.strokeRect(xPx + sPx, yPx + sPx, wPx - 2 * sPx, hPx - 2 * sPx);
+        ctx.restore();
+      }
+
       // Page number & orientation badge
       const badgeRadius = Math.max(9, Math.min(13, Math.min(wPx, hPx) * 0.22));
       ctx.fillStyle = p.block === 'secondary' ? 'rgba(180, 83, 9, 0.82)' : 'rgba(15, 23, 42, 0.75)';
@@ -345,7 +359,7 @@ export default function PdfCanvasPreview({
       ctx.textBaseline = 'bottom';
       ctx.fillText(activeSheet.slugText, 6 * scale, canvasHeight - 2 * scale);
     }
-  }, [activeSheet, pages, sheetDim, margins, bleedMm, showBleedOverlay, canvasWidth, canvasHeight]);
+  }, [activeSheet, pages, sheetDim, margins, bleedMm, showBleedOverlay, showSafeArea, safeInsetMm, canvasWidth, canvasHeight]);
 
   return (
     <div className="flex flex-col items-center w-full relative">
@@ -371,6 +385,20 @@ export default function PdfCanvasPreview({
             style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
           />
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-center gap-4 mt-2.5 text-[11px] text-slate-500">
+        <span className="flex items-center gap-1.5">
+          <span className="w-4 border-t border-dashed border-red-500 inline-block" /> Bleed (Tràn lề)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="w-4 border-t border-slate-500 inline-block" /> Đường cắt thành phẩm (Trim)
+        </span>
+        {showSafeArea && (
+          <span className="flex items-center gap-1.5">
+            <span className="w-4 border-t border-dashed border-[#146C53] inline-block" /> Vùng an toàn ({safeInsetMm}mm)
+          </span>
+        )}
       </div>
 
       {sheets.length > 0 && (
