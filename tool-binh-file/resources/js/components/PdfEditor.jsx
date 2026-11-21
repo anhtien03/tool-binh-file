@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import PdfCanvasPreview from './PdfCanvasPreview';
 import DielineStudio from './DielineStudio';
 import TemplateLibrary from './TemplateLibrary';
+import BleedAndContourStudio from './BleedAndContourStudio';
 import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
 import { exportImposedPdf, exportStickerPdf, exportStickerCutSvg } from '../engine/pdfExporter';
 
@@ -448,6 +449,7 @@ export default function PdfEditor() {
             {[
               ['library', 'Thư viện hộp'],
               ['dieline', 'Khuôn 2D & 3D'],
+              ['bleed', 'Bù xén & Đường cắt'],
               ['namecard', 'Bình Namecard'],
               ['sticker', 'Bình Tem Bế (Decal)'],
               ['booklet', 'Bình Sách (Booklet)'],
@@ -472,7 +474,16 @@ export default function PdfEditor() {
 
         {/* Right Quick Action */}
         <div className="flex items-center gap-2">
-          {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
+          {activeStudio === 'bleed' && (
+        <BleedAndContourStudio
+          onOpenStickerImpose={() => {
+            setActiveStudio('sticker');
+            setCurrentSheetIndex(0);
+          }}
+        />
+      )}
+
+      {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
             <button
               onClick={() => handleDownload('print')}
               disabled={loading || sourceFiles.length === 0}
@@ -519,6 +530,15 @@ export default function PdfEditor() {
           onOpenLibrary={() => setActiveStudio('library')}
           onOpenImpose={() => {
             setActiveStudio('namecard');
+            setCurrentSheetIndex(0);
+          }}
+        />
+      )}
+
+      {activeStudio === 'bleed' && (
+        <BleedAndContourStudio
+          onOpenStickerImpose={() => {
+            setActiveStudio('sticker');
             setCurrentSheetIndex(0);
           }}
         />
