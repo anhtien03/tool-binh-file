@@ -778,11 +778,110 @@ export function computeImpositionPlan(pagesMeta, config) {
 
   if (config.mode === 'booklet') {
     const numPages = pagesMeta.length;
-    const padded = Math.ceil(numPages / 4) * 4;
-    const physicalSheets = padded / 4;
-    const bookletStyle = config.bookletStyle || 'saddleStitch'; // 'saddleStitch' | 'perfectBound'
+    const bookletStyle = config.bookletStyle || 'saddleStitch'; // 'saddleStitch' | 'perfectBound' | 'wireO' | 'zine8'
     const binding = config.bookletBinding || 'left';
     const creepMm = Math.max(0, Number(config.bookletCreep) || 0);
+    const pagesPerSig = [4, 8, 16].includes(Number(config.pagesPerSignature)) ? Number(config.pagesPerSignature) : 4;
+    const coverAtEnd = Math.max(0, Math.min(4, parseInt(config.coverPagesAtEnd, 10) || 0));
+
+    // Helper: map 1-based imposed page slot (1..padded) to 0-based source pageIndex (or -1 if blank)
+    const resolveBookletPageIdx = (slotNum1Based, totalPadded) => {
+      if (coverAtEnd > 0 && numPages > coverAtEnd && totalPadded > numPages) {
+        const blanks = totalPadded - numPages;
+        const bodyCount = numPages - coverAtEnd;
+        if (slotNum1Based <= bodyCount) return slotNum1Based - 1;
+        if (slotNum1Based <= bodyCount + blanks) return -1; // blank inserted BEFORE back cover
+        return numPages - (totalPadded - slotNum1Based) - 1;
+      }
+      return slotNum1Based <= numPages ? slotNum1Based - 1 : -1;
+    };
+
+    // --- ZINE 8-PAGE (1-SIDED 4x2) ---
+    if (bookletStyle === 'zine8') {
+      const zineChunks = Math.max(1, Math.ceil(numPages / 8));
+      const cellW = availW / 4;
+      const cellH = availH / 2;
+      const scale = config.keepOriginalSize
+        ? Math.min(1, cellW / trimW, cellH / trimH)
+        : Math.min(cellW / trimW, cellH / trimH);
+      const drawW = trimW * scale;
+      const drawH = trimH * scale;
+      const startX = effMargins.left + (availW - 4 * drawW) / 2;
+      const startY = effMargins.top + (availH - 2 * drawH) / 2;
+
+      // Top row (180°): [5, 4, 3, 2], Bottom row (0°): [6, 7, 8, 1]
+      const zineOrder = [
+        { num: 5, row: 0, col: 0, rot: 180 },
+        { num: 4, row: 0, col: 1, rot: 180 },
+        { num: 3, row: 0, col: 2, rot: 180 },
+        { num: 2, row: 0, col: 3, rot: 180 },
+        { num: 6, row: 1, col: 0, rot: 0 },
+        { num: 7, row: 1, col: 1, rot: 0 },
+        { num: 8, row: 1, col: 2, rot: 0 },
+        { num: 1, row: 1, col: 3, rot: 0 },
+      ];
+
+      for (let z = 0; z < zineChunks; z++) {
+        const placements = [];
+        for (const slot of zineOrder) {
+          const pIdx = z * 8 + slot.num - 1;
+          if (pIdx < numPages) {
+            placements.push({
+              pageIndex: pIdx,
+              x: startX + slot.col * drawW,
+              y: startY + slot.row * drawH,
+              trimW: drawW,
+              trimH: drawH,
+              rotate: slot.rot,
+              scale,
+              block: 'primary',
+              clipBleed: { top: 0, right: 0, bottom: 0, left: 0 },
+            });
+          }
+        }
+        const marks = generateSheetMarks(placements, sheetDim.width, sheetDim.height, {
+          markStyle: config.markStyle,
+          markLength: config.markLength,
+          markOffset: config.markOffset,
+          bleedMm: 0,
+          registrationMarks: config.registrationMarks,
+        });
+        const rawSlug = `Toolbinhfile | Zine 8 trang (1 to 4x2) | To ${z + 1}/${zineChunks} | Kho ${sheetDim.width}x${sheetDim.height}mm`;
+        sheets.push({
+          index: sheets.length,
+          physicalSheet: z + 1,
+          side: 'Simplex',
+          placements,
+          marks,
+          slugText: config.showSlugLine ? stripVietnamese(rawSlug) : '',
+        });
+      }
+
+      const zineSummary = {
+        totalSheets: sheets.length,
+        physicalSheets: zineChunks,
+        itemsPerSheet: 8,
+        utilizationPct: Math.min(100, Math.round(((8 * drawW * drawH) / (sheetDim.width * sheetDim.height)) * 1000) / 10),
+        trimW: Math.round(trimW * 100) / 100,
+        trimH: Math.round(trimH * 100) / 100,
+        primaryCount: 8,
+        secondaryCount: 0,
+      };
+      return {
+        sheetDim,
+        sheets,
+        summary: zineSummary,
+        jobChecks: runJobChecks(pagesMeta, sheets, sheetDim, config, zineSummary),
+      };
+    }
+
+    // --- SADDLE STITCH / PERFECT BOUND (4/8/16p) / WIRE-O (Cut & Stack) ---
+    const unitPages = bookletStyle === 'perfectBound' ? pagesPerSig : 4;
+    const padded =
+      bookletStyle === 'perfectBound'
+        ? Math.ceil(numPages / pagesPerSig) * pagesPerSig
+        : Math.ceil(numPages / 4) * 4;
+    const physicalSheets = Math.max(1, padded / 4);
 
     const halfAvailW = availW / 2;
     const scaleX = halfAvailW / trimW;
@@ -795,33 +894,47 @@ export function computeImpositionPlan(pagesMeta, config) {
 
     for (let k = 0; k < physicalSheets; k++) {
       let fLeft, fRight, bLeft, bRight;
-      if (bookletStyle === 'perfectBound') {
-        // 4-page signatures stacked sequentially: (4|1) & (2|3), (8|5) & (6|7)...
-        const base = k * 4;
-        fLeft = base + 4;
-        fRight = base + 1;
-        bLeft = base + 2;
-        bRight = base + 3;
+      let creepShift = 0;
+
+      if (bookletStyle === 'wireO') {
+        // Cut & Stack 2-Up: left pile = pages 1..2K, right pile = pages 2K+1..4K
+        const K = physicalSheets;
+        fLeft = 2 * k + 1;
+        fRight = 2 * K + 2 * k + 1;
+        bLeft = 2 * K + 2 * k + 2; // Mirror X for work & turn
+        bRight = 2 * k + 2;
+      } else if (bookletStyle === 'perfectBound') {
+        const sheetsPerSig = pagesPerSig / 4;
+        const sigIdx = Math.floor(k / sheetsPerSig);
+        const kInSig = k % sheetsPerSig;
+        const sigBase = sigIdx * pagesPerSig;
+        fLeft = sigBase + (pagesPerSig - 2 * kInSig);
+        fRight = sigBase + (2 * kInSig + 1);
+        bLeft = sigBase + (2 * kInSig + 2);
+        bRight = sigBase + (pagesPerSig - 2 * kInSig - 1);
+        creepShift = kInSig * creepMm;
       } else {
         // Saddle-Stitch nested
         fLeft = padded - 2 * k;
         fRight = 2 * k + 1;
         bLeft = 2 * k + 2;
         bRight = padded - 2 * k - 1;
+        creepShift = k * creepMm;
       }
 
-      if (binding === 'right') {
+      if (binding === 'right' && bookletStyle !== 'wireO') {
         [fLeft, fRight] = [fRight, fLeft];
         [bLeft, bRight] = [bRight, bLeft];
       }
 
-      const creepShift = bookletStyle === 'saddleStitch' ? k * creepMm : 0;
-
       const buildBookletSide = (leftNum, rightNum, sideLabel) => {
         const placements = [];
-        if (leftNum <= numPages) {
+        const leftIdx = resolveBookletPageIdx(leftNum, padded);
+        const rightIdx = resolveBookletPageIdx(rightNum, padded);
+
+        if (leftIdx >= 0) {
           placements.push({
-            pageIndex: leftNum - 1,
+            pageIndex: leftIdx,
             x: spineX - drawW + creepShift,
             y: topY,
             trimW: drawW,
@@ -829,13 +942,12 @@ export function computeImpositionPlan(pagesMeta, config) {
             rotate: 0,
             scale,
             block: 'primary',
-            // Clip inner spine bleed to 0; keep 3 outer edges
             clipBleed: { top: bleedMm * scale, right: 0, bottom: bleedMm * scale, left: bleedMm * scale },
           });
         }
-        if (rightNum <= numPages) {
+        if (rightIdx >= 0) {
           placements.push({
-            pageIndex: rightNum - 1,
+            pageIndex: rightIdx,
             x: spineX - creepShift,
             y: topY,
             trimW: drawW,
@@ -855,7 +967,13 @@ export function computeImpositionPlan(pagesMeta, config) {
           registrationMarks: config.registrationMarks,
         });
 
-        const rawSlug = `PrynX Engine | Booklet (${bookletStyle === 'saddleStitch' ? 'Bam kim' : 'Dong keo'}) | To ${k + 1}/${physicalSheets} (${sideLabel}) | Kho ${sheetDim.width}x${sheetDim.height}mm | Creep ${creepMm}mm`;
+        const modeLabel =
+          bookletStyle === 'wireO'
+            ? 'Wire-O Gay xoan'
+            : bookletStyle === 'perfectBound'
+            ? `Dong keo Tay ${unitPages}p`
+            : 'Bam kim';
+        const rawSlug = `Toolbinhfile | ${modeLabel} | To ${k + 1}/${physicalSheets} (${sideLabel}) | Kho ${sheetDim.width}x${sheetDim.height}mm | Creep ${creepMm}mm`;
         sheets.push({
           index: sheets.length,
           physicalSheet: k + 1,

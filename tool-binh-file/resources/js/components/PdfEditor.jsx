@@ -44,6 +44,8 @@ export default function PdfEditor() {
   const [bookletStyle, setBookletStyle] = useState('saddleStitch');
   const [bookletBinding, setBookletBinding] = useState('left');
   const [bookletCreep, setBookletCreep] = useState(0.2);
+  const [pagesPerSignature, setPagesPerSignature] = useState(8);
+  const [coverPagesAtEnd, setCoverPagesAtEnd] = useState(0);
 
   // --- Margins & Marks ---
   const [marginTop, setMarginTop] = useState(10);
@@ -271,6 +273,8 @@ export default function PdfEditor() {
       bookletStyle,
       bookletBinding,
       bookletCreep,
+      pagesPerSignature,
+      coverPagesAtEnd,
       marginTop,
       marginBottom,
       marginLeft,
@@ -311,6 +315,8 @@ export default function PdfEditor() {
       bookletStyle,
       bookletBinding,
       bookletCreep,
+      pagesPerSignature,
+      coverPagesAtEnd,
       marginTop,
       marginBottom,
       marginLeft,
@@ -864,20 +870,39 @@ export default function PdfEditor() {
                   <select
                     value={bookletStyle}
                     onChange={(e) => setBookletStyle(e.target.value)}
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-800"
                   >
-                    <option value="saddleStitch">Bấm kim giữa</option>
-                    <option value="perfectBound">Đóng keo (Tay 4p)</option>
+                    <option value="saddleStitch">Bấm kim giữa (Saddle)</option>
+                    <option value="perfectBound">Đóng keo (Perfect Bound)</option>
+                    <option value="wireO">Gáy xoắn / Lò xo (Wire-O)</option>
+                    <option value="zine8">Zine 8 trang (1 tờ 4×2)</option>
                   </select>
                   <select
                     value={bookletBinding}
                     onChange={(e) => setBookletBinding(e.target.value)}
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    disabled={bookletStyle === 'wireO' || bookletStyle === 'zine8'}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs disabled:bg-slate-50 disabled:text-slate-400"
                   >
                     <option value="left">Mở Trái</option>
                     <option value="right">Mở Phải</option>
                   </select>
                 </div>
+
+                {bookletStyle === 'perfectBound' && (
+                  <div className="flex items-center justify-between gap-2 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200">
+                    <label className="text-[11px] text-slate-600">Số trang / tay sách:</label>
+                    <select
+                      value={pagesPerSignature}
+                      onChange={(e) => setPagesPerSignature(Number(e.target.value))}
+                      className="bg-white border border-slate-200 rounded px-2 py-0.5 text-xs font-mono font-bold text-[#146C53]"
+                    >
+                      <option value={4}>4 trang (1 tờ)</option>
+                      <option value={8}>8 trang (2 tờ)</option>
+                      <option value={16}>16 trang (4 tờ)</option>
+                    </select>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex flex-col gap-0.5">
                     <label className="text-[10px] text-slate-500">Creep (mm/tờ)</label>
@@ -885,9 +910,10 @@ export default function PdfEditor() {
                       type="number"
                       min="0"
                       step="0.05"
+                      disabled={bookletStyle === 'wireO' || bookletStyle === 'zine8'}
                       value={bookletCreep}
                       onChange={(e) => setBookletCreep(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono disabled:bg-slate-50 disabled:text-slate-400"
                     />
                   </div>
                   <div className="flex flex-col gap-0.5">
@@ -902,6 +928,18 @@ export default function PdfEditor() {
                     />
                   </div>
                 </div>
+
+                {(bookletStyle === 'saddleStitch' || bookletStyle === 'perfectBound') && (
+                  <label className="flex items-center justify-between gap-2 text-[11px] text-slate-600 cursor-pointer">
+                    <span>Giữ 2 trang bìa sau ở cuối sách</span>
+                    <input
+                      type="checkbox"
+                      className="accent-[#146C53]"
+                      checked={coverPagesAtEnd > 0}
+                      onChange={(e) => setCoverPagesAtEnd(e.target.checked ? 2 : 0)}
+                    />
+                  </label>
+                )}
               </div>
             )}
 
