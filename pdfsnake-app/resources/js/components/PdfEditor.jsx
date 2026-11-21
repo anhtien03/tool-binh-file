@@ -1,47 +1,67 @@
-import React, { useState } from 'react';
-import { PDFDocument, rgb, degrees } from 'pdf-lib';
-import PdfCanvasPreview, { PAPER_SIZES } from './PdfCanvasPreview';
+import React, { useState, useMemo, useEffect } from 'react';
+import PdfCanvasPreview from './PdfCanvasPreview';
+import DielineStudio from './DielineStudio';
+import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
+import { exportImposedPdf } from '../engine/pdfExporter';
 
 export default function PdfEditor() {
-  // --- File State ---
-  const [pdfFile, setPdfFile] = useState(null);
-  const [pdfPages, setPdfPages] = useState([]);
-  
-  // --- General Layout State ---
+  // --- Top-level Studio Switcher ('impose' | 'dieline3d') ---
+  const [activeStudio, setActiveStudio] = useState('impose');
+
+  // --- Multi-File & Gang-Run State ---
+  const [sourceFiles, setSourceFiles] = useState([]); // [{ id, file }]
+  const [pdfPages, setPdfPages] = useState([]); // Flattened global pages
+  const [gangItems, setGangItems] = useState([]); // [{ id, name, frontIndex, backIndex, quantity }]
+
+  // --- Core Imposition Mode ---
   const [mode, setMode] = useState('grid'); // 'grid' | 'booklet'
   const [paperSizeKey, setPaperSizeKey] = useState('A3');
-  const [customPaperWidth, setCustomPaperWidth] = useState('300');
-  const [customPaperHeight, setCustomPaperHeight] = useState('300');
+  const [customPaperWidth, setCustomPaperWidth] = useState('325');
+  const [customPaperHeight, setCustomPaperHeight] = useState('430');
   const [orientation, setOrientation] = useState('landscape');
-  
-  // --- Grid Settings (mm) ---
-  const [rows, setRows] = useState(2);
-  const [cols, setCols] = useState(2);
-  const [gutterX, setGutterX] = useState(5); // khoảng cách cột
-  const [gutterY, setGutterY] = useState(5); // khoảng cách hàng
-  
-  // --- Booklet Settings ---
-  const [bookletBinding, setBookletBinding] = useState('left'); // 'left' | 'right'
-  const [bookletCreep, setBookletCreep] = useState(0); // mm
 
-  // --- Common Margins (mm) ---
+  // --- PrynX Grid / Guillotine Settings ---
+  const [layoutType, setLayoutType] = useState('optimal'); // 'optimal' (Dutch Cut) | 'simple' | 'manual'
+  const [collation, setCollation] = useState('stepAndRepeat'); // 'stepAndRepeat' | 'sequential' | 'cutAndStack'
+  const [stackSplit, setStackSplit] = useState(0); // 0 = không chia cọc
+  const [duplexMode, setDuplexMode] = useState('simplex'); // 'simplex' | 'workAndTurn' | 'workAndTumble'
+  const [inkingAxis, setInkingAxis] = useState('none'); // 'none' | 'row' | 'col'
+  const [alignment, setAlignment] = useState('center'); // 'center' | 'bottom-center' | 'top-left'
+  const [cols, setCols] = useState(4);
+  const [rows, setRows] = useState(5);
+  const [gutterX, setGutterX] = useState(2);
+  const [gutterY, setGutterY] = useState(2);
+  const [bleedMm, setBleedMm] = useState(1.5);
+  const [keepOriginalSize, setKeepOriginalSize] = useState(true);
+
+  // --- Booklet Settings ---
+  const [bookletStyle, setBookletStyle] = useState('saddleStitch'); // 'saddleStitch' | 'perfectBound'
+  const [bookletBinding, setBookletBinding] = useState('left'); // 'left' | 'right'
+  const [bookletCreep, setBookletCreep] = useState(0.2); // mm per sheet
+
+  // --- Margins & Marks ---
   const [marginTop, setMarginTop] = useState(10);
   const [marginBottom, setMarginBottom] = useState(10);
   const [marginLeft, setMarginLeft] = useState(10);
   const [marginRight, setMarginRight] = useState(10);
-  const [cropMarks, setCropMarks] = useState(true);
+  const [marginIncludesMarks, setMarginIncludesMarks] = useState(false);
 
-  // --- UI Control State ---
+  const [markStyle, setMarkStyle] = useState('western'); // 'none' | 'western' | 'tonbo'
+  const [markLength, setMarkLength] = useState(5);
+  const [markOffset, setMarkOffset] = useState(3);
+  const [registrationMarks, setRegistrationMarks] = useState(true);
+  const [registrationColor, setRegistrationColor] = useState(false); // false = K100, true = C100M100Y100K100
+  const [showSlugLine, setShowSlugLine] = useState(true);
+  const [showBleedOverlay, setShowBleedOverlay] = useState(true);
+
+  // --- UI State ---
   const [currentSheetIndex, setCurrentSheetIndex] = useState(0);
-  const [totalSheets, setTotalSheets] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
-  const [keepOriginalSize, setKeepOriginalSize] = useState(true);
   const [zoom, setZoom] = useState(1.0);
 
-  // Ngăn chặn mặc định trình duyệt mở file khi kéo thả bên ngoài vùng tải lên
-  React.useEffect(() => {
+  useEffect(() => {
     const preventDefault = (e) => e.preventDefault();
     window.addEventListener('dragover', preventDefault);
     window.addEventListener('drop', preventDefault);
@@ -51,913 +71,783 @@ export default function PdfEditor() {
     };
   }, []);
 
-  // Lấy kích thước thật dựa trên đơn vị mm
-  const getPaperDimensions = () => {
-    let width = 0;
-    let height = 0;
-    if (paperSizeKey === 'Custom') {
-      width = parseFloat(customPaperWidth) || 300;
-      height = parseFloat(customPaperHeight) || 300;
-    } else {
-      const size = PAPER_SIZES[paperSizeKey] || PAPER_SIZES.A3;
-      width = size.width;
-      height = size.height;
-    }
-    if (orientation === 'landscape') {
-      return { width: Math.max(width, height), height: Math.min(width, height) };
-    }
-    return { width: Math.min(width, height), height: Math.max(width, height) };
+  // Add one or multiple PDF files
+  const handleAddFiles = (fileList) => {
+    const valid = Array.from(fileList || []).filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    if (valid.length === 0) return;
+
+    const newEntries = valid.map((file, i) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`,
+      file,
+    }));
+    setSourceFiles((prev) => [...prev, ...newEntries]);
+    setError(null);
+    setSuccess(false);
   };
 
-  // Reset về trang 0 nếu lật chế độ hoặc đổi lưới
-  const handleModeChange = (newMode) => {
-    setMode(newMode);
+  // Sync gangItems whenever pages are parsed from sourceFiles
+  const handlePagesSynced = (flatPages, fileGroups) => {
+    setPdfPages(flatPages);
     setCurrentSheetIndex(0);
-  };
 
-  // Tự động tối ưu số lượng trang con lên tờ in lớn (Auto-Optimize Layout)
-  const handleAutoOptimize = () => {
-    if (!pdfPages || pdfPages.length === 0) {
+    if (flatPages.length === 0) {
+      setGangItems([]);
       return;
     }
 
-    const firstPage = pdfPages[0];
-    const MM_TO_POINTS = 72 / 25.4; // 1 mm = 2.8346 points
-    const cardWidth = firstPage.width / MM_TO_POINTS; // Đổi sang mm
-    const cardHeight = firstPage.height / MM_TO_POINTS; // Đổi sang mm
+    // Build logical items from fileGroups (preserving quantities for existing files where possible)
+    const nextItems = [];
+    let hasAnyTwoSided = false;
 
-    const dim = getPaperDimensions(); // Chiều rộng & cao tờ in lớn (mm)
-
-    // Tính phương án A: Card xếp nằm ngang bình thường
-    const colsA = Math.floor((dim.width + gutterX) / (cardWidth + gutterX)) || 1;
-    const rowsA = Math.floor((dim.height + gutterY) / (cardHeight + gutterY)) || 1;
-    const totalA = colsA * rowsA;
-
-    // Tính phương án B: Card xoay đứng 90 độ
-    const colsB = Math.floor((dim.width + gutterX) / (cardHeight + gutterX)) || 1;
-    const rowsB = Math.floor((dim.height + gutterY) / (cardWidth + gutterY)) || 1;
-    const totalB = colsB * rowsB;
-
-    let bestCols = colsA;
-    let bestRows = rowsA;
-    let bestCardW = cardWidth;
-    let bestCardH = cardHeight;
-
-    if (totalB > totalA) {
-      bestCols = colsB;
-      bestRows = rowsB;
-      bestCardW = cardHeight;
-      bestCardH = cardWidth;
-      console.log('Chọn phương án tối ưu xoay card đứng để đạt số lượng tối đa.');
+    for (const fg of fileGroups) {
+      const baseName = fg.fileName.replace(/\.pdf$/i, '');
+      if (fg.pageCount === 2) {
+        hasAnyTwoSided = true;
+        nextItems.push({
+          id: `${fg.fileId}-pair`,
+          name: baseName,
+          frontIndex: fg.startGlobalIdx,
+          backIndex: fg.startGlobalIdx + 1,
+          quantity: 100,
+        });
+      } else {
+        for (let p = 0; p < fg.pageCount; p++) {
+          nextItems.push({
+            id: `${fg.fileId}-p${p}`,
+            name: fg.pageCount > 1 ? `${baseName} (T${p + 1})` : baseName,
+            frontIndex: fg.startGlobalIdx + p,
+            backIndex: null,
+            quantity: 100,
+          });
+        }
+      }
     }
 
-    // Cập nhật số cột & số dòng tối ưu
-    setCols(bestCols);
-    setRows(bestRows);
+    setGangItems(nextItems);
 
-    // Tính toán lại Margins để căn giữa khung in một cách hoàn mỹ
-    const usedWidth = bestCols * bestCardW + (bestCols - 1) * gutterX;
-    const usedHeight = bestRows * bestCardH + (bestRows - 1) * gutterY;
+    if (hasAnyTwoSided && duplexMode === 'simplex') {
+      setDuplexMode('workAndTurn');
+    }
+    if (nextItems.length > 1 && collation === 'stepAndRepeat') {
+      setCollation('sequential');
+    }
+  };
 
-    const remainingWidth = Math.max(0, dim.width - usedWidth);
-    const remainingHeight = Math.max(0, dim.height - usedHeight);
+  // Merge two adjacent 1-sided items (e.g. Front.pdf + Back.pdf) into 1 two-sided item
+  const mergeWithNextItem = (idx) => {
+    if (idx < 0 || idx >= gangItems.length - 1) return;
+    const cur = gangItems[idx];
+    const nxt = gangItems[idx + 1];
+    if (cur.backIndex !== null || nxt.backIndex !== null) return;
+    const merged = {
+      id: `${cur.id}+${nxt.id}`,
+      name: `${cur.name} (2 mặt)`,
+      frontIndex: cur.frontIndex,
+      backIndex: nxt.frontIndex,
+      quantity: cur.quantity,
+    };
+    const nextList = [...gangItems];
+    nextList.splice(idx, 2, merged);
+    setGangItems(nextList);
+    if (duplexMode === 'simplex') setDuplexMode('workAndTurn');
+  };
 
-    // Chia đều lề trái/phải, trên/dưới
-    const sideMargin = Math.round((remainingWidth / 2) * 10) / 10;
-    const verticalMargin = Math.round((remainingHeight / 2) * 10) / 10;
+  // Split a 2-sided item back into two 1-sided items
+  const splitItem = (idx) => {
+    const cur = gangItems[idx];
+    if (!cur || cur.backIndex === null) return;
+    const a = { id: `${cur.id}-f`, name: `${cur.name} (M1)`, frontIndex: cur.frontIndex, backIndex: null, quantity: cur.quantity };
+    const b = { id: `${cur.id}-b`, name: `${cur.name} (M2)`, frontIndex: cur.backIndex, backIndex: null, quantity: cur.quantity };
+    const nextList = [...gangItems];
+    nextList.splice(idx, 1, a, b);
+    setGangItems(nextList);
+  };
 
-    setMarginLeft(sideMargin);
-    setMarginRight(sideMargin);
-    setMarginTop(verticalMargin);
-    setMarginBottom(verticalMargin);
+  const removeGangItem = (idx) => {
+    setGangItems((prev) => prev.filter((_, i) => i !== idx));
+  };
 
-    setSuccess(false);
+  const updateItemQuantity = (idx, qty) => {
+    setGangItems((prev) =>
+      prev.map((it, i) => (i === idx ? { ...it, quantity: Math.max(1, parseInt(qty, 10) || 1) } : it))
+    );
+  };
+
+  const clearAllFiles = () => {
+    setSourceFiles([]);
+    setPdfPages([]);
+    setGangItems([]);
     setError(null);
+    setSuccess(false);
   };
 
-  // Kích hoạt tự động tối ưu hóa khi người dùng tải PDF lên hoặc thay đổi khổ giấy/hướng xoay
-  React.useEffect(() => {
-    if (pdfPages && pdfPages.length > 0) {
-      handleAutoOptimize();
+  // Single Source of Truth: compute deterministic SheetPlan[]
+  const config = useMemo(
+    () => ({
+      mode,
+      paperSizeKey,
+      customPaperWidth,
+      customPaperHeight,
+      orientation,
+      layoutType,
+      collation,
+      stackSplit,
+      duplexMode,
+      inkingAxis,
+      alignment,
+      cols,
+      rows,
+      gutterX,
+      gutterY,
+      bleedMm,
+      keepOriginalSize,
+      bookletStyle,
+      bookletBinding,
+      bookletCreep,
+      marginTop,
+      marginBottom,
+      marginLeft,
+      marginRight,
+      marginIncludesMarks,
+      markStyle,
+      markLength,
+      markOffset,
+      registrationMarks,
+      registrationColor,
+      showSlugLine,
+      markThicknessPt: 0.25,
+      gangItems,
+    }),
+    [
+      mode,
+      paperSizeKey,
+      customPaperWidth,
+      customPaperHeight,
+      orientation,
+      layoutType,
+      collation,
+      stackSplit,
+      duplexMode,
+      inkingAxis,
+      alignment,
+      cols,
+      rows,
+      gutterX,
+      gutterY,
+      bleedMm,
+      keepOriginalSize,
+      bookletStyle,
+      bookletBinding,
+      bookletCreep,
+      marginTop,
+      marginBottom,
+      marginLeft,
+      marginRight,
+      marginIncludesMarks,
+      markStyle,
+      markLength,
+      markOffset,
+      registrationMarks,
+      registrationColor,
+      showSlugLine,
+      gangItems,
+    ]
+  );
+
+  const plan = useMemo(() => computeImpositionPlan(pdfPages, config), [pdfPages, config]);
+
+  // Clamp sheet index if plan shrinks
+  useEffect(() => {
+    if (plan.sheets.length > 0 && currentSheetIndex >= plan.sheets.length) {
+      setCurrentSheetIndex(0);
     }
-  }, [pdfPages, paperSizeKey, customPaperWidth, customPaperHeight, orientation]);
-
-  // Sinh dữ liệu JSON các bước cho PDF Snake API V2
-  // Tham khảo cấu trúc từ test_cards_step.json (đã hoạt động thành công)
-  const generateStepsJson = () => {
-    const dim = getPaperDimensions();
-    const MM_TO_POINTS = 72 / 25.4; // 1 mm = 2.8346 points
-
-    const paperWidthPt = dim.width * MM_TO_POINTS;
-    const paperHeightPt = dim.height * MM_TO_POINTS;
-    const leftMarginPt = marginLeft * MM_TO_POINTS;
-    const topMarginPt = marginTop * MM_TO_POINTS;
-    const rightMarginPt = marginRight * MM_TO_POINTS;
-    const bottomMarginPt = marginBottom * MM_TO_POINTS;
-    const gutterXPt = gutterX * MM_TO_POINTS;
-    const gutterYPt = gutterY * MM_TO_POINTS;
-    const lineLen = 28.34645669291339; // ~10mm crop mark length
-
-    if (mode === 'grid') {
-      return [
-        {
-          kind: 'Cards',
-          paperWidth: paperWidthPt,
-          paperHeight: paperHeightPt,
-          leftMargin: leftMarginPt,
-          topMargin: topMarginPt,
-          verticalGutterWidth: gutterYPt,
-          horizontalGutterWidth: gutterXPt,
-          center: true,
-          pageOrder: 'stepAndRepeat',
-          doubleSided: false,
-          repeat: 1,
-          newStackOrder: true,
-          cropMarks: cropMarks,
-          marksInGutters: true,
-          centerMarks: false,
-          lineLength: lineLen,
-          lineThickness: 1,
-          lineDistance: 10,
-          fourColorBlack: false,
-          whiteBorder: false,
-          bleeds: 'pullFromDoc',
-          fixedBleedLeft: 14.4,
-          fixedBleedTop: 14.4,
-          direction: 'leftToRight',
-          columns: parseInt(cols) || 1,
-          rows: parseInt(rows) || 1,
-          preserveAspectRatio: true,
-          scale: true
-        }
-      ];
-    } else {
-      return [
-        {
-          kind: 'Booklet',
-          paperWidth: paperWidthPt,
-          paperHeight: paperHeightPt,
-          leftMargin: leftMarginPt,
-          topMargin: topMarginPt,
-          rightMargin: rightMarginPt,
-          bottomMargin: bottomMarginPt,
-          binding: bookletBinding,
-          creep: bookletCreep * MM_TO_POINTS,
-          center: true,
-          doubleSided: true,
-          cropMarks: cropMarks,
-          marksInGutters: false,
-          centerMarks: false,
-          lineLength: lineLen,
-          lineThickness: 1,
-          lineDistance: 10,
-          fourColorBlack: false,
-          whiteBorder: false,
-          bleeds: 'pullFromDoc',
-          fixedBleedLeft: 14.4,
-          fixedBleedTop: 14.4,
-          direction: 'leftToRight',
-          preserveAspectRatio: true,
-          scale: true
-        }
-      ];
-    }
-  };
+  }, [plan.sheets.length, currentSheetIndex]);
 
   const handleDownload = async () => {
-    if (!pdfFile) {
-      setError('Vui lòng chọn file PDF để tiến hành xử lý!');
+    if (sourceFiles.length === 0 || plan.sheets.length === 0) {
+      setError('Vui lòng chọn ít nhất 1 file PDF trước khi xuất!');
       return;
     }
 
     setLoading(true);
     setError(null);
     setSuccess(false);
-
     try {
-      const pdfBytes = await pdfFile.arrayBuffer();
-      const srcDoc = await PDFDocument.load(pdfBytes);
-      const destDoc = await PDFDocument.create();
-
-      const dim = getPaperDimensions();
-      const MM_TO_POINTS = 72 / 25.4; // 1 mm = 2.8346 points
-
-      const paperWidthPt = dim.width * MM_TO_POINTS;
-      const paperHeightPt = dim.height * MM_TO_POINTS;
-      const leftMarginPt = marginLeft * MM_TO_POINTS;
-      const topMarginPt = marginTop * MM_TO_POINTS;
-      const rightMarginPt = marginRight * MM_TO_POINTS;
-      const bottomMarginPt = marginBottom * MM_TO_POINTS;
-      const gutterXPt = gutterX * MM_TO_POINTS;
-      const gutterYPt = gutterY * MM_TO_POINTS;
-      const lineLen = 28.34645669291339; // ~10mm crop mark length
-
-      const srcPages = srcDoc.getPages();
-      srcPages.forEach((page) => {
-        try {
-          const trimBox = page.getTrimBox();
-          const mediaBox = page.getMediaBox();
-          if (trimBox && (Math.abs(trimBox.width - mediaBox.width) > 1 || Math.abs(trimBox.height - mediaBox.height) > 1)) {
-            page.setMediaBox(trimBox.x, trimBox.y, trimBox.width, trimBox.height);
-            page.setCropBox(trimBox.x, trimBox.y, trimBox.width, trimBox.height);
-          }
-        } catch (e) {
-          console.warn('Lỗi khi xén TrimBox cho file xuất:', e);
-        }
-      });
-      const numSrcPages = srcPages.length;
-      const embeddedPages = await destDoc.embedPages(srcPages);
-
-      if (mode === 'grid') {
-        const pagesPerSheet = cols * rows;
-        let totalSheets = 1;
-
-        if (numSrcPages <= 2) {
-          totalSheets = numSrcPages;
-        } else {
-          totalSheets = Math.ceil(numSrcPages / pagesPerSheet);
-        }
-
-        // Tính toán kích thước ô lưới
-        const printableWidth = dim.width - marginLeft - marginRight;
-        const printableHeight = dim.height - marginTop - marginBottom;
-        const cellWidth = ((printableWidth - (cols - 1) * gutterX) / cols) * MM_TO_POINTS;
-        const cellHeight = ((printableHeight - (rows - 1) * gutterY) / rows) * MM_TO_POINTS;
-
-        let startXPt = leftMarginPt;
-        let startYPt = topMarginPt;
-
-        if (keepOriginalSize && embeddedPages.length > 0) {
-          const firstPage = embeddedPages[0];
-          const cardW = firstPage.width;
-          const cardH = firstPage.height;
-          const cellAspect = cellWidth / cellHeight;
-          const cardAspect = cardW / cardH;
-          const shouldRotate = (cardAspect > 1 && cellAspect < 1) || (cardAspect < 1 && cellAspect > 1);
-
-          const drawW = shouldRotate ? cardH : cardW;
-          const drawH = shouldRotate ? cardW : cardH;
-
-          const totalGridWidth = cols * drawW + (cols - 1) * gutterXPt;
-          const totalGridHeight = rows * drawH + (rows - 1) * gutterYPt;
-
-          startXPt = (paperWidthPt - totalGridWidth) / 2;
-          startYPt = (paperHeightPt - totalGridHeight) / 2;
-        }
-
-        for (let s = 0; s < totalSheets; s++) {
-          const destPage = destDoc.addPage([paperWidthPt, paperHeightPt]);
-          
-          // Trực quan hóa các ô lưới và vẽ trang
-          for (let r = 0; r < rows; r++) {
-            for (let c = 0; c < cols; c++) {
-              let pageIndex = 0;
-              if (numSrcPages <= 2) {
-                pageIndex = s;
-              } else {
-                pageIndex = s * pagesPerSheet + (r * cols + c);
-              }
-
-              if (pageIndex < embeddedPages.length) {
-                const embeddedPage = embeddedPages[pageIndex];
-                const cardW = embeddedPage.width;
-                const cardH = embeddedPage.height;
-
-                const cellAspect = cellWidth / cellHeight;
-                const cardAspect = cardW / cardH;
-
-                const shouldRotate = (cardAspect > 1 && cellAspect < 1) || (cardAspect < 1 && cellAspect > 1);
-
-                let drawW = 0;
-                let drawH = 0;
-                let x = 0;
-                let y = 0;
-
-                if (keepOriginalSize) {
-                  drawW = shouldRotate ? cardH : cardW;
-                  drawH = shouldRotate ? cardW : cardH;
-                  
-                  x = startXPt + c * (drawW + gutterXPt);
-                  y = paperHeightPt - startYPt - (r + 1) * drawH - r * gutterYPt;
-                } else {
-                  // Tọa độ góc dưới bên trái của ô trong hệ tọa độ PDF (gốc 0,0 ở góc dưới trái giấy)
-                  const cellLeft = leftMarginPt + c * (cellWidth + gutterXPt);
-                  const cellTopFromTop = topMarginPt + r * (cellHeight + gutterYPt);
-                  const cellBottom = paperHeightPt - cellTopFromTop - cellHeight;
-
-                  const effectiveAspectRatio = shouldRotate ? (1 / cardAspect) : cardAspect;
-                  if (effectiveAspectRatio > cellAspect) {
-                    drawW = cellWidth;
-                    drawH = cellWidth / effectiveAspectRatio;
-                  } else {
-                    drawW = cellHeight * effectiveAspectRatio;
-                    drawH = cellHeight;
-                  }
-
-                  const offsetX = (cellWidth - drawW) / 2;
-                  const offsetY = (cellHeight - drawH) / 2;
-
-                  x = cellLeft + offsetX;
-                  y = cellBottom + offsetY;
-                }
-
-                // Vẽ trang con
-                if (shouldRotate) {
-                  destPage.drawPage(embeddedPage, {
-                    x: x + drawW,
-                    y,
-                    width: drawH,
-                    height: drawW,
-                    rotate: degrees(90),
-                  });
-                } else {
-                  destPage.drawPage(embeddedPage, {
-                    x,
-                    y,
-                    width: drawW,
-                    height: drawH,
-                  });
-                }
-
-              }
-            }
-          }
-
-          // Vẽ Crop Marks (Vạch cắt biên ngoài) cho cả tờ in nếu được kích hoạt
-          if (cropMarks && embeddedPages.length > 0) {
-            const firstPage = embeddedPages[0];
-            const cardW = firstPage.width;
-            const cardH = firstPage.height;
-            const cellAspect = cellWidth / cellHeight;
-            const cardAspect = cardW / cardH;
-            const shouldRotate = (cardAspect > 1 && cellAspect < 1) || (cardAspect < 1 && cellAspect > 1);
-
-            const drawW = keepOriginalSize ? (shouldRotate ? cardH : cardW) : cellWidth;
-            const drawH = keepOriginalSize ? (shouldRotate ? cardW : cardH) : cellHeight;
-
-            const gridLeft = keepOriginalSize ? startXPt : leftMarginPt;
-            const gridTopFromTop = keepOriginalSize ? startYPt : topMarginPt;
-            const gridBottomFromTop = gridTopFromTop + rows * drawH + (rows - 1) * (keepOriginalSize ? gutterYPt : gutterY * MM_TO_POINTS);
-            const gridRight = gridLeft + cols * drawW + (cols - 1) * (keepOriginalSize ? gutterXPt : gutterX * MM_TO_POINTS);
-
-            const dist = 10; // Khoảng cách 10pt (~3.5mm)
-            const thickness = 0.5;
-            const color = rgb(0.93, 0.27, 0.27); // Màu đỏ
-
-            // 1. Vẽ vạch cắt dọc ở biên trên và biên dưới
-            for (let c = 0; c < cols; c++) {
-              const x1 = gridLeft + c * (drawW + (keepOriginalSize ? gutterXPt : gutterX * MM_TO_POINTS));
-              const x2 = x1 + drawW;
-
-              // Biên trên (y tính từ dưới lên, nên biên trên của dòng 0 là paperHeightPt - gridTopFromTop)
-              const yTop = paperHeightPt - gridTopFromTop;
-              destPage.drawLine({ start: { x: x1, y: yTop + dist }, end: { x: x1, y: yTop + dist + lineLen }, thickness, color });
-              destPage.drawLine({ start: { x: x2, y: yTop + dist }, end: { x: x2, y: yTop + dist + lineLen }, thickness, color });
-
-              // Biên dưới
-              const yBottom = paperHeightPt - gridBottomFromTop;
-              destPage.drawLine({ start: { x: x1, y: yBottom - dist }, end: { x: x1, y: yBottom - dist - lineLen }, thickness, color });
-              destPage.drawLine({ start: { x: x2, y: yBottom - dist }, end: { x: x2, y: yBottom - dist - lineLen }, thickness, color });
-            }
-
-            // 2. Vẽ vạch cắt ngang ở biên trái và biên phải
-            for (let r = 0; r < rows; r++) {
-              const y1FromTop = gridTopFromTop + r * (drawH + (keepOriginalSize ? gutterYPt : gutterY * MM_TO_POINTS));
-              const y2FromTop = y1FromTop + drawH;
-
-              const y1 = paperHeightPt - y1FromTop;
-              const y2 = paperHeightPt - y2FromTop;
-
-              // Biên trái
-              const xLeft = gridLeft;
-              destPage.drawLine({ start: { x: xLeft - dist, y: y1 }, end: { x: xLeft - dist - lineLen, y: y1 }, thickness, color });
-              destPage.drawLine({ start: { x: xLeft - dist, y: y2 }, end: { x: xLeft - dist - lineLen, y: y2 }, thickness, color });
-
-              // Biên phải
-              const xRight = gridRight;
-              destPage.drawLine({ start: { x: xRight + dist, y: y1 }, end: { x: xRight + dist + lineLen, y: y1 }, thickness, color });
-              destPage.drawLine({ start: { x: xRight + dist, y: y2 }, end: { x: xRight + dist + lineLen, y: y2 }, thickness, color });
-            }
-          }
-        }
-      } else {
-        // Chế độ Booklet
-        const docPages = embeddedPages.length;
-        const bookletPagesCount = Math.ceil(docPages / 4) * 4;
-        const totalSheets = bookletPagesCount / 2;
-
-        const cellWidth = paperWidthPt / 2;
-        const cellHeight = paperHeightPt;
-
-        for (let s = 0; s < totalSheets; s++) {
-          const destPage = destDoc.addPage([paperWidthPt, paperHeightPt]);
-          const isBack = s % 2 !== 0;
-          const signatureIndex = Math.floor(s / 2);
-
-          const leftPageNum = isBack 
-            ? (2 * signatureIndex + 2) 
-            : (bookletPagesCount - 2 * signatureIndex);
-          const rightPageNum = isBack 
-            ? (bookletPagesCount - 2 * signatureIndex - 1) 
-            : (2 * signatureIndex + 1);
-
-          const pageIndices = [leftPageNum - 1, rightPageNum - 1];
-
-          for (let c = 0; c < 2; c++) {
-            const pageIndex = pageIndices[c];
-            if (pageIndex < docPages) {
-              const embeddedPage = embeddedPages[pageIndex];
-              const cardW = embeddedPage.width;
-              const cardH = embeddedPage.height;
-
-              const cellLeft = c * cellWidth;
-              const cellBottom = 0;
-
-              const cellAspect = cellWidth / cellHeight;
-              const cardAspect = cardW / cardH;
-              let scaleFactor = 1.0;
-              let drawW = cardW;
-              let drawH = cardH;
-              let offsetX = 0;
-              let offsetY = 0;
-
-              if (cardAspect > cellAspect) {
-                scaleFactor = cellWidth / cardW;
-                drawW = cellWidth;
-                drawH = cardH * scaleFactor;
-                offsetY = (cellHeight - drawH) / 2;
-              } else {
-                scaleFactor = cellHeight / cardH;
-                drawW = cardW * scaleFactor;
-                drawH = cellHeight;
-                offsetX = (cellWidth - drawW) / 2;
-              }
-
-              destPage.drawPage(embeddedPage, {
-                x: cellLeft + offsetX,
-                y: cellBottom + offsetY,
-                width: drawW,
-                height: drawH,
-              });
-            }
-          }
-        }
-      }
-
-      // Lưu file và tải xuống
-      const pdfBytesOutput = await destDoc.save();
+      const pdfBytesOutput = await exportImposedPdf(sourceFiles, plan, config);
       const blob = new Blob([pdfBytesOutput], { type: 'application/pdf' });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `imposed_local_${pdfFile.name}`;
+      const baseName = sourceFiles.length > 1 ? `GangRun_${sourceFiles.length}files.pdf` : sourceFiles[0].file.name;
+      a.download = `Imposed_${baseName}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-
       setSuccess(true);
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Đã xảy ra lỗi trong quá trình tự dàn trang.');
+      setError(err.message || 'Đã xảy ra lỗi khi xuất PDF vector.');
     } finally {
       setLoading(false);
     }
   };
 
+  const firstPage = pdfPages[0];
+
+  if (activeStudio === 'dieline3d') {
+    return <DielineStudio onSwitchToImpose={() => setActiveStudio('impose')} />;
+  }
+
   return (
-    <div className="flex flex-col lg:flex-row min-h-screen bg-slate-900 text-slate-100 font-sans">
-      
-      {/* 1. Sidebar Control Panel */}
-      <div className="w-full lg:w-96 bg-slate-850 border-b lg:border-b-0 lg:border-r border-slate-800 p-6 flex flex-col gap-6 overflow-y-auto max-h-screen">
-        
-        {/* Logo / Header */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-indigo-600 text-white font-bold text-xl shadow-lg shadow-indigo-500/20">
-            🐍
+    <div className="flex flex-col lg:flex-row min-h-screen bg-[#0c0d10] text-slate-100 font-sans">
+      {/* 1. PrynX-Style Dark Sidebar */}
+      <div className="w-full lg:w-[400px] bg-[#13151a] border-b lg:border-b-0 lg:border-r border-slate-800/80 p-5 flex flex-col gap-4 overflow-y-auto max-h-screen">
+        {/* Header */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-emerald-600 text-white font-black text-base shadow-lg shadow-emerald-600/20">
+              PX
+            </div>
+            <div>
+              <h1 className="text-base font-bold tracking-tight text-white">Bình Bài In Pro</h1>
+              <p className="text-[11px] text-slate-400">Vector Imposition · Dutch Cut · Smart Bleed</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">PDF Imposer Editor</h1>
-            <p className="text-xs text-slate-400">Thiết kế bởi Antigravity</p>
-          </div>
+          <button
+            onClick={() => setActiveStudio('dieline3d')}
+            className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 text-[11px] font-bold transition-colors cursor-pointer shrink-0"
+          >
+            Khuôn Bế 3D →
+          </button>
         </div>
 
-        <hr className="border-slate-850" />
-
-        {/* Step 1: File Upload */}
-        <div className="flex flex-col gap-2">
-          <label className="text-sm font-semibold text-slate-300">1. Tải lên file PDF gốc</label>
-          <div className="relative border-2 border-dashed border-slate-700 hover:border-indigo-500 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer bg-slate-800/40 transition-colors">
-            <input 
-              type="file" 
-              accept=".pdf" 
+        {/* Multi-File Upload & Gang-Run Item List */}
+        <div className="flex flex-col gap-2 bg-slate-900/50 p-3 rounded-xl border border-slate-800/80">
+          <div className="relative border border-dashed border-slate-700 hover:border-emerald-500 rounded-xl p-3 flex flex-col items-center justify-center cursor-pointer bg-slate-950/50 transition-colors">
+            <input
+              type="file"
+              accept=".pdf"
+              multiple
               onChange={(e) => {
-                if (e.target.files[0]) {
-                  setPdfFile(e.target.files[0]);
-                  setCurrentSheetIndex(0);
-                  setError(null);
-                  setSuccess(false);
-                }
+                handleAddFiles(e.target.files);
+                e.target.value = '';
               }}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
             />
-            <span className="text-2xl mb-1">📄</span>
-            <span className="text-xs text-slate-400 font-medium text-center">
-              {pdfFile ? pdfFile.name : 'Nhấp hoặc kéo thả PDF vào đây'}
+            <span className="text-xs font-semibold text-slate-200">
+              {sourceFiles.length > 0
+                ? `➕ Thêm file PDF nữa (đang có ${sourceFiles.length} file · ${pdfPages.length} trang)`
+                : '📄 Chọn 1 hoặc nhiều file PDF để ghép bình'}
             </span>
+            {firstPage && (
+              <span className="text-[11px] text-slate-400 font-mono mt-0.5">
+                Gốc: {firstPage.mediaWmm.toFixed(1)}×{firstPage.mediaHmm.toFixed(1)}mm → TP: {plan.summary.trimW}×{plan.summary.trimH}mm
+              </span>
+            )}
           </div>
+
+          {gangItems.length > 0 && (
+            <div className="flex flex-col gap-1.5 max-h-44 overflow-y-auto pr-1">
+              <div className="flex items-center justify-between text-[11px] text-slate-400 px-0.5">
+                <span>Danh sách mẫu ({gangItems.length} mẫu):</span>
+                <button onClick={clearAllFiles} className="text-rose-400 hover:text-rose-300 cursor-pointer">
+                  Xóa hết
+                </button>
+              </div>
+              {gangItems.map((item, idx) => (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between gap-1.5 bg-slate-950/80 border border-slate-800 rounded-lg px-2 py-1.5 text-[11px]"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-semibold text-slate-200" title={item.name}>
+                      {idx + 1}. {item.name}
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span
+                        className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                          item.backIndex !== null
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {item.backIndex !== null ? '2 Mặt' : '1 Mặt'}
+                      </span>
+                      {item.backIndex === null && idx < gangItems.length - 1 && gangItems[idx + 1].backIndex === null && (
+                        <button
+                          onClick={() => mergeWithNextItem(idx)}
+                          title="Ghép mẫu này (Mặt trước) với mẫu kế tiếp (Mặt sau) thành 1 card 2 mặt"
+                          className="text-[10px] text-amber-400 hover:underline cursor-pointer"
+                        >
+                          Ghép 2 mặt ↓
+                        </button>
+                      )}
+                      {item.backIndex !== null && (
+                        <button
+                          onClick={() => splitItem(idx)}
+                          title="Tách thành 2 mẫu 1 mặt riêng"
+                          className="text-[10px] text-sky-400 hover:underline cursor-pointer"
+                        >
+                          Tách
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {collation === 'ratioStack' && (
+                    <input
+                      type="number"
+                      min="1"
+                      value={item.quantity}
+                      onChange={(e) => updateItemQuantity(idx, e.target.value)}
+                      title="Số lượng đặt in"
+                      className="w-14 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] font-mono text-right text-amber-300"
+                    />
+                  )}
+                  <button
+                    onClick={() => removeGangItem(idx)}
+                    className="text-slate-500 hover:text-rose-400 px-1 cursor-pointer"
+                    title="Bỏ mẫu này"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Step 2: Imposition Mode */}
-        <div className="flex flex-col gap-2">
-          <label className="text-sm font-semibold text-slate-300">2. Kiểu bình trang (Imposition)</label>
-          <div className="grid grid-cols-2 gap-2 bg-slate-800 p-1 rounded-xl">
-            <button
-              onClick={() => handleModeChange('grid')}
-              className={`py-2 text-xs font-bold rounded-lg transition-all ${
-                mode === 'grid' 
-                  ? 'bg-indigo-600 text-white shadow-md' 
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Dàn lưới (Grid)
-            </button>
-            <button
-              onClick={() => handleModeChange('booklet')}
-              className={`py-2 text-xs font-bold rounded-lg transition-all ${
-                mode === 'booklet' 
-                  ? 'bg-indigo-600 text-white shadow-md' 
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Làm sách (Booklet)
-            </button>
-          </div>
+        {/* Mode Tabs */}
+        <div className="grid grid-cols-2 gap-1.5 bg-slate-900 p-1 rounded-xl border border-slate-800">
+          <button
+            onClick={() => {
+              setMode('grid');
+              setCurrentSheetIndex(0);
+            }}
+            className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              mode === 'grid' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Bình Bài Xén (N-Up)
+          </button>
+          <button
+            onClick={() => {
+              setMode('booklet');
+              setCurrentSheetIndex(0);
+            }}
+            className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              mode === 'booklet' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Bình Sách (Booklet)
+          </button>
         </div>
 
-        {/* Step 3: Paper Size Settings */}
-        <div className="flex flex-col gap-4 bg-slate-800/40 p-4 rounded-xl border border-slate-800/50">
-          <h3 className="text-sm font-bold text-indigo-400">Khổ giấy in thành phẩm</h3>
-          
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs text-slate-400 font-medium">Khổ giấy</label>
+        {/* Paper Settings */}
+        <div className="flex flex-col gap-3 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">1. Khổ giấy & Lề</h3>
+          <div className="grid grid-cols-3 gap-2">
             <select
               value={paperSizeKey}
               onChange={(e) => setPaperSizeKey(e.target.value)}
-              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+              className="col-span-2 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200"
             >
-              {Object.keys(PAPER_SIZES).map((key) => (
-                <option key={key} value={key}>{PAPER_SIZES[key].name}</option>
+              {Object.keys(PAPER_SIZES).map((k) => (
+                <option key={k} value={k}>
+                  {PAPER_SIZES[k].name}
+                </option>
               ))}
+            </select>
+            <select
+              value={orientation}
+              onChange={(e) => setOrientation(e.target.value)}
+              className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200"
+            >
+              <option value="landscape">Ngang</option>
+              <option value="portrait">Đứng</option>
             </select>
           </div>
 
           {paperSizeKey === 'Custom' && (
             <div className="grid grid-cols-2 gap-2">
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-slate-400">Rộng (mm)</label>
-                <input 
-                  type="number" 
-                  value={customPaperWidth}
-                  onChange={(e) => setCustomPaperWidth(e.target.value)}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-slate-400">Cao (mm)</label>
-                <input 
-                  type="number" 
-                  value={customPaperHeight}
-                  onChange={(e) => setCustomPaperHeight(e.target.value)}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200"
-                />
-              </div>
+              <input
+                type="number"
+                value={customPaperWidth}
+                onChange={(e) => setCustomPaperWidth(e.target.value)}
+                placeholder="Rộng (mm)"
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs"
+              />
+              <input
+                type="number"
+                value={customPaperHeight}
+                onChange={(e) => setCustomPaperHeight(e.target.value)}
+                placeholder="Cao (mm)"
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs"
+              />
             </div>
           )}
 
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs text-slate-400 font-medium">Hướng khổ giấy</label>
-            <div className="grid grid-cols-2 gap-2 bg-slate-800 p-1 rounded-lg">
-              <button
-                onClick={() => setOrientation('portrait')}
-                className={`py-1.5 text-xs rounded transition-all ${
-                  orientation === 'portrait' ? 'bg-slate-700 text-white font-semibold' : 'text-slate-400'
-                }`}
-              >
-                Khổ đứng
-              </button>
-              <button
-                onClick={() => setOrientation('landscape')}
-                className={`py-1.5 text-xs rounded transition-all ${
-                  orientation === 'landscape' ? 'bg-slate-700 text-white font-semibold' : 'text-slate-400'
-                }`}
-              >
-                Khổ ngang
-              </button>
-            </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {[
+              ['Trên', marginTop, setMarginTop],
+              ['Dưới/Nhíp', marginBottom, setMarginBottom],
+              ['Trái', marginLeft, setMarginLeft],
+              ['Phải', marginRight, setMarginRight],
+            ].map(([label, val, setter]) => (
+              <div key={label} className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-400">{label}</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={val}
+                  onChange={(e) => setter(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
+                />
+              </div>
+            ))}
           </div>
+
+          <label className="flex items-center gap-2 text-[11px] text-slate-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={marginIncludesMarks}
+              onChange={(e) => setMarginIncludesMarks(e.target.checked)}
+              className="rounded border-slate-700 bg-slate-900"
+            />
+            Lề bao gồm cả bon cắt (tránh vùng không in được)
+          </label>
         </div>
 
-        {/* Step 4: Mode Specific Settings */}
+        {/* Mode-specific settings */}
         {mode === 'grid' ? (
-          <div className="flex flex-col gap-4 bg-slate-800/40 p-4 rounded-xl border border-slate-800/50">
-            <h3 className="text-sm font-bold text-indigo-400">Cấu hình ô lưới (Grid)</h3>
-            
-            <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-3 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">2. Thuật toán Bình Bài Xén</h3>
+
+            <div className="grid grid-cols-2 gap-2">
               <div className="flex flex-col gap-1">
-                <label className="text-xs text-slate-400">Số cột (Columns)</label>
-                <input 
-                  type="number" 
-                  min="1" 
-                  max="10"
-                  value={cols}
-                  onChange={(e) => {
-                    setCols(Math.max(1, parseInt(e.target.value) || 1));
-                    setCurrentSheetIndex(0);
-                  }}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200"
-                />
+                <label className="text-[11px] text-slate-400">Cách xếp lưới</label>
+                <select
+                  value={layoutType}
+                  onChange={(e) => setLayoutType(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
+                >
+                  <option value="optimal">Tối ưu Dutch Cut (0°+90°)</option>
+                  <option value="simple">Lưới đơn giản (0°/90°)</option>
+                  <option value="manual">Tùy chỉnh Cột × Hàng</option>
+                </select>
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-xs text-slate-400">Số dòng (Rows)</label>
-                <input 
-                  type="number" 
-                  min="1" 
-                  max="10"
-                  value={rows}
-                  onChange={(e) => {
-                    setRows(Math.max(1, parseInt(e.target.value) || 1));
-                    setCurrentSheetIndex(0);
-                  }}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200"
-                />
+                <label className="text-[11px] text-slate-400">Cách thức ráp</label>
+                <select
+                  value={collation}
+                  onChange={(e) => setCollation(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
+                >
+                  <option value="stepAndRepeat">Step & Repeat (Lặp mẫu)</option>
+                  <option value="sequential">N-Up (Ghép nhiều mẫu)</option>
+                  <option value="ratioStack">Ratio Stack (Chia tỷ lệ SL)</option>
+                  <option value="cutAndStack">Cut & Stack (Úp xấp)</option>
+                </select>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-slate-400">Khoảng cách cột (mm)</label>
-                <input 
-                  type="number" 
+            {collation === 'cutAndStack' && (
+              <div className="flex items-center justify-between gap-2 bg-slate-950/60 px-2.5 py-1.5 rounded-lg border border-slate-800">
+                <label className="text-[11px] text-slate-300">Chia cọc xén (tờ/cọc, 0 = tất cả):</label>
+                <input
+                  type="number"
                   min="0"
+                  value={stackSplit}
+                  onChange={(e) => setStackSplit(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                  className="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-right"
+                />
+              </div>
+            )}
+
+            {layoutType === 'manual' && (
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-400">Số cột</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={cols}
+                    onChange={(e) => setCols(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                    className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
+                  />
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-400">Số hàng</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={rows}
+                    onChange={(e) => setRows(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                    className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] text-slate-400">Số mặt & Lật gương</label>
+                <select
+                  value={duplexMode}
+                  onChange={(e) => setDuplexMode(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
+                >
+                  <option value="simplex">1 Mặt (Simplex)</option>
+                  <option value="workAndTurn">2 Mặt — Trở nhíp (Mirror X)</option>
+                  <option value="workAndTumble">2 Mặt — Trở đít (Mirror Y+180°)</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] text-slate-400">Đối đầu 180° (INKING)</label>
+                <select
+                  value={inkingAxis}
+                  onChange={(e) => setInkingAxis(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
+                >
+                  <option value="none">Tắt</option>
+                  <option value="row">Theo hàng</option>
+                  <option value="col">Theo cột</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-400">Tràn lề (Bleed)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={bleedMm}
+                  onChange={(e) => setBleedMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
+                />
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-400">Hở X (Gap)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
                   value={gutterX}
                   onChange={(e) => setGutterX(Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200"
+                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
                 />
               </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-slate-400">Khoảng cách hàng (mm)</label>
-                <input 
-                  type="number" 
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-400">Hở Y (Gap)</label>
+                <input
+                  type="number"
                   min="0"
+                  step="0.5"
                   value={gutterY}
                   onChange={(e) => setGutterY(Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200"
+                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
                 />
               </div>
             </div>
 
-            {/* Nút Tối ưu hóa tự động */}
-            <button
-              type="button"
-              onClick={handleAutoOptimize}
-              disabled={!pdfFile}
-              className={`w-full py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-                pdfFile 
-                  ? 'bg-indigo-650/40 hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-500/30' 
-                  : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-transparent'
-              }`}
-            >
-              <span>⚙️</span>
-              <span>Tối ưu hóa bố cục tự động</span>
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4 bg-slate-800/40 p-4 rounded-xl border border-slate-800/50">
-            <h3 className="text-sm font-bold text-indigo-400">Cấu hình gấp sách (Booklet)</h3>
-            
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs text-slate-400 font-medium">Kiểu gáy sách (Binding)</label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-[11px] text-slate-400">Canh khối:</label>
               <select
-                value={bookletBinding}
-                onChange={(e) => setBookletBinding(e.target.value)}
-                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none"
+                value={alignment}
+                onChange={(e) => setAlignment(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs"
               >
-                <option value="left">Mở bên Trái (Standard)</option>
-                <option value="right">Mở bên Phải (Phù hợp tiếng Nhật/Ả rập)</option>
+                <option value="center">Giữa tờ (In nhanh 2 mặt)</option>
+                <option value="bottom-center">Giữa-Đáy (Nhíp Offset)</option>
+                <option value="top-left">Góc Trên-Trái</option>
               </select>
             </div>
-
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-slate-400">Bù creep gáy sách (mm)</label>
-              <input 
-                type="number" 
-                min="0"
-                step="0.1"
-                value={bookletCreep}
-                onChange={(e) => setBookletCreep(Math.max(0, parseFloat(e.target.value) || 0))}
-                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200"
-              />
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">2. Cấu hình Bình Sách</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] text-slate-400">Kiểu đóng</label>
+                <select
+                  value={bookletStyle}
+                  onChange={(e) => setBookletStyle(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
+                >
+                  <option value="saddleStitch">Bấm kim giữa</option>
+                  <option value="perfectBound">Đóng keo (Tay sách 4p)</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] text-slate-400">Chiều mở gáy</label>
+                <select
+                  value={bookletBinding}
+                  onChange={(e) => setBookletBinding(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
+                >
+                  <option value="left">Mở Trái (VN/Quốc tế)</option>
+                  <option value="right">Mở Phải (Nhật/Manga)</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-400">Bù Creep (mm/tờ)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.05"
+                  value={bookletCreep}
+                  onChange={(e) => setBookletCreep(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
+                />
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[10px] text-slate-400">Bleed 3 mép ngoài (mm)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={bleedMm}
+                  onChange={(e) => setBleedMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs"
+                />
+              </div>
             </div>
           </div>
         )}
 
-        {/* Step 5: Margins (mm) */}
-        <div className="flex flex-col gap-3 bg-slate-800/40 p-4 rounded-xl border border-slate-800/50">
-          <h3 className="text-sm font-bold text-indigo-400">Lề chừa cắt tờ giấy (Margins)</h3>
-          
-          <div className="grid grid-cols-2 gap-2">
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-slate-400">Lề trên (Top)</label>
-              <input 
-                type="number" 
-                value={marginTop}
-                onChange={(e) => setMarginTop(Math.max(0, parseFloat(e.target.value) || 0))}
-                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-sm text-slate-200"
+        {/* Marks & Output Settings */}
+        <div className="flex flex-col gap-2.5 bg-slate-900/50 p-3.5 rounded-xl border border-slate-800/80">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">3. Dấu xén & Báo cáo tờ in</h3>
+          <div className="grid grid-cols-3 gap-2">
+            <select
+              value={markStyle}
+              onChange={(e) => setMarkStyle(e.target.value)}
+              className="col-span-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs"
+            >
+              <option value="western">Bon 1 vạch</option>
+              <option value="tonbo">Tonbo Nhật</option>
+              <option value="none">Tắt bon</option>
+            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-slate-400">Dài:</span>
+              <input
+                type="number"
+                min="1"
+                value={markLength}
+                onChange={(e) => setMarkLength(Math.max(1, parseFloat(e.target.value) || 5))}
+                className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs"
               />
             </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-slate-400">Lề dưới (Bottom)</label>
-              <input 
-                type="number" 
-                value={marginBottom}
-                onChange={(e) => setMarginBottom(Math.max(0, parseFloat(e.target.value) || 0))}
-                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-sm text-slate-200"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-slate-400">Lề trái (Left)</label>
-              <input 
-                type="number" 
-                value={marginLeft}
-                onChange={(e) => setMarginLeft(Math.max(0, parseFloat(e.target.value) || 0))}
-                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-sm text-slate-200"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-slate-400">Lề phải (Right)</label>
-              <input 
-                type="number" 
-                value={marginRight}
-                onChange={(e) => setMarginRight(Math.max(0, parseFloat(e.target.value) || 0))}
-                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-sm text-slate-200"
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-slate-400">Cách:</span>
+              <input
+                type="number"
+                min="0.5"
+                step="0.5"
+                value={markOffset}
+                onChange={(e) => setMarkOffset(Math.max(0.5, parseFloat(e.target.value) || 3))}
+                className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs"
               />
             </div>
           </div>
-        </div>
 
-        {/* Step 6: Visual Marks & Options */}
-        <div className="flex flex-col gap-3 bg-slate-800/40 p-4 rounded-xl border border-slate-800/50">
-          <div className="flex items-center gap-3">
-            <input 
-              type="checkbox" 
-              id="cropMarks"
-              checked={cropMarks}
-              onChange={(e) => setCropMarks(e.target.checked)}
-              className="w-4 h-4 text-indigo-600 bg-slate-800 border-slate-700 rounded focus:ring-indigo-500 focus:ring-2"
-            />
-            <label htmlFor="cropMarks" className="text-sm font-semibold text-slate-300 cursor-pointer select-none">
-              Tự vẽ vạch cắt (Crop Marks)
+          <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={registrationMarks} onChange={(e) => setRegistrationMarks(e.target.checked)} />
+              Ốc chồng màu (4 cạnh)
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={registrationColor} onChange={(e) => setRegistrationColor(e.target.checked)} />
+              Màu Registration 4 bản
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={showSlugLine} onChange={(e) => setShowSlugLine(e.target.checked)} />
+              Báo cáo chân tờ (Slug)
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={showBleedOverlay} onChange={(e) => setShowBleedOverlay(e.target.checked)} />
+              Soi khung Bleed đỏ
             </label>
           </div>
-
-          {mode === 'grid' && (
-            <div className="flex items-center gap-3 pt-2 border-t border-slate-800/60">
-              <input 
-                type="checkbox" 
-                id="keepOriginalSize"
-                checked={keepOriginalSize}
-                onChange={(e) => setKeepOriginalSize(e.target.checked)}
-                className="w-4 h-4 text-indigo-600 bg-slate-800 border-slate-700 rounded focus:ring-indigo-500 focus:ring-2"
-              />
-              <label htmlFor="keepOriginalSize" className="text-sm font-semibold text-slate-300 cursor-pointer select-none">
-                Giữ kích thước gốc (100%)
-              </label>
-            </div>
-          )}
         </div>
-
       </div>
 
       {/* 2. Main Preview Workspace */}
-      <div className="flex-1 flex flex-col p-8 gap-6 justify-between overflow-y-auto">
-        
-        {/* Workspace Header */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight text-white">Khung làm việc chính</h2>
-            <p className="text-sm text-slate-400">Xem trước sơ đồ in thời gian thực (WYSIWYG)</p>
+      <div className="flex-1 flex flex-col p-6 gap-4 justify-between overflow-y-auto">
+        {/* Top Bar + Live Stats */}
+        <div className="flex flex-wrap justify-between items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-emerald-400 font-bold">
+              {plan.summary.itemsPerSheet} con/tờ
+              {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount} ngang + ${plan.summary.secondaryCount} dọc)`}
+            </span>
+            <span className="px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-amber-400">
+              Hiệu suất giấy: {plan.summary.utilizationPct}%
+            </span>
+            <span className="px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-slate-300">
+              Khổ: {plan.sheetDim.width}×{plan.sheetDim.height}mm
+            </span>
+            {plan.summary.ratioSheetsNeeded > 0 && (
+              <span className="px-3 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-xs font-mono text-emerald-300 font-bold">
+                Cần in: {plan.summary.ratioSheetsNeeded} tờ
+              </span>
+            )}
           </div>
 
-          {/* Zoom controls inside header */}
-          <div className="flex items-center gap-2 bg-slate-800 border border-slate-700/60 rounded-full px-4 py-1.5 shadow-md">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-full px-3 py-1">
+              <button onClick={() => setZoom(Math.max(0.5, zoom - 0.15))} className="text-xs px-1.5 text-slate-300 hover:text-white cursor-pointer">
+                −
+              </button>
+              <span className="text-xs font-mono text-slate-200 min-w-[42px] text-center">{Math.round(zoom * 100)}%</span>
+              <button onClick={() => setZoom(Math.min(2.5, zoom + 0.15))} className="text-xs px-1.5 text-slate-300 hover:text-white cursor-pointer">
+                +
+              </button>
+              <button onClick={() => setZoom(1.0)} className="text-[11px] text-emerald-400 font-bold pl-1 cursor-pointer">
+                100%
+              </button>
+            </div>
+
             <button
-              onClick={() => setZoom(Math.max(0.5, zoom - 0.15))}
-              title="Thu nhỏ"
-              className="text-slate-300 hover:text-white p-1 hover:bg-slate-700/60 rounded-full transition-colors text-xs font-bold w-6 h-6 flex items-center justify-center cursor-pointer"
+              onClick={handleDownload}
+              disabled={loading || sourceFiles.length === 0}
+              className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
+                loading || sourceFiles.length === 0
+                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20'
+              }`}
             >
-              ➖
-            </button>
-            <span className="text-xs font-mono font-bold text-slate-200 px-2 min-w-[50px] text-center">
-              {Math.round(zoom * 100)}%
-            </span>
-            <button
-              onClick={() => setZoom(Math.min(2.5, zoom + 0.15))}
-              title="Phóng to"
-              className="text-slate-300 hover:text-white p-1 hover:bg-slate-700/60 rounded-full transition-colors text-xs font-bold w-6 h-6 flex items-center justify-center cursor-pointer"
-            >
-              ➕
-            </button>
-            <div className="w-px h-4 bg-slate-700 mx-1"></div>
-            <button
-              onClick={() => setZoom(1.0)}
-              title="Kích thước chuẩn"
-              className="text-xs text-indigo-400 hover:text-indigo-300 font-bold px-2 py-0.5 hover:bg-slate-750 rounded transition-colors cursor-pointer"
-            >
-              100%
+              {loading ? 'Đang xuất Vector PDF...' : '⚡ Xuất PDF Bình Bài (CMYK)'}
             </button>
           </div>
-          
-          <button
-            onClick={handleDownload}
-            disabled={loading || !pdfFile}
-            className={`px-6 py-3.5 rounded-xl font-bold shadow-lg transition-all duration-150 flex items-center gap-2 ${
-              loading || !pdfFile
-                ? 'bg-slate-700 text-slate-400 cursor-not-allowed shadow-none' 
-                : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-indigo-500/20 active:scale-[0.98]'
-            }`}
-          >
-            {loading ? (
-              <>
-                <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <span>Đang bình trang file...</span>
-              </>
-            ) : (
-              <>
-                <span>⚡</span>
-                <span>Xuất PDF Bình Trang & Tải về</span>
-              </>
-            )}
-          </button>
         </div>
 
-        {/* Notifications */}
-        {error && (
-          <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-800 text-rose-400 text-sm flex items-start gap-2">
-            <span className="text-base">⚠️</span>
-            <span>{error}</span>
-          </div>
-        )}
-
+        {error && <div className="p-3 rounded-xl bg-rose-950/50 border border-rose-800 text-rose-300 text-xs">⚠️ {error}</div>}
         {success && (
-          <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-800 text-emerald-400 text-sm flex items-start gap-2">
-            <span className="text-base">🎉</span>
-            <span>Bình trang thành công! File thành phẩm đã tự động tải xuống.</span>
+          <div className="p-3 rounded-xl bg-emerald-950/50 border border-emerald-800 text-emerald-300 text-xs">
+            🎉 Đã xuất file PDF vector chuẩn CMYK (giữ nguyên Bleed & Smart Clipping)!
           </div>
         )}
 
-        {/* Interactive Canvas Preview Component */}
         <div className="flex-1 flex items-center justify-center">
           <PdfCanvasPreview
-            pdfFile={pdfFile}
-            mode={mode}
-            paperSizeKey={paperSizeKey}
-            customPaperWidth={customPaperWidth}
-            customPaperHeight={customPaperHeight}
-            orientation={orientation}
-            rows={rows}
-            cols={cols}
-            marginTop={marginTop}
-            marginBottom={marginBottom}
-            marginLeft={marginLeft}
-            marginRight={marginRight}
-            gutterX={gutterX}
-            gutterY={gutterY}
-            cropMarks={cropMarks}
-            bookletBinding={bookletBinding}
-            bookletCreep={bookletCreep}
+            sourceFiles={sourceFiles}
+            plan={plan}
+            margins={{ top: marginTop, bottom: marginBottom, left: marginLeft, right: marginRight }}
+            bleedMm={bleedMm}
+            showBleedOverlay={showBleedOverlay}
             currentSheetIndex={currentSheetIndex}
             setCurrentSheetIndex={setCurrentSheetIndex}
-            onTotalSheetsCalculated={setTotalSheets}
-            onPdfLoaded={setPdfPages}
+            onPagesSynced={handlePagesSynced}
             zoom={zoom}
-            keepOriginalSize={keepOriginalSize}
           />
         </div>
-
-        {/* Prepress Instructions Footer */}
-        <div className="border-t border-slate-800/80 pt-6 text-center text-xs text-slate-500 leading-relaxed">
-          <p>
-            Quy tắc bình trang PDF Snake được đồng bộ hóa. Giao diện trực quan tự động tính toán tọa độ theo hệ thống toạ độ điểm (Points).
-          </p>
-          <p className="mt-1">
-            © 2026 PDF Imposer Pro. Hỗ trợ xuất file in công nghiệp chất lượng vector không nén.
-          </p>
-        </div>
-
       </div>
     </div>
   );
