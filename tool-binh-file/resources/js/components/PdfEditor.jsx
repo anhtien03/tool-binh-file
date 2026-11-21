@@ -536,6 +536,13 @@ export default function PdfEditor() {
             setActiveStudio('sticker');
             setCurrentSheetIndex(0);
           }}
+          onSendSplitStickersToImpose={(splitPdfFile) => {
+            setSourceFiles([{ id: `split-${Date.now()}`, file: splitPdfFile }]);
+            setStickerShape('pdfContour');
+            setCollation('sequential');
+            setActiveStudio('sticker');
+            setCurrentSheetIndex(0);
+          }}
         />
       )}
 

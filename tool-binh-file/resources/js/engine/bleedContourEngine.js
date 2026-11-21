@@ -279,6 +279,8 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     simplifyMm = 0.65,
     minAreaMm2 = 4.0,
     shapeMode = 'auto', // 'auto' | 'circle' | 'oval' | 'rect'
+    ignoreCornerMarks = false,
+    cornerIgnoreMm = 14,
     alphaThreshold = 30,
     bgTolerance = 28,
   } = options;
@@ -312,8 +314,19 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
   const bgB = imgData[(padPx * cw + padPx) * 4 + 2];
 
   const fgMask = new Uint8Array(cw * ch);
+  const cornerIgnorePx = ignoreCornerMarks ? Math.round(cornerIgnoreMm * pxPerMm) : 0;
+
   for (let y = padPx; y < padPx + workH; y++) {
     for (let x = padPx; x < padPx + workW; x++) {
+      if (cornerIgnorePx > 0) {
+        const lx = x - padPx;
+        const ly = y - padPx;
+        const inLeft = lx < cornerIgnorePx;
+        const inRight = lx >= workW - cornerIgnorePx;
+        const inTop = ly < cornerIgnorePx;
+        const inBottom = ly >= workH - cornerIgnorePx;
+        if ((inLeft || inRight) && (inTop || inBottom)) continue;
+      }
       const i4 = (y * cw + x) * 4;
       const a = imgData[i4 + 3];
       if (useAlpha) {
@@ -525,6 +538,86 @@ export async function exportContourTracedPdf(renderedCanvas, widthMm, heightMm, 
         start: { x: (padMm + a[0]) * MM_TO_PT, y: sheetH - (padMm + a[1]) * MM_TO_PT },
         end: { x: (padMm + b[0]) * MM_TO_PT, y: sheetH - (padMm + b[1]) * MM_TO_PT },
         thickness: 0.3,
+        color: magenta,
+      });
+    }
+  }
+
+  return await doc.save();
+}
+
+/**
+ * Split a multi-sticker sheet into a multi-page PDF (1 sticker per page, masked cleanly to its contour)
+ * Each page gets its own TrimBox + vector CutContour path ready for Binh Tem Be!
+ */
+export async function exportSplitStickersPdf(renderedCanvas, totalWidthMm, totalHeightMm, contoursMm, bleedPadMm = 1.5) {
+  const doc = await PDFDocument.create();
+  const pxPerMmX = renderedCanvas.width / Math.max(1, totalWidthMm);
+  const pxPerMmY = renderedCanvas.height / Math.max(1, totalHeightMm);
+  const magenta = cmyk(0, 1, 0, 0);
+  const pad = Math.max(0, Number(bleedPadMm) || 0);
+
+  for (const poly of contoursMm) {
+    if (!poly || poly.length < 3) continue;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of poly) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+
+    const trimW = Math.max(2, maxX - minX);
+    const trimH = Math.max(2, maxY - minY);
+    const pageWmm = trimW + pad * 2;
+    const pageHmm = trimH + pad * 2;
+
+    // Crop & mask cleanly to this sticker's contour so neighboring stickers don't leak into corners
+    const cropPxW = Math.max(4, Math.round(pageWmm * pxPerMmX));
+    const cropPxH = Math.max(4, Math.round(pageHmm * pxPerMmY));
+    const offscreen = document.createElement('canvas');
+    offscreen.width = cropPxW;
+    offscreen.height = cropPxH;
+    const ctx = offscreen.getContext('2d');
+
+    ctx.save();
+    ctx.beginPath();
+    poly.forEach(([x, y], i) => {
+      const px = (x - minX + pad) * pxPerMmX;
+      const py = (y - minY + pad) * pxPerMmY;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.closePath();
+    ctx.clip();
+
+    const srcX = (minX - pad) * pxPerMmX;
+    const srcY = (minY - pad) * pxPerMmY;
+    ctx.drawImage(renderedCanvas, -srcX, -srcY);
+    ctx.restore();
+
+    const pageWPt = pageWmm * MM_TO_PT;
+    const pageHPt = pageHmm * MM_TO_PT;
+    const page = doc.addPage([pageWPt, pageHPt]);
+    page.setTrimBox(pad * MM_TO_PT, pad * MM_TO_PT, trimW * MM_TO_PT, trimH * MM_TO_PT);
+    page.setBleedBox(0, 0, pageWPt, pageHPt);
+
+    const pngBytes = await (await fetch(offscreen.toDataURL('image/png'))).arrayBuffer();
+    const img = await doc.embedPng(pngBytes);
+    page.drawImage(img, { x: 0, y: 0, width: pageWPt, height: pageHPt });
+
+    // Draw vector CutContour on this individual sticker page
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      const ax = (a[0] - minX + pad) * MM_TO_PT;
+      const ay = pageHPt - (a[1] - minY + pad) * MM_TO_PT;
+      const bx = (b[0] - minX + pad) * MM_TO_PT;
+      const by = pageHPt - (b[1] - minY + pad) * MM_TO_PT;
+      page.drawLine({
+        start: { x: ax, y: ay },
+        end: { x: bx, y: by },
+        thickness: 0.25,
         color: magenta,
       });
     }

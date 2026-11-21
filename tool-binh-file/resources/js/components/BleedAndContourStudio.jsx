@@ -5,11 +5,12 @@ import {
   extractStickerContoursFromImage,
   exportBleedExtendedPdf,
   exportContourTracedPdf,
+  exportSplitStickersPdf,
 } from '../engine/bleedContourEngine.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
 
-export default function BleedAndContourStudio({ onOpenStickerImpose }) {
+export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplitStickersToImpose }) {
   const [subMode, setSubMode] = useState('contour'); // 'contour' | 'bleed'
   const [sourceFile, setSourceFile] = useState(null);
   const [sourceType, setSourceType] = useState('image');
@@ -23,7 +24,8 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
   const [offsetMm, setOffsetMm] = useState(2.0);
   const [smoothLevel, setSmoothLevel] = useState(2);
   const [simplifyMm, setSimplifyMm] = useState(0.65);
-  const [minAreaMm2, setMinAreaMm2] = useState(4.0);
+  const [minAreaMm2, setMinAreaMm2] = useState(8.0);
+  const [ignoreCornerMarks, setIgnoreCornerMarks] = useState(true);
   const [contoursMm, setContoursMm] = useState([]);
 
   // 4-Edge Bleed Extension Options
@@ -98,6 +100,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
           simplifyMm,
           minAreaMm2,
           shapeMode,
+          ignoreCornerMarks,
         });
         setContoursMm(traced);
       } catch (err) {
@@ -105,8 +108,36 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
         setError('Lỗi khi dò đường bế từ hình ảnh.');
       }
     }, 20);
-    return () => clearTimeout(timer);
-  }, [renderedCanvas, subMode, sizeMm.w, sizeMm.h, offsetMm, smoothLevel, simplifyMm, minAreaMm2, shapeMode]);
+    const handleSplitExport = async (sendToImpose = false) => {
+    if (!renderedCanvas || contoursMm.length === 0) return;
+    setLoading(true);
+    try {
+      const bytes = await exportSplitStickersPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, 1.5);
+      const base = (sourceFile?.name || 'stickers').replace(/\.(pdf|png|jpg|jpeg)$/i, '');
+      const outName = `Tach_${contoursMm.length}Tem_${base}.pdf`;
+
+      if (sendToImpose && onSendSplitStickersToImpose) {
+        const fileObj = new File([bytes], outName, { type: 'application/pdf' });
+        onSendSplitStickersToImpose(fileObj);
+        return;
+      }
+
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = outName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return () => clearTimeout(timer);
+  }, [renderedCanvas, subMode, sizeMm.w, sizeMm.h, offsetMm, smoothLevel, simplifyMm, minAreaMm2, shapeMode, ignoreCornerMarks]);
 
   // Draw live preview canvas
   useEffect(() => {
@@ -255,6 +286,34 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
       a.href = url;
       const base = (sourceFile?.name || 'file').replace(/\.(pdf|png|jpg|jpeg)$/i, '');
       a.download = subMode === 'contour' ? `CutContour_${base}.pdf` : `Bleed_${base}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSplitExport = async (sendToImpose = false) => {
+    if (!renderedCanvas || contoursMm.length === 0) return;
+    setLoading(true);
+    try {
+      const bytes = await exportSplitStickersPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, 1.5);
+      const base = (sourceFile?.name || 'stickers').replace(/\.(pdf|png|jpg|jpeg)$/i, '');
+      const outName = `Tach_${contoursMm.length}Tem_${base}.pdf`;
+
+      if (sendToImpose && onSendSplitStickersToImpose) {
+        const fileObj = new File([bytes], outName, { type: 'application/pdf' });
+        onSendSplitStickersToImpose(fileObj);
+        return;
+      }
+
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = outName;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -414,6 +473,16 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
                 />
               </div>
             </div>
+
+            <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
+              <input
+                type="checkbox"
+                className="accent-[#146C53]"
+                checked={ignoreCornerMarks}
+                onChange={(e) => setIgnoreCornerMarks(e.target.checked)}
+              />
+              Bỏ qua 4 boong góc khi dò tem
+            </label>
           </div>
         ) : (
           <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
@@ -560,9 +629,29 @@ export default function BleedAndContourStudio({ onOpenStickerImpose }) {
             {loading
               ? 'Đang xử lý...'
               : subMode === 'contour'
-              ? '✂️ Xuất PDF có CutContour'
+              ? '✂️ Xuất PDF nguyên tờ (có CutContour)'
               : '📐 Xuất PDF đã bù Bleed'}
           </button>
+
+          {subMode === 'contour' && contoursMm.length > 1 && (
+            <>
+              <button
+                onClick={() => handleSplitExport(false)}
+                disabled={loading}
+                className="w-full py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition-colors cursor-pointer"
+              >
+                📑 Tách {contoursMm.length} tem thành PDF nhiều trang
+              </button>
+              <button
+                onClick={() => handleSplitExport(true)}
+                disabled={loading}
+                className="w-full py-2 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold transition-colors cursor-pointer"
+              >
+                🚀 Tách {contoursMm.length} tem &amp; Bình Tem Bế ngay →
+              </button>
+            </>
+          )}
+
           <button
             onClick={onOpenStickerImpose}
             className="w-full py-2 rounded-xl border border-slate-200 hover:border-[#146C53] text-slate-700 text-xs font-semibold cursor-pointer"
