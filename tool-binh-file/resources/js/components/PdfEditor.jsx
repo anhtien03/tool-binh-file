@@ -303,10 +303,10 @@ export default function PdfEditor() {
             className="flex items-center gap-2.5 cursor-pointer group"
           >
             <div className="w-7 h-7 rounded-lg bg-[#146C53] border border-emerald-400/30 flex items-center justify-center font-black text-xs text-white">
-              DL
+              TB
             </div>
-            <span className="font-bold tracking-wider text-sm text-white group-hover:text-emerald-200 transition-colors">
-              DIELINE · PRYNX
+            <span className="font-bold tracking-wide text-sm text-white group-hover:text-emerald-200 transition-colors">
+              Toolbinhfile
             </span>
           </button>
 
