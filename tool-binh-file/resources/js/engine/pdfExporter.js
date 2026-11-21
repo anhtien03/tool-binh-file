@@ -238,3 +238,164 @@ export async function exportImposedPdf(sourceFilesInput, plan, config) {
 
   return await destDoc.save();
 }
+
+/**
+ * Draw 4 corner optical registration marks (Boong máy bế) onto a pdf-lib page
+ */
+function drawPontMarksOnPdfPage(page, pontMarks, sheetHPt) {
+  const black = cmyk(0, 0, 0, 1);
+  for (const pm of pontMarks || []) {
+    const cx = pm.cx * MM_TO_PT;
+    const cy = sheetHPt - pm.cy * MM_TO_PT;
+    const r = (pm.size / 2) * MM_TO_PT;
+
+    if (pm.type === 'circle5mm') {
+      page.drawCircle({ x: cx, y: cy, size: r, color: black });
+    } else if (pm.type === 'circleHollow') {
+      page.drawCircle({ x: cx, y: cy, size: r, borderColor: black, borderWidth: 0.7 });
+    } else if (pm.type === 'graphtec') {
+      const arm = 10 * MM_TO_PT;
+      const sx = pm.corner.includes('L') ? 1 : -1;
+      const sy = pm.corner.includes('T') ? -1 : 1;
+      page.drawLine({ start: { x: cx, y: cy }, end: { x: cx + sx * arm, y: cy }, thickness: 1.4, color: black });
+      page.drawLine({ start: { x: cx, y: cy }, end: { x: cx, y: cy + sy * arm }, thickness: 1.4, color: black });
+    }
+  }
+}
+
+/**
+ * Export Sticker Print PDF (artwork + 4 boong marks, NO cut paths)
+ * OR Sticker Cut PDF (4 boong marks + CutContour vector paths only)
+ */
+export async function exportStickerPdf(sourceFilesInput, plan, config, exportRole = 'print') {
+  const fileList = Array.isArray(sourceFilesInput)
+    ? sourceFilesInput.map((f) => (f instanceof File ? f : f.file))
+    : [sourceFilesInput];
+
+  const destDoc = await PDFDocument.create();
+  const srcBoxes = [];
+  const embeddedPages = [];
+
+  if (exportRole === 'print') {
+    for (const file of fileList) {
+      const pdfBytes = await file.arrayBuffer();
+      const srcDoc = await PDFDocument.load(pdfBytes);
+      const srcPages = srcDoc.getPages();
+      srcPages.forEach((p) => srcBoxes.push(extractSourceBoxes(p, config.bleedMm)));
+      const embedded = await destDoc.embedPages(srcPages);
+      embedded.forEach((ep) => embeddedPages.push(ep));
+    }
+  }
+
+  const helvetica = await destDoc.embedFont(StandardFonts.Helvetica);
+  const sheetWPt = plan.sheetDim.width * MM_TO_PT;
+  const sheetHPt = plan.sheetDim.height * MM_TO_PT;
+  const cutMagenta = cmyk(0, 1, 0, 0);
+
+  for (const sheet of plan.sheets) {
+    const destPage = destDoc.addPage([sheetWPt, sheetHPt]);
+
+    if (exportRole === 'print') {
+      for (const p of sheet.placements) {
+        const embedded = embeddedPages[p.pageIndex];
+        const boxInfo = srcBoxes[p.pageIndex];
+        if (!embedded || !boxInfo) continue;
+
+        const trimXPt = p.x * MM_TO_PT;
+        const trimYPt = sheetHPt - (p.y + p.trimH) * MM_TO_PT;
+        const trimWPt = p.trimW * MM_TO_PT;
+        const trimHPt = p.trimH * MM_TO_PT;
+
+        const clipX = trimXPt - p.clipBleed.left * MM_TO_PT;
+        const clipY = trimYPt - p.clipBleed.bottom * MM_TO_PT;
+        const clipW = trimWPt + (p.clipBleed.left + p.clipBleed.right) * MM_TO_PT;
+        const clipH = trimHPt + (p.clipBleed.top + p.clipBleed.bottom) * MM_TO_PT;
+
+        destPage.pushOperators(pushGraphicsState(), rectangle(clipX, clipY, clipW, clipH), clip(), endPath());
+        destPage.drawPage(embedded, computeDrawPageOptions(p, boxInfo, sheetHPt));
+        destPage.pushOperators(popGraphicsState());
+      }
+    } else {
+      for (const cp of sheet.stickerCutPaths || []) {
+        if (cp.kind === 'line') {
+          destPage.drawLine({
+            start: { x: cp.x1 * MM_TO_PT, y: sheetHPt - cp.y1 * MM_TO_PT },
+            end: { x: cp.x2 * MM_TO_PT, y: sheetHPt - cp.y2 * MM_TO_PT },
+            thickness: 0.25,
+            color: cutMagenta,
+          });
+        } else if (cp.kind === 'ellipse') {
+          destPage.drawEllipse({
+            x: cp.cx * MM_TO_PT,
+            y: sheetHPt - cp.cy * MM_TO_PT,
+            xScale: cp.rx * MM_TO_PT,
+            yScale: cp.ry * MM_TO_PT,
+            borderColor: cutMagenta,
+            borderWidth: 0.25,
+          });
+        } else if (cp.kind === 'rect') {
+          destPage.drawRectangle({
+            x: cp.x * MM_TO_PT,
+            y: sheetHPt - (cp.y + cp.h) * MM_TO_PT,
+            width: cp.w * MM_TO_PT,
+            height: cp.h * MM_TO_PT,
+            borderColor: cutMagenta,
+            borderWidth: 0.25,
+          });
+        }
+      }
+    }
+
+    drawPontMarksOnPdfPage(destPage, sheet.pontMarks, sheetHPt);
+
+    if (sheet.slugText) {
+      destPage.drawText(`${sheet.slugText} [${exportRole === 'print' ? 'FILE IN' : 'FILE BE'}]`, {
+        x: 6 * MM_TO_PT,
+        y: 2.5 * MM_TO_PT,
+        size: 6.5,
+        font: helvetica,
+        color: cmyk(0, 0, 0, 1),
+      });
+    }
+  }
+
+  return await destDoc.save();
+}
+
+/**
+ * Export 1:1 Sticker Cut File as SVG (for Illustrator / Corel / FineCut / Cutting Master)
+ */
+export function exportStickerCutSvg(plan, sheetIndex = 0) {
+  const sheet = plan.sheets[sheetIndex];
+  if (!sheet) return '';
+  const { width, height } = plan.sheetDim;
+
+  const marksSvg = (sheet.pontMarks || [])
+    .map((pm) => {
+      if (pm.type === 'circle5mm') return `<circle cx="${pm.cx}" cy="${pm.cy}" r="${pm.size / 2}" fill="#000000" />`;
+      if (pm.type === 'circleHollow') return `<circle cx="${pm.cx}" cy="${pm.cy}" r="${pm.size / 2}" fill="none" stroke="#000000" stroke-width="0.3" />`;
+      const arm = 10;
+      const sx = pm.corner.includes('L') ? 1 : -1;
+      const sy = pm.corner.includes('T') ? 1 : -1;
+      return `<path d="M ${pm.cx + sx * arm} ${pm.cy} L ${pm.cx} ${pm.cy} L ${pm.cx} ${pm.cy + sy * arm}" fill="none" stroke="#000000" stroke-width="0.5" />`;
+    })
+    .join('\n    ');
+
+  const cutsSvg = (sheet.stickerCutPaths || [])
+    .map((cp) => {
+      if (cp.kind === 'line') return `<line x1="${cp.x1}" y1="${cp.y1}" x2="${cp.x2}" y2="${cp.y2}" stroke="#ec008c" stroke-width="0.2" />`;
+      if (cp.kind === 'ellipse') return `<ellipse cx="${cp.cx}" cy="${cp.cy}" rx="${cp.rx}" ry="${cp.ry}" fill="none" stroke="#ec008c" stroke-width="0.2" />`;
+      return `<rect x="${cp.x}" y="${cp.y}" width="${cp.w}" height="${cp.h}" rx="${cp.r || 0}" ry="${cp.r || 0}" fill="none" stroke="#ec008c" stroke-width="0.2" />`;
+    })
+    .join('\n    ');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
+  <g id="Marks_Model_">
+    ${marksSvg}
+  </g>
+  <g id="CutContour">
+    ${cutsSvg}
+  </g>
+</svg>`;
+}

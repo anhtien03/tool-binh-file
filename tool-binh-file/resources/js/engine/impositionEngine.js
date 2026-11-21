@@ -523,6 +523,73 @@ export function generateSheetMarks(placements, sheetW, sheetH, options = {}) {
   return { lines, registrations };
 }
 
+/**
+ * Merge overlapping horizontal/vertical segments for 1-Knife Shared-Edge Cut (Dao LETA)
+ */
+function deduplicateRectCutLines(placements) {
+  const horiz = new Map(); // yKey -> [[x1, x2], ...]
+  const vert = new Map();  // xKey -> [[y1, y2], ...]
+
+  const addSeg = (map, coord, a, b) => {
+    const key = Math.round(coord * 20); // 0.05mm precision
+    if (!map.has(key)) map.set(key, { coord, intervals: [] });
+    map.get(key).intervals.push([Math.min(a, b), Math.max(a, b)]);
+  };
+
+  for (const p of placements) {
+    const x1 = p.x, x2 = p.x + p.trimW;
+    const y1 = p.y, y2 = p.y + p.trimH;
+    addSeg(horiz, y1, x1, x2);
+    addSeg(horiz, y2, x1, x2);
+    addSeg(vert, x1, y1, y2);
+    addSeg(vert, x2, y1, y2);
+  }
+
+  const mergeIntervals = (intervals) => {
+    if (intervals.length === 0) return [];
+    const sorted = [...intervals].sort((a, b) => a[0] - b[0]);
+    const out = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = out[out.length - 1];
+      const cur = sorted[i];
+      if (cur[0] <= prev[1] + 0.05) {
+        prev[1] = Math.max(prev[1], cur[1]);
+      } else {
+        out.push(cur);
+      }
+    }
+    return out;
+  };
+
+  const result = [];
+  for (const { coord, intervals } of horiz.values()) {
+    for (const [a, b] of mergeIntervals(intervals)) {
+      result.push({ kind: 'line', x1: a, y1: coord, x2: b, y2: coord });
+    }
+  }
+  for (const { coord, intervals } of vert.values()) {
+    for (const [a, b] of mergeIntervals(intervals)) {
+      result.push({ kind: 'line', x1: coord, y1: a, x2: coord, y2: b });
+    }
+  }
+  return result;
+}
+
+/**
+ * Generate 4 Corner Optical Registration Marks (Boong máy bế)
+ */
+function generatePontMarks(sheetW, sheetH, pontType, pontMarginMm, pontSizeMm) {
+  if (pontType === 'none') return [];
+  const m = Math.max(4, Number(pontMarginMm) || 10);
+  const s = Math.max(3, Number(pontSizeMm) || 5);
+  return [
+    { corner: 'TL', type: pontType, cx: m, cy: m, size: s },
+    { corner: 'TR', type: pontType, cx: sheetW - m, cy: m, size: s },
+    { corner: 'BL', type: pontType, cx: m, cy: sheetH - m, size: s },
+    { corner: 'BR', type: pontType, cx: sheetW - m, cy: sheetH - m, size: s },
+  ];
+}
+
 function stripVietnamese(str) {
   return str
     .normalize('NFD')
@@ -775,6 +842,144 @@ export function computeImpositionPlan(pagesMeta, config) {
     : Math.max(1, rawH - 2 * bleedMm);
 
   const sheets = [];
+
+  // ==================== STICKER DIE-CUT MODE ('sticker') ====================
+  if (config.mode === 'sticker') {
+    const gX = Math.max(0, Number(config.gutterX) || 0);
+    const gY = Math.max(0, Number(config.gutterY) || 0);
+    const pontType = config.pontType || 'circle5mm'; // 'circle5mm' | 'circleHollow' | 'graphtec' | 'none'
+    const pontMargin = Math.max(5, Number(config.pontMarginMm) || 10);
+    const pontSize = Math.max(3, Number(config.pontSizeMm) || 5);
+    const avoidCornerMarks = config.avoidCornerMarks !== false && pontType !== 'none';
+    const stickerShape = config.stickerShape || 'rect'; // 'rect' | 'circle' | 'oval'
+    const cornerRadius = Math.max(0, Number(config.cornerRadiusMm) || 0);
+    const stickerLayout = config.stickerLayout || 'optimal'; // 'honeycomb' | 'optimal' | 'simple'
+    const singleCut1Dao = Boolean(config.singleCut1Dao);
+
+    const pontMarks = generatePontMarks(sheetDim.width, sheetDim.height, pontType, pontMargin, pontSize);
+    const keepOut = avoidCornerMarks ? pontMargin + pontSize / 2 + 2 : 0;
+    const cornerBoxes = avoidCornerMarks
+      ? [
+          { x1: 0, y1: 0, x2: keepOut, y2: keepOut },
+          { x1: sheetDim.width - keepOut, y1: 0, x2: sheetDim.width, y2: keepOut },
+          { x1: 0, y1: sheetDim.height - keepOut, x2: keepOut, y2: sheetDim.height },
+          { x1: sheetDim.width - keepOut, y1: sheetDim.height - keepOut, x2: sheetDim.width, y2: sheetDim.height },
+        ]
+      : [];
+
+    const hitsCorner = (x, y, w, h) => {
+      for (const kb of cornerBoxes) {
+        if (x < kb.x2 && x + w > kb.x1 && y < kb.y2 && y + h > kb.y1) return true;
+      }
+      return false;
+    };
+
+    let rawSlots = [];
+    if (stickerLayout === 'honeycomb') {
+      // Staggered Honeycomb packing for round/oval stickers
+      const stepX = trimW + gX;
+      // Vertical pitch for hexagonal/circle packing: sqrt(3)/2 * (h + gY) when circular, or 0.88 * (h + gY)
+      const ratio = Math.abs(trimW - trimH) < 2 ? 0.866 : 0.88;
+      const stepY = Math.max(trimH * 0.72, (trimH + gY) * ratio);
+      const maxRows = Math.max(1, Math.floor((availH - trimH) / stepY) + 1);
+
+      for (let r = 0; r < maxRows; r++) {
+        const y = effMargins.top + r * stepY;
+        if (y + trimH > sheetDim.height - effMargins.bottom + 0.1) break;
+        const rowOffset = r % 2 === 1 ? stepX / 2 : 0;
+        const maxCols = Math.max(1, Math.floor((availW - rowOffset - trimW) / stepX) + 1);
+        for (let c = 0; c < maxCols; c++) {
+          const x = effMargins.left + rowOffset + c * stepX;
+          if (x + trimW > sheetDim.width - effMargins.right + 0.1) break;
+          if (!hitsCorner(x, y, trimW, trimH)) {
+            rawSlots.push({ x, y, trimW, trimH, rotate: 0, scale: 1, block: 'primary' });
+          }
+        }
+      }
+    } else {
+      const { slots } = buildRawSlots(
+        { ...config, layoutType: stickerLayout === 'simple' ? 'simple' : 'optimal', keepOriginalSize: true },
+        availW,
+        availH,
+        trimW,
+        trimH
+      );
+      const aligned = alignSlots(slots, sheetDim.width, sheetDim.height, effMargins, 'center');
+      rawSlots = aligned.filter((s) => !hitsCorner(s.x, s.y, s.trimW, s.trimH));
+    }
+
+    const slotsWithClip = applySmartBleedClipping(rawSlots, bleedMm);
+    const M = slotsWithClip.length;
+
+    // Build logical items (1-sided stickers)
+    const gang = Array.isArray(config.gangItems) && config.gangItems.length > 0
+      ? config.gangItems.map((it) => ({ front: it.frontIndex }))
+      : pagesMeta.map((_, i) => ({ front: i }));
+
+    const collation = config.collation || 'stepAndRepeat';
+    const sheetLists = [];
+    if (collation === 'sequential' && gang.length > 1) {
+      const S = Math.ceil(gang.length / Math.max(1, M));
+      for (let s = 0; s < S; s++) {
+        sheetLists.push(
+          slotsWithClip.map((slot, idx) => {
+            const gIdx = s * M + idx;
+            return gIdx < gang.length ? { ...slot, pageIndex: gang[gIdx].front } : null;
+          }).filter(Boolean)
+        );
+      }
+    } else {
+      for (let i = 0; i < gang.length; i++) {
+        sheetLists.push(slotsWithClip.map((slot) => ({ ...slot, pageIndex: gang[i].front })));
+      }
+    }
+
+    sheetLists.forEach((placements, idx) => {
+      let stickerCutPaths = [];
+      if (singleCut1Dao && stickerShape === 'rect' && cornerRadius === 0 && gX <= 0.05 && gY <= 0.05) {
+        stickerCutPaths = deduplicateRectCutLines(placements);
+      } else {
+        stickerCutPaths = placements.map((p) => {
+          if (stickerShape === 'circle' || stickerShape === 'oval') {
+            return { kind: 'ellipse', cx: p.x + p.trimW / 2, cy: p.y + p.trimH / 2, rx: p.trimW / 2, ry: p.trimH / 2 };
+          }
+          return { kind: 'rect', x: p.x, y: p.y, w: p.trimW, h: p.trimH, r: cornerRadius };
+        });
+      }
+
+      const rawSlug = `Toolbinhfile | Binh Tem Be (${stickerShape}) | To ${idx + 1}/${sheetLists.length} | ${placements.length} tem/to | Boong ${pontType} | Kho ${sheetDim.width}x${sheetDim.height}mm`;
+      sheets.push({
+        index: idx,
+        physicalSheet: idx + 1,
+        side: 'Simplex',
+        placements,
+        marks: { lines: [], registrations: [] },
+        pontMarks,
+        stickerCutPaths,
+        slugText: config.showSlugLine ? stripVietnamese(rawSlug) : '',
+      });
+    });
+
+    const usedArea = slotsWithClip.reduce((acc, s) => acc + s.trimW * s.trimH, 0);
+    const stickerSummary = {
+      totalSheets: sheets.length,
+      physicalSheets: sheets.length,
+      itemsPerSheet: M,
+      utilizationPct: Math.min(100, Math.round((usedArea / (sheetDim.width * sheetDim.height)) * 1000) / 10),
+      trimW: Math.round(trimW * 100) / 100,
+      trimH: Math.round(trimH * 100) / 100,
+      primaryCount: M,
+      secondaryCount: 0,
+      cutPathCount: sheets[0]?.stickerCutPaths?.length || 0,
+    };
+
+    return {
+      sheetDim,
+      sheets,
+      summary: stickerSummary,
+      jobChecks: runJobChecks(pagesMeta, sheets, sheetDim, config, stickerSummary),
+    };
+  }
 
   if (config.mode === 'booklet') {
     const numPages = pagesMeta.length;

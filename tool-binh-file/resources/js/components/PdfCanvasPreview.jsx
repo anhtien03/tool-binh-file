@@ -355,6 +355,64 @@ export default function PdfCanvasPreview({
       ctx.stroke();
     }
 
+    // Draw Optical Registration Marks (Boong máy bế decal)
+    for (const pm of activeSheet.pontMarks || []) {
+      const cx = pm.cx * scale;
+      const cy = pm.cy * scale;
+      const r = (pm.size / 2) * scale;
+      ctx.save();
+      if (pm.type === 'circle5mm') {
+        ctx.fillStyle = '#0f172a';
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (pm.type === 'circleHollow') {
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (pm.type === 'graphtec') {
+        const arm = 10 * scale;
+        const sx = pm.corner.includes('L') ? 1 : -1;
+        const sy = pm.corner.includes('T') ? 1 : -1;
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.moveTo(cx + sx * arm, cy);
+        ctx.lineTo(cx, cy);
+        ctx.lineTo(cx, cy + sy * arm);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Draw Sticker CutContour Paths (Magenta)
+    if (activeSheet.stickerCutPaths && activeSheet.stickerCutPaths.length > 0) {
+      ctx.save();
+      ctx.strokeStyle = '#e11d48';
+      ctx.lineWidth = 1.25;
+      for (const cp of activeSheet.stickerCutPaths) {
+        ctx.beginPath();
+        if (cp.kind === 'line') {
+          ctx.moveTo(cp.x1 * scale, cp.y1 * scale);
+          ctx.lineTo(cp.x2 * scale, cp.y2 * scale);
+        } else if (cp.kind === 'ellipse') {
+          ctx.ellipse(cp.cx * scale, cp.cy * scale, cp.rx * scale, cp.ry * scale, 0, 0, Math.PI * 2);
+        } else if (cp.kind === 'rect') {
+          const rx = cp.x * scale, ry = cp.y * scale, rw = cp.w * scale, rh = cp.h * scale;
+          const rad = Math.min((cp.r || 0) * scale, rw / 2, rh / 2);
+          if (rad > 0 && ctx.roundRect) {
+            ctx.roundRect(rx, ry, rw, rh, rad);
+          } else {
+            ctx.rect(rx, ry, rw, rh);
+          }
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // Draw Slug Line
     if (activeSheet.slugText) {
       ctx.fillStyle = '#334155';

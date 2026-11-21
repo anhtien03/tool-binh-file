@@ -3,10 +3,10 @@ import PdfCanvasPreview from './PdfCanvasPreview';
 import DielineStudio from './DielineStudio';
 import TemplateLibrary from './TemplateLibrary';
 import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
-import { exportImposedPdf } from '../engine/pdfExporter';
+import { exportImposedPdf, exportStickerPdf, exportStickerCutSvg } from '../engine/pdfExporter';
 
 export default function PdfEditor() {
-  // --- Top-Level Navigation ('library' | 'dieline' | 'namecard' | 'booklet') ---
+  // --- Top-Level Navigation ('library' | 'dieline' | 'namecard' | 'sticker' | 'booklet') ---
   const [activeStudio, setActiveStudio] = useState('namecard');
   const [selectedTemplateId, setSelectedTemplateId] = useState('ste');
 
@@ -16,7 +16,7 @@ export default function PdfEditor() {
   const [gangItems, setGangItems] = useState([]);
 
   // --- Core Imposition Mode (synced cleanly with activeStudio) ---
-  const mode = activeStudio === 'booklet' ? 'booklet' : 'grid';
+  const mode = activeStudio === 'booklet' ? 'booklet' : activeStudio === 'sticker' ? 'sticker' : 'grid';
   const [paperSizeKey, setPaperSizeKey] = useState('A3');
   const [customPaperWidth, setCustomPaperWidth] = useState('325');
   const [customPaperHeight, setCustomPaperHeight] = useState('430');
@@ -46,6 +46,16 @@ export default function PdfEditor() {
   const [bookletCreep, setBookletCreep] = useState(0.2);
   const [pagesPerSignature, setPagesPerSignature] = useState(8);
   const [coverPagesAtEnd, setCoverPagesAtEnd] = useState(0);
+
+  // --- Sticker Die-Cut Settings ('sticker' mode) ---
+  const [stickerShape, setStickerShape] = useState('rect'); // 'rect' | 'circle' | 'oval'
+  const [cornerRadiusMm, setCornerRadiusMm] = useState(3);
+  const [stickerLayout, setStickerLayout] = useState('optimal'); // 'optimal' | 'honeycomb' | 'simple'
+  const [pontType, setPontType] = useState('circle5mm'); // 'circle5mm' | 'circleHollow' | 'graphtec' | 'none'
+  const [pontMarginMm, setPontMarginMm] = useState(10);
+  const [pontSizeMm, setPontSizeMm] = useState(5);
+  const [avoidCornerMarks, setAvoidCornerMarks] = useState(true);
+  const [singleCut1Dao, setSingleCut1Dao] = useState(true);
 
   // --- Margins & Marks ---
   const [marginTop, setMarginTop] = useState(10);
@@ -275,6 +285,14 @@ export default function PdfEditor() {
       bookletCreep,
       pagesPerSignature,
       coverPagesAtEnd,
+      stickerShape,
+      cornerRadiusMm,
+      stickerLayout,
+      pontType,
+      pontMarginMm,
+      pontSizeMm,
+      avoidCornerMarks,
+      singleCut1Dao,
       marginTop,
       marginBottom,
       marginLeft,
@@ -317,6 +335,14 @@ export default function PdfEditor() {
       bookletCreep,
       pagesPerSignature,
       coverPagesAtEnd,
+      stickerShape,
+      cornerRadiusMm,
+      stickerLayout,
+      pontType,
+      pontMarginMm,
+      pontSizeMm,
+      avoidCornerMarks,
+      singleCut1Dao,
       marginTop,
       marginBottom,
       marginLeft,
@@ -341,7 +367,7 @@ export default function PdfEditor() {
     }
   }, [plan.sheets.length, currentSheetIndex]);
 
-  const handleDownload = async () => {
+  const handleDownload = async (stickerRole = 'print') => {
     if (sourceFiles.length === 0 || plan.sheets.length === 0) {
       setError('Vui lòng chọn ít nhất 1 file PDF trước khi xuất!');
       return;
@@ -351,21 +377,47 @@ export default function PdfEditor() {
     setError(null);
     setSuccess(false);
     try {
-      const pdfBytesOutput = await exportImposedPdf(sourceFiles, plan, config);
-      const blob = new Blob([pdfBytesOutput], { type: 'application/pdf' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
       const baseName = sourceFiles.length > 1 ? `GangRun_${sourceFiles.length}files.pdf` : sourceFiles[0].file.name;
-      a.download = `Imposed_${baseName}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
+      if (mode === 'sticker') {
+        if (stickerRole === 'svg') {
+          const svg = exportStickerCutSvg(plan, currentSheetIndex);
+          const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `FileBe_${baseName.replace(/\.pdf$/i, '')}.svg`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.URL.revokeObjectURL(url);
+        } else {
+          const pdfBytesOutput = await exportStickerPdf(sourceFiles, plan, config, stickerRole);
+          const blob = new Blob([pdfBytesOutput], { type: 'application/pdf' });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `${stickerRole === 'cut' ? 'FileBe' : 'FileIn'}_${baseName}`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.URL.revokeObjectURL(url);
+        }
+      } else {
+        const pdfBytesOutput = await exportImposedPdf(sourceFiles, plan, config);
+        const blob = new Blob([pdfBytesOutput], { type: 'application/pdf' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Imposed_${baseName}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+      }
       setSuccess(true);
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Đã xảy ra lỗi khi xuất PDF vector.');
+      setError(err.message || 'Đã xảy ra lỗi khi xuất file.');
     } finally {
       setLoading(false);
     }
@@ -396,7 +448,8 @@ export default function PdfEditor() {
             {[
               ['library', 'Thư viện hộp'],
               ['dieline', 'Khuôn 2D & 3D'],
-              ['namecard', 'Bình Namecard / Tem'],
+              ['namecard', 'Bình Namecard'],
+              ['sticker', 'Bình Tem Bế (Decal)'],
               ['booklet', 'Bình Sách (Booklet)'],
             ].map(([key, label]) => (
               <button
@@ -419,9 +472,9 @@ export default function PdfEditor() {
 
         {/* Right Quick Action */}
         <div className="flex items-center gap-2">
-          {(activeStudio === 'namecard' || activeStudio === 'booklet') && (
+          {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
             <button
-              onClick={handleDownload}
+              onClick={() => handleDownload('print')}
               disabled={loading || sourceFiles.length === 0}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 loading || sourceFiles.length === 0
@@ -429,7 +482,13 @@ export default function PdfEditor() {
                   : 'bg-[#146C53] hover:bg-[#198768] text-white shadow-xs'
               }`}
             >
-              {loading ? 'Đang xuất...' : activeStudio === 'booklet' ? 'Xuất PDF Bình Sách' : 'Xuất PDF Bình Bài'}
+              {loading
+                ? 'Đang xuất...'
+                : activeStudio === 'booklet'
+                ? 'Xuất PDF Bình Sách'
+                : activeStudio === 'sticker'
+                ? 'Xuất File IN Tem'
+                : 'Xuất PDF Bình Bài'}
             </button>
           )}
         </div>
@@ -465,7 +524,7 @@ export default function PdfEditor() {
         />
       )}
 
-      {(activeStudio === 'namecard' || activeStudio === 'booklet') && (
+      {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
         <div className="flex flex-col lg:flex-row gap-4 p-4 flex-1">
           {/* 1. LEFT PARAMETER SIDEBAR (~330px) */}
           <aside className="w-full lg:w-[340px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3.5 overflow-y-auto max-h-[calc(100vh-88px)] shrink-0 shadow-xs">
@@ -863,6 +922,134 @@ export default function PdfEditor() {
                   </div>
                 </div>
               </div>
+            ) : mode === 'sticker' ? (
+              <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
+                <span className="text-xs font-bold text-slate-800">3. Cấu hình Bình Tem Bế (Decal)</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-500">Hình dáng dao bế</label>
+                    <select
+                      value={stickerShape}
+                      onChange={(e) => setStickerShape(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
+                    >
+                      <option value="rect">Chữ nhật / Bo góc</option>
+                      <option value="circle">Hình tròn</option>
+                      <option value="oval">Hình Oval / Elip</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-500">Kiểu xếp tem</label>
+                    <select
+                      value={stickerLayout}
+                      onChange={(e) => setStickerLayout(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
+                    >
+                      <option value="optimal">Trộn 0°+90° (Dutch)</option>
+                      <option value="honeycomb">Tổ ong so le (Tròn)</option>
+                      <option value="simple">Lưới thẳng</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">Bleed (mm)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={bleedMm}
+                      onChange={(e) => setBleedMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">Hở X (Gap)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={gutterX}
+                      onChange={(e) => setGutterX(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">Hở Y (Gap)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={gutterY}
+                      onChange={(e) => setGutterY(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+
+                {stickerShape === 'rect' && (
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-[11px] text-slate-600">Bo góc tem (mm):</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={cornerRadiusMm}
+                      onChange={(e) => setCornerRadiusMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="w-16 bg-white border border-slate-200 rounded px-2 py-0.5 text-xs font-mono text-right"
+                    />
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-500">Boong máy bế</label>
+                    <select
+                      value={pontType}
+                      onChange={(e) => setPontType(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    >
+                      <option value="circle5mm">Boong tròn đặc 5mm</option>
+                      <option value="circleHollow">Boong tròn rỗng</option>
+                      <option value="graphtec">Boong Graphtec (L)</option>
+                      <option value="none">Tắt boong</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-500">Lề đặt boong (mm)</label>
+                    <input
+                      type="number"
+                      min="5"
+                      value={pontMarginMm}
+                      onChange={(e) => setPontMarginMm(Math.max(5, parseFloat(e.target.value) || 10))}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="accent-[#146C53]"
+                    checked={avoidCornerMarks}
+                    onChange={(e) => setAvoidCornerMarks(e.target.checked)}
+                  />
+                  Tránh 4 góc boong (nhét thêm tem dải giữa)
+                </label>
+
+                {stickerShape === 'rect' && (
+                  <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-[#146C53]"
+                      checked={singleCut1Dao}
+                      onChange={(e) => setSingleCut1Dao(e.target.checked)}
+                    />
+                    Cắt 1 dao (Gộp nét trùng khi Gap = 0)
+                  </label>
+                )}
+              </div>
             ) : (
               <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
                 <span className="text-xs font-bold text-slate-800">3. Cấu hình Bình Sách</span>
@@ -1160,17 +1347,51 @@ export default function PdfEditor() {
             </div>
 
             <div className="flex flex-col gap-2 pt-3 border-t border-slate-100">
-              <button
-                onClick={handleDownload}
-                disabled={loading || sourceFiles.length === 0}
-                className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                  loading || sourceFiles.length === 0
-                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                    : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
-                }`}
-              >
-                {loading ? 'Đang xuất Vector PDF...' : '⚡ Xuất PDF Bình Bài (CMYK)'}
-              </button>
+              {mode === 'sticker' ? (
+                <>
+                  <button
+                    onClick={() => handleDownload('print')}
+                    disabled={loading || sourceFiles.length === 0}
+                    className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                      loading || sourceFiles.length === 0
+                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                        : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
+                    }`}
+                  >
+                    {loading ? 'Đang xuất...' : '🖨️ Xuất File IN (PDF + Boong)'}
+                  </button>
+                  <button
+                    onClick={() => handleDownload('cut')}
+                    disabled={loading || sourceFiles.length === 0}
+                    className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                      loading || sourceFiles.length === 0
+                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                        : 'bg-rose-600 hover:bg-rose-500 text-white shadow-xs'
+                    }`}
+                  >
+                    ✂️ Xuất File BẾ (CutContour PDF)
+                  </button>
+                  <button
+                    onClick={() => handleDownload('svg')}
+                    disabled={loading || sourceFiles.length === 0}
+                    className="w-full py-2 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold cursor-pointer disabled:opacity-40"
+                  >
+                    🧩 Xuất File BẾ (.SVG)
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => handleDownload('print')}
+                  disabled={loading || sourceFiles.length === 0}
+                  className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                    loading || sourceFiles.length === 0
+                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                      : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
+                  }`}
+                >
+                  {loading ? 'Đang xuất Vector PDF...' : '⚡ Xuất PDF Bình Bài (CMYK)'}
+                </button>
+              )}
               <button
                 onClick={() => setActiveStudio('library')}
                 className="w-full py-2 rounded-xl border border-slate-200 hover:border-[#146C53] text-slate-700 text-xs font-semibold cursor-pointer"
