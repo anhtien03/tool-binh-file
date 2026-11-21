@@ -25,6 +25,10 @@ export default function PdfEditor() {
   // --- PrynX Grid / Guillotine Settings ---
   const [layoutType, setLayoutType] = useState('optimal');
   const [collation, setCollation] = useState('stepAndRepeat');
+  const [flowPattern, setFlowPattern] = useState('Z'); // 'Z' | 'S' | 'N'
+  const [finishedSizePreset, setFinishedSizePreset] = useState('auto'); // 'auto' | '90x54' | '88x53' | '85x55' | 'custom'
+  const [targetTrimW, setTargetTrimW] = useState('');
+  const [targetTrimH, setTargetTrimH] = useState('');
   const [stackSplit, setStackSplit] = useState(0);
   const [duplexMode, setDuplexMode] = useState('simplex');
   const [inkingAxis, setInkingAxis] = useState('none');
@@ -172,6 +176,66 @@ export default function PdfEditor() {
     );
   };
 
+  const applyNamecardPreset = (presetKey) => {
+    setMode('grid');
+    setKeepOriginalSize(true);
+    setBleedMm(1.5);
+    setGutterX(2);
+    setGutterY(2);
+    setMarginTop(10);
+    setMarginBottom(10);
+    setMarginLeft(10);
+    setMarginRight(10);
+    setMarkStyle('western');
+
+    if (presetKey === 'a3_dutch_90x54') {
+      setPaperSizeKey('A3');
+      setOrientation('landscape');
+      setLayoutType('optimal');
+      setFinishedSizePreset('90x54');
+      setTargetTrimW('90');
+      setTargetTrimH('54');
+    } else if (presetKey === 'sra3_90x54') {
+      setPaperSizeKey('SRA3');
+      setOrientation('landscape');
+      setLayoutType('optimal');
+      setFinishedSizePreset('90x54');
+      setTargetTrimW('90');
+      setTargetTrimH('54');
+    } else if (presetKey === 'd325_90x54') {
+      setPaperSizeKey('D325x430');
+      setOrientation('landscape');
+      setLayoutType('optimal');
+      setFinishedSizePreset('90x54');
+      setTargetTrimW('90');
+      setTargetTrimH('54');
+    } else if (presetKey === 'a3_grid_88x53') {
+      setPaperSizeKey('A3');
+      setOrientation('landscape');
+      setLayoutType('simple');
+      setFinishedSizePreset('88x53');
+      setTargetTrimW('88');
+      setTargetTrimH('53');
+    }
+  };
+
+  const handleFinishedSizePresetChange = (val) => {
+    setFinishedSizePreset(val);
+    if (val === 'auto') {
+      setTargetTrimW('');
+      setTargetTrimH('');
+    } else if (val === '90x54') {
+      setTargetTrimW('90');
+      setTargetTrimH('54');
+    } else if (val === '88x53') {
+      setTargetTrimW('88');
+      setTargetTrimH('53');
+    } else if (val === '85x55') {
+      setTargetTrimW('85');
+      setTargetTrimH('55');
+    }
+  };
+
   const clearAllFiles = () => {
     setSourceFiles([]);
     setPdfPages([]);
@@ -189,6 +253,9 @@ export default function PdfEditor() {
       orientation,
       layoutType,
       collation,
+      flowPattern,
+      targetTrimW: finishedSizePreset === 'auto' ? 0 : Number(targetTrimW) || 0,
+      targetTrimH: finishedSizePreset === 'auto' ? 0 : Number(targetTrimH) || 0,
       stackSplit,
       duplexMode,
       inkingAxis,
@@ -224,6 +291,10 @@ export default function PdfEditor() {
       orientation,
       layoutType,
       collation,
+      flowPattern,
+      finishedSizePreset,
+      targetTrimW,
+      targetTrimH,
       stackSplit,
       duplexMode,
       inkingAxis,
@@ -578,7 +649,74 @@ export default function PdfEditor() {
             {/* Mode Controls */}
             {mode === 'grid' ? (
               <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
-                <span className="text-xs font-bold text-slate-800">3. Thuật toán xếp &amp; Lật mặt</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800">3. Preset Namecard &amp; Thuật toán</span>
+                </div>
+
+                {/* Quick Namecard Presets */}
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    onClick={() => applyNamecardPreset('a3_dutch_90x54')}
+                    className="px-2 py-1.5 rounded-lg bg-[#FAFBF9] hover:bg-[#E6F4EF] border border-slate-200 hover:border-[#146C53] text-[10px] font-semibold text-slate-700 hover:text-[#146C53] text-left cursor-pointer"
+                  >
+                    90×54 · A3 (Dutch Cut)
+                  </button>
+                  <button
+                    onClick={() => applyNamecardPreset('sra3_90x54')}
+                    className="px-2 py-1.5 rounded-lg bg-[#FAFBF9] hover:bg-[#E6F4EF] border border-slate-200 hover:border-[#146C53] text-[10px] font-semibold text-slate-700 hover:text-[#146C53] text-left cursor-pointer"
+                  >
+                    90×54 · SRA3 (In nhanh)
+                  </button>
+                  <button
+                    onClick={() => applyNamecardPreset('d325_90x54')}
+                    className="px-2 py-1.5 rounded-lg bg-[#FAFBF9] hover:bg-[#E6F4EF] border border-slate-200 hover:border-[#146C53] text-[10px] font-semibold text-slate-700 hover:text-[#146C53] text-left cursor-pointer"
+                  >
+                    90×54 · 325×430mm
+                  </button>
+                  <button
+                    onClick={() => applyNamecardPreset('a3_grid_88x53')}
+                    className="px-2 py-1.5 rounded-lg bg-[#FAFBF9] hover:bg-[#E6F4EF] border border-slate-200 hover:border-[#146C53] text-[10px] font-semibold text-slate-700 hover:text-[#146C53] text-left cursor-pointer"
+                  >
+                    88×53 · A3 (Lưới thẳng)
+                  </button>
+                </div>
+
+                {/* Finished Size Override */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-slate-500">Kích thước thành phẩm (Trim Size)</label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <select
+                      value={finishedSizePreset}
+                      onChange={(e) => handleFinishedSizePresetChange(e.target.value)}
+                      className="col-span-3 bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    >
+                      <option value="auto">Tự động theo file PDF</option>
+                      <option value="90x54">Chuẩn VN · 90 × 54 mm</option>
+                      <option value="88x53">Ép gọn · 88 × 53 mm</option>
+                      <option value="85x55">Chuẩn EU/ID · 85 × 55 mm</option>
+                      <option value="custom">Tùy chỉnh mm...</option>
+                    </select>
+                    {finishedSizePreset === 'custom' && (
+                      <>
+                        <input
+                          type="number"
+                          value={targetTrimW}
+                          onChange={(e) => setTargetTrimW(e.target.value)}
+                          placeholder="Rộng mm"
+                          className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                        />
+                        <input
+                          type="number"
+                          value={targetTrimH}
+                          onChange={(e) => setTargetTrimH(e.target.value)}
+                          placeholder="Cao mm"
+                          className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                        />
+                      </>
+                    )}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex flex-col gap-1">
                     <label className="text-[10px] text-slate-500">Cách xếp lưới</label>
@@ -601,11 +739,28 @@ export default function PdfEditor() {
                     >
                       <option value="stepAndRepeat">Step &amp; Repeat</option>
                       <option value="sequential">N-Up ghép mẫu</option>
+                      <option value="repeatPerRow">Mỗi hàng 1 mẫu</option>
+                      <option value="repeatPerCol">Mỗi cột 1 mẫu</option>
                       <option value="ratioStack">Ratio Stack (Tỷ lệ)</option>
                       <option value="cutAndStack">Cut &amp; Stack</option>
                     </select>
                   </div>
                 </div>
+
+                {(collation === 'sequential' || collation === 'cutAndStack') && (
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-[10px] text-slate-500">Thứ tự điền ô (Flow):</label>
+                    <select
+                      value={flowPattern}
+                      onChange={(e) => setFlowPattern(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs"
+                    >
+                      <option value="Z">Chữ Z (Trái → Phải)</option>
+                      <option value="S">Chữ S (Ziczac hàng)</option>
+                      <option value="N">Chữ N (Trên → Dưới cột)</option>
+                    </select>
+                  </div>
+                )}
 
                 {collation === 'cutAndStack' && (
                   <div className="flex items-center justify-between gap-2 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200">

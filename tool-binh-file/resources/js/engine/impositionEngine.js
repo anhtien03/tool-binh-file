@@ -645,11 +645,20 @@ export function computeImpositionPlan(pagesMeta, config) {
   const bleedMm = Math.max(0, Number(config.bleedMm) || 0);
 
   const first = pagesMeta[0];
-  // Use TrimBox if present; otherwise subtract declared bleed from raw size
+  // Use explicit targetTrimW/H if forced by user (e.g. Namecard 90x54), else TrimBox or MediaBox - 2*Bleed
   const rawW = first.mediaWmm ?? first.width / MM_TO_PT;
   const rawH = first.mediaHmm ?? first.height / MM_TO_PT;
-  const trimW = first.hasExplicitTrimBox ? first.trimWmm : Math.max(1, rawW - 2 * bleedMm);
-  const trimH = first.hasExplicitTrimBox ? first.trimHmm : Math.max(1, rawH - 2 * bleedMm);
+  const hasForcedTrim = Number(config.targetTrimW) > 0 && Number(config.targetTrimH) > 0;
+  const trimW = hasForcedTrim
+    ? Number(config.targetTrimW)
+    : first.hasExplicitTrimBox
+    ? first.trimWmm
+    : Math.max(1, rawW - 2 * bleedMm);
+  const trimH = hasForcedTrim
+    ? Number(config.targetTrimH)
+    : first.hasExplicitTrimBox
+    ? first.trimHmm
+    : Math.max(1, rawH - 2 * bleedMm);
 
   const sheets = [];
 
@@ -771,7 +780,32 @@ export function computeImpositionPlan(pagesMeta, config) {
   const slotsWithClip = applySmartBleedClipping(alignedSlots, bleedMm);
   const M = slotsWithClip.length;
 
-  const collation = config.collation || 'stepAndRepeat'; // 'stepAndRepeat' | 'sequential' | 'cutAndStack' | 'ratioStack'
+  // Compute slot ordering according to flowPattern ('Z' | 'S' | 'N')
+  const flowPattern = config.flowPattern || 'Z';
+  const orderedSlotIndices = slotsWithClip.map((_, i) => i);
+  if (flowPattern === 'S') {
+    // Snake rows: group by row (y), alternate left-to-right / right-to-left
+    const rowsMap = new Map();
+    slotsWithClip.forEach((s, idx) => {
+      const yKey = Math.round(s.y * 2);
+      if (!rowsMap.has(yKey)) rowsMap.set(yKey, []);
+      rowsMap.get(yKey).push({ idx, x: s.x });
+    });
+    const sortedKeys = Array.from(rowsMap.keys()).sort((a, b) => a - b);
+    orderedSlotIndices.length = 0;
+    sortedKeys.forEach((k, rIdx) => {
+      const arr = rowsMap.get(k).sort((a, b) => (rIdx % 2 === 0 ? a.x - b.x : b.x - a.x));
+      arr.forEach((item) => orderedSlotIndices.push(item.idx));
+    });
+  } else if (flowPattern === 'N') {
+    // Column-first: sort by x then y
+    orderedSlotIndices.sort((a, b) => {
+      const dx = slotsWithClip[a].x - slotsWithClip[b].x;
+      return Math.abs(dx) > 1 ? dx : slotsWithClip[a].y - slotsWithClip[b].y;
+    });
+  }
+
+  const collation = config.collation || 'stepAndRepeat'; // 'stepAndRepeat' | 'sequential' | 'cutAndStack' | 'ratioStack' | 'repeatPerRow' | 'repeatPerCol'
   const duplexMode = config.duplexMode || 'simplex'; // 'simplex' | 'workAndTurn' | 'workAndTumble'
   const isDuplex = duplexMode !== 'simplex';
   const numSrcPages = pagesMeta.length;
@@ -799,7 +833,30 @@ export function computeImpositionPlan(pagesMeta, config) {
   const physicalSheetSlots = []; // Array of arrays of logicalItems (length M per physical sheet)
   let ratioSheetsNeeded = 0;
 
-  if (collation === 'ratioStack') {
+  if (collation === 'repeatPerRow' || collation === 'repeatPerCol') {
+    // Group slots by distinct Y (row) or X (col)
+    const groupMap = new Map();
+    slotsWithClip.forEach((s, idx) => {
+      const key = collation === 'repeatPerRow' ? Math.round(s.y * 2) : Math.round(s.x * 2);
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key).push(idx);
+    });
+    const keys = Array.from(groupMap.keys()).sort((a, b) => a - b);
+    const numGroups = keys.length || 1;
+    const S = Math.ceil(N / numGroups);
+    for (let s = 0; s < S; s++) {
+      const row = Array(M).fill(null);
+      keys.forEach((k, gIdx) => {
+        const itemIdx = s * numGroups + gIdx;
+        if (itemIdx < N) {
+          for (const slotIdx of groupMap.get(k)) {
+            row[slotIdx] = logicalItems[itemIdx];
+          }
+        }
+      });
+      physicalSheetSlots.push(row);
+    }
+  } else if (collation === 'ratioStack') {
     const { slots: ratioSlots, sheetsNeeded, overflow } = allocateRatioStack(logicalItems, M);
     ratioSheetsNeeded = sheetsNeeded;
     if (!overflow && ratioSlots.length > 0) {
@@ -807,10 +864,10 @@ export function computeImpositionPlan(pagesMeta, config) {
     } else {
       const S = Math.ceil(N / M);
       for (let s = 0; s < S; s++) {
-        const row = [];
+        const row = Array(M).fill(null);
         for (let p = 0; p < M; p++) {
           const itemIdx = s * M + p;
-          row.push(itemIdx < N ? logicalItems[itemIdx] : null);
+          if (itemIdx < N) row[orderedSlotIndices[p]] = logicalItems[itemIdx];
         }
         physicalSheetSlots.push(row);
       }
@@ -826,10 +883,10 @@ export function computeImpositionPlan(pagesMeta, config) {
       const batch = logicalItems.slice(batchStart, batchStart + batchItemsSize);
       const S = Math.ceil(batch.length / M);
       for (let s = 0; s < S; s++) {
-        const row = [];
+        const row = Array(M).fill(null);
         for (let p = 0; p < M; p++) {
           const itemIdx = p * S + s;
-          row.push(itemIdx < batch.length ? batch[itemIdx] : null);
+          if (itemIdx < batch.length) row[orderedSlotIndices[p]] = batch[itemIdx];
         }
         physicalSheetSlots.push(row);
       }
@@ -838,10 +895,10 @@ export function computeImpositionPlan(pagesMeta, config) {
     // sequential N-Up
     const S = Math.ceil(N / M);
     for (let s = 0; s < S; s++) {
-      const row = [];
+      const row = Array(M).fill(null);
       for (let p = 0; p < M; p++) {
         const itemIdx = s * M + p;
-        row.push(itemIdx < N ? logicalItems[itemIdx] : null);
+        if (itemIdx < N) row[orderedSlotIndices[p]] = logicalItems[itemIdx];
       }
       physicalSheetSlots.push(row);
     }
