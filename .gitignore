@@ -8,6 +8,7 @@ tool-binh-file/vendor/
 tool-binh-file/.env
 tool-binh-file/public/storage
 tool-binh-file/public/build/
+tool-binh-file/dist/
 tool-binh-file/storage/*.key
 tool-binh-file/storage/framework/cache/data/*
 tool-binh-file/storage/framework/sessions/*
