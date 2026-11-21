@@ -34,7 +34,34 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   const [fillMode, setFillMode] = useState('mirror'); // 'mirror' | 'stretch' | 'solid'
   const [solidColorHex, setSolidColorHex] = useState('#ffffff');
 
+  // Zoom, Pan & Multi-Page PDF navigation
+  const [zoom, setZoom] = useState(1.0);
+  const [isPanning, setIsPanning] = useState(false);
+  const [activePdfPage, setActivePdfPage] = useState(1);
+  const [totalPdfPages, setTotalPdfPages] = useState(1);
+  const pdfBytesRef = useRef(null);
+  const viewportRef = useRef(null);
+  const panStateRef = useRef({ active: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 });
   const previewCanvasRef = useRef(null);
+
+  const renderPdfPageAt = async (bytes, pageNum) => {
+    const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    setTotalPdfPages(pdf.numPages);
+    const safePage = Math.max(1, Math.min(pdf.numPages, pageNum));
+    setActivePdfPage(safePage);
+    const page = await pdf.getPage(safePage);
+    const vp1 = page.getViewport({ scale: 1.0 });
+    setSizeMm({
+      w: Math.round((vp1.width / MM_TO_PT) * 10) / 10,
+      h: Math.round((vp1.height / MM_TO_PT) * 10) / 10,
+    });
+    const vp = page.getViewport({ scale: Math.min(2.0, 1400 / Math.max(1, vp1.width, vp1.height)) });
+    const c = document.createElement('canvas');
+    c.width = vp.width;
+    c.height = vp.height;
+    await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    setRenderedCanvas(c);
+  };
 
   const handleUpload = async (file) => {
     if (!file) return;
@@ -45,21 +72,13 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
       if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
         setSourceType('pdf');
         const bytes = new Uint8Array(await file.arrayBuffer());
-        const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
-        const page = await pdf.getPage(1);
-        const vp1 = page.getViewport({ scale: 1.0 });
-        setSizeMm({
-          w: Math.round((vp1.width / MM_TO_PT) * 10) / 10,
-          h: Math.round((vp1.height / MM_TO_PT) * 10) / 10,
-        });
-        const vp = page.getViewport({ scale: Math.min(2.0, 1400 / Math.max(1, vp1.width, vp1.height)) });
-        const c = document.createElement('canvas');
-        c.width = vp.width;
-        c.height = vp.height;
-        await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
-        setRenderedCanvas(c);
+        pdfBytesRef.current = bytes;
+        await renderPdfPageAt(bytes, 1);
       } else {
         setSourceType('image');
+        pdfBytesRef.current = null;
+        setTotalPdfPages(1);
+        setActivePdfPage(1);
         const url = URL.createObjectURL(file);
         const img = new Image();
         img.src = url;
@@ -143,7 +162,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   useEffect(() => {
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
-    const maxBox = 520;
+    const maxBox = Math.round(520 * zoom);
     const ratio = window.devicePixelRatio || 2;
     const padMm = subMode === 'contour' ? Math.max(4, offsetMm + 3) : bleedAllMm + 2;
     const totalW = sizeMm.w + padMm * 2;
@@ -254,7 +273,45 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
         ctx.stroke();
       }
     }
-  }, [renderedCanvas, subMode, sizeMm, offsetMm, contoursMm, bleedAllMm, bleedEdges, fillMode, solidColorHex]);
+  }, [renderedCanvas, subMode, sizeMm, offsetMm, contoursMm, bleedAllMm, bleedEdges, fillMode, solidColorHex, zoom]);
+
+  // Direct Mouse Wheel Zoom
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const handleWheel = (e) => {
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 0.15 : -0.15;
+      setZoom((prev) => Math.round(Math.min(5.0, Math.max(0.35, prev + delta)) * 100) / 100);
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, []);
+
+  const handleMouseDown = (e) => {
+    if (e.button !== 0 || !viewportRef.current) return;
+    panStateRef.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: viewportRef.current.scrollLeft,
+      scrollTop: viewportRef.current.scrollTop,
+    };
+    setIsPanning(true);
+  };
+
+  const handleMouseMove = (e) => {
+    if (!panStateRef.current.active || !viewportRef.current) return;
+    viewportRef.current.scrollLeft = panStateRef.current.scrollLeft - (e.clientX - panStateRef.current.startX);
+    viewportRef.current.scrollTop = panStateRef.current.scrollTop - (e.clientY - panStateRef.current.startY);
+  };
+
+  const stopPanning = () => {
+    if (panStateRef.current.active) {
+      panStateRef.current.active = false;
+      setIsPanning(false);
+    }
+  };
 
   const handleExportPdf = async () => {
     if (!renderedCanvas) return;
@@ -326,9 +383,62 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   return (
     <div className="flex flex-col lg:flex-row gap-3 flex-1 min-w-0">
       {/* LEFT: CENTER CANVAS */}
-      <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col items-center justify-center shadow-xs">
+      <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col items-center justify-between shadow-xs gap-2.5">
+        <div className="w-full flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+          <div className="flex items-center gap-2 text-xs font-mono">
+            <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
+              {subMode === 'contour' ? `${contoursMm.length} tem nhận diện` : `Bleed +${bleedAllMm}mm`}
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-semibold">
+              {sizeMm.w}×{sizeMm.h}mm
+            </span>
+            {sourceType === 'pdf' && totalPdfPages > 1 && (
+              <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-0.5">
+                <button
+                  disabled={activePdfPage <= 1 || loading}
+                  onClick={() => pdfBytesRef.current && renderPdfPageAt(pdfBytesRef.current, activePdfPage - 1)}
+                  className="px-1 hover:text-[#146C53] disabled:opacity-30 cursor-pointer font-bold"
+                >
+                  ◀
+                </button>
+                <span className="text-[11px] font-bold text-slate-700">
+                  Trang {activePdfPage}/{totalPdfPages}
+                </span>
+                <button
+                  disabled={activePdfPage >= totalPdfPages || loading}
+                  onClick={() => pdfBytesRef.current && renderPdfPageAt(pdfBytesRef.current, activePdfPage + 1)}
+                  className="px-1 hover:text-[#146C53] disabled:opacity-30 cursor-pointer font-bold"
+                >
+                  ▶
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs font-mono text-slate-600">
+            <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
+              Fit
+            </button>
+            <button onClick={() => setZoom((z) => Math.max(0.35, Math.round((z - 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+              −
+            </button>
+            <span className="min-w-[42px] text-center font-bold">{Math.round(zoom * 100)}%</span>
+            <button onClick={() => setZoom((z) => Math.min(5.0, Math.round((z + 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+              +
+            </button>
+          </div>
+        </div>
+
         <div
-          className="w-full h-[560px] rounded-2xl border border-slate-200 flex items-center justify-center overflow-auto p-4"
+          ref={viewportRef}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={stopPanning}
+          onMouseLeave={stopPanning}
+          title="Cuộn chuột để Phóng to / Thu nhỏ · Kéo chuột trái để di chuyển"
+          className={`w-full h-[530px] rounded-2xl border border-slate-200 flex overflow-auto p-6 select-none ${
+            isPanning ? 'cursor-grabbing' : 'cursor-grab'
+          }`}
           style={{
             backgroundColor: '#fafbf9',
             backgroundImage:
@@ -336,7 +446,9 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
             backgroundSize: '24px 24px',
           }}
         >
-          <canvas ref={previewCanvasRef} className="bg-white shadow-md rounded border border-slate-200" />
+          <div className="m-auto shrink-0">
+            <canvas ref={previewCanvasRef} className="bg-white shadow-md rounded border border-slate-200 block" />
+          </div>
         </div>
         <div className="flex gap-4 mt-2.5 text-[11px] text-slate-500">
           {subMode === 'contour' ? (

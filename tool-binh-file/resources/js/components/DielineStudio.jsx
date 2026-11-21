@@ -240,7 +240,13 @@ export default function DielineStudio({
         <div className={`flex-1 grid ${canvasMode === 'split' ? 'grid-cols-1 xl:grid-cols-2 divide-y xl:divide-y-0 xl:divide-x divide-slate-200' : 'grid-cols-1'}`}>
           {(canvasMode === '2d' || canvasMode === 'split') && (
             <div
-              className="relative flex items-center justify-center p-6 overflow-auto min-h-[500px]"
+              onWheel={(e) => {
+                e.preventDefault();
+                const delta = e.deltaY < 0 ? 0.15 : -0.15;
+                setZoom2D((z) => Math.round(Math.min(4.0, Math.max(0.4, z + delta)) * 100) / 100);
+              }}
+              title="Cuộn chuột để Phóng to / Thu nhỏ khuôn 2D"
+              className="relative flex p-6 overflow-auto min-h-[500px]"
               style={{
                 backgroundColor: '#fcfdfc',
                 backgroundImage:
@@ -253,10 +259,11 @@ export default function DielineStudio({
                 {tpl.code} — L{dieline.params.L}×W{dieline.params.W}×H{dieline.params.H} mm · CAL {dieline.params.thickness}
               </div>
 
-              <div style={{ transform: `scale(${zoom2D})`, transformOrigin: 'center center' }} className="transition-transform">
+              <div className="m-auto shrink-0">
                 <svg
                   viewBox={`-18 -18 ${dieline.bounds.width + 36} ${dieline.bounds.height + 36}`}
-                  className="w-[520px] max-w-full h-auto max-h-[440px]"
+                  style={{ width: `${Math.round(520 * zoom2D)}px`, height: 'auto' }}
+                  className="block"
                 >
                   {/* Overall bounding Bleed indicator */}
                   <rect
@@ -489,17 +496,24 @@ export default function DielineStudio({
 
               {/* Imposed Sheet SVG Preview */}
               <div
-                className="flex-1 flex items-center justify-center p-6 overflow-auto"
+                onWheel={(e) => {
+                  e.preventDefault();
+                  const delta = e.deltaY < 0 ? 0.15 : -0.15;
+                  setZoom2D((z) => Math.round(Math.min(4.0, Math.max(0.4, z + delta)) * 100) / 100);
+                }}
+                title="Cuộn chuột để Phóng to / Thu nhỏ sơ đồ bình khuôn"
+                className="flex-1 flex p-6 overflow-auto max-h-[520px]"
                 style={{
                   backgroundImage:
                     'linear-gradient(to right, #eef2f1 1px, transparent 1px), linear-gradient(to bottom, #eef2f1 1px, transparent 1px)',
                   backgroundSize: '24px 24px',
                 }}
               >
-                <div style={{ transform: `scale(${zoom2D})`, transformOrigin: 'center center' }} className="transition-transform">
+                <div className="m-auto shrink-0">
                   <svg
                     viewBox={`-12 -12 ${dielineSheetPlan.sheetDim.width + 24} ${dielineSheetPlan.sheetDim.height + 24}`}
-                    className="w-[620px] max-w-full h-auto max-h-[440px] drop-shadow-md"
+                    style={{ width: `${Math.round(620 * zoom2D)}px`, height: 'auto' }}
+                    className="block drop-shadow-md"
                   >
                     {/* Physical Sheet */}
                     <rect

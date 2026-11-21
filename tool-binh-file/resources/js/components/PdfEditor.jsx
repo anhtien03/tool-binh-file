@@ -12,6 +12,8 @@ export default function PdfEditor() {
   const [selectedTemplateId, setSelectedTemplateId] = useState('ste');
   const [toolSearch, setToolSearch] = useState('');
   const [showSettingsPanel, setShowSettingsPanel] = useState(true);
+  const [showPagesSidebar, setShowPagesSidebar] = useState(true);
+  const [inspectedPageIndex, setInspectedPageIndex] = useState(null);
 
   // --- Multi-File & Gang-Run State ---
   const [sourceFiles, setSourceFiles] = useState([]);
@@ -191,6 +193,17 @@ export default function PdfEditor() {
 
   const removeGangItem = (idx) => {
     setGangItems((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const duplicateGangItem = (idx) => {
+    setGangItems((prev) => {
+      const target = prev[idx];
+      if (!target) return prev;
+      const copy = { ...target, id: `${target.id}-dup-${Date.now()}` };
+      const next = [...prev];
+      next.splice(idx + 1, 0, copy);
+      return next;
+    });
   };
 
   // Imposio-style Page Range & Multiplier Filter (e.g. "3-15", "1-3, 7", "odd", "even", "3*", "3-15*2")
@@ -654,10 +667,167 @@ export default function PdfEditor() {
 
         {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
           <>
+            {/* 0. FAR-LEFT: IMPOSIO-STYLE PAGES THUMBNAIL & PAGE RANGE SIDEBAR */}
+            {showPagesSidebar && (
+              <aside className="w-full lg:w-[180px] bg-white rounded-2xl border border-slate-200 p-2.5 flex flex-col gap-2 overflow-hidden max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+                  <span className="text-[11px] font-bold text-slate-700 tracking-wide uppercase">
+                    Pages ({gangItems.length}/{pdfPages.length})
+                  </span>
+                  <button
+                    onClick={() => setShowPagesSidebar(false)}
+                    title="Thu gọn cột Pages"
+                    className="w-5 h-5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700 text-xs cursor-pointer"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                {/* Page range filter box: e.g. 1-3, odd, 3* */}
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={pageRangeExpr}
+                    onChange={(e) => setPageRangeExpr(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') applyPageRangeFilter();
+                    }}
+                    placeholder="e.g. 3-15, odd, 3*"
+                    className="flex-1 min-w-0 bg-slate-50 border border-slate-300 rounded px-2 py-1 text-[11px] font-mono text-slate-800 focus:outline-none focus:border-[#146C53]"
+                  />
+                  <button
+                    onClick={() => applyPageRangeFilter()}
+                    title="Áp dụng lọc trang (Enter)"
+                    className="px-2 py-1 rounded bg-[#146C53] hover:bg-[#115e48] text-white text-[10px] font-bold cursor-pointer shrink-0"
+                  >
+                    Lọc
+                  </button>
+                </div>
+
+                {/* Quick Page Prep Icon Toolbar */}
+                <div className="flex items-center justify-between gap-1 bg-slate-50 border border-slate-200/80 rounded-lg px-1.5 py-1">
+                  <button
+                    onClick={() => setAutoCropInk((v) => !v)}
+                    title="Tự động cắt sát vùng mực (Auto-Crop lề trắng)"
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
+                      autoCropInk ? 'bg-[#146C53] text-white' : 'text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    ✂️ Crop
+                  </button>
+                  <button
+                    onClick={removeSmallMarkPages}
+                    title="Loại bỏ dấu bon góc / trang nhỏ hơn 25mm"
+                    className="px-1.5 py-0.5 rounded text-[10px] font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 cursor-pointer"
+                  >
+                    🧹 &lt;25mm
+                  </button>
+                  <button
+                    onClick={() => {
+                      resetAllGangPages();
+                      setInspectedPageIndex(null);
+                    }}
+                    title="Khôi phục toàn bộ trang"
+                    className="px-1.5 py-0.5 rounded text-[10px] font-semibold text-slate-600 hover:bg-slate-200 cursor-pointer"
+                  >
+                    ↺ All
+                  </button>
+                </div>
+
+                {inspectedPageIndex !== null && (
+                  <button
+                    onClick={() => setInspectedPageIndex(null)}
+                    className="w-full py-1 rounded-lg bg-[#146C53] text-white text-[11px] font-bold cursor-pointer shadow-xs"
+                  >
+                    ← Xem Tờ Bình
+                  </button>
+                )}
+
+                {/* Vertical Page Thumbnails List */}
+                <div className="flex-1 overflow-y-auto flex flex-col gap-2 pr-0.5">
+                  {pdfPages.length === 0 ? (
+                    <div className="text-[11px] text-slate-400 text-center py-8 px-2">
+                      Tải file PDF để xem danh sách thumbnail từng trang
+                    </div>
+                  ) : (
+                    gangItems.map((item, idx) => {
+                      const pIdx = item.frontIndex;
+                      const pg = pdfPages[pIdx];
+                      if (!pg) return null;
+                      const isInspected = inspectedPageIndex === pIdx;
+                      const effW = autoCropInk && pg.inkBox ? pg.inkBox.trimWmm : pg.hasExplicitTrimBox ? pg.trimWmm : pg.mediaWmm;
+                      const effH = autoCropInk && pg.inkBox ? pg.inkBox.trimHmm : pg.hasExplicitTrimBox ? pg.trimHmm : pg.mediaHmm;
+
+                      return (
+                        <div
+                          key={item.id}
+                          onClick={() => setInspectedPageIndex(isInspected ? null : pIdx)}
+                          title="Bấm để phóng to kiểm tra riêng trang này (Bấm lần nữa để quay về tờ bình)"
+                          className={`group relative rounded-xl p-1.5 border transition-all cursor-pointer flex flex-col items-center ${
+                            isInspected
+                              ? 'bg-blue-50/90 border-blue-600 ring-2 ring-blue-500/20'
+                              : 'bg-slate-100/80 hover:bg-blue-50/40 border-slate-200 hover:border-blue-400'
+                          }`}
+                        >
+                          {/* Top Quick Action Buttons on Thumbnail */}
+                          <div className="w-full flex items-center justify-between mb-1 px-0.5">
+                            <span className="text-[10px] font-mono font-bold text-slate-500">
+                              Trang {pIdx + 1}
+                            </span>
+                            <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                onClick={() => duplicateGangItem(idx)}
+                                title="Nhân bản trang này (x2)"
+                                className="px-1 rounded bg-white hover:bg-emerald-50 border border-slate-200 text-[10px] font-bold text-[#146C53] cursor-pointer"
+                              >
+                                +2×
+                              </button>
+                              <button
+                                onClick={() => removeGangItem(idx)}
+                                title="Bỏ trang này khỏi bài bình"
+                                className="px-1 rounded bg-white hover:bg-rose-50 border border-slate-200 text-[10px] font-bold text-rose-600 cursor-pointer"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Visual Thumbnail Image Box (Imposio style) */}
+                          <div className="w-full h-28 bg-[#9ca3af] rounded-lg border-2 border-blue-500/80 flex items-center justify-center p-1.5 overflow-hidden">
+                            <img
+                              src={pg.dataUrl}
+                              alt={`Trang ${pIdx + 1}`}
+                              className="max-w-full max-h-full object-contain bg-white shadow-xs"
+                            />
+                          </div>
+
+                          {/* Bottom Page Index & mm Dimensions */}
+                          <div className="mt-1 flex items-center justify-between w-full px-0.5">
+                            <span className="text-[11px] font-bold text-blue-700">#{idx + 1}</span>
+                            <span className="text-[10px] font-mono font-semibold text-slate-600">
+                              {effW.toFixed(1)}×{effH.toFixed(1)}mm
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </aside>
+            )}
+
             {/* 1. LEFT: WIDE CANVAS VIEWER */}
             <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3 shadow-xs">
               <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
                 <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                  {!showPagesSidebar && (
+                    <button
+                      onClick={() => setShowPagesSidebar(true)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-sans font-bold cursor-pointer"
+                    >
+                      📑 Mở cột Pages ({gangItems.length})
+                    </button>
+                  )}
                   <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
                     {plan.summary.itemsPerSheet} con/tờ
                     {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount} ngang + ${plan.summary.secondaryCount} dọc)`}
@@ -703,6 +873,9 @@ export default function PdfEditor() {
                   showSafeArea={showSafeArea}
                   safeInsetMm={safeInsetMm}
                   splitStickerPreview={mode === 'sticker' && splitStickerPreview}
+                  autoCropInk={autoCropInk}
+                  inspectedPageIndex={inspectedPageIndex}
+                  onExitInspectPage={() => setInspectedPageIndex(null)}
                   currentSheetIndex={currentSheetIndex}
                   setCurrentSheetIndex={setCurrentSheetIndex}
                   onPagesSynced={handlePagesSynced}

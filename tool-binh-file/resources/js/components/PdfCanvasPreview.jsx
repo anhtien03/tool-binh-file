@@ -17,6 +17,9 @@ export default function PdfCanvasPreview({
   showSafeArea = true,
   safeInsetMm = 3,
   splitStickerPreview = false,
+  autoCropInk = false,
+  inspectedPageIndex = null,
+  onExitInspectPage,
   currentSheetIndex,
   setCurrentSheetIndex,
   onPagesSynced,
@@ -223,13 +226,23 @@ export default function PdfCanvasPreview({
     };
   }, [sourceFiles]);
 
-  const sheetDim = plan?.sheetDim || { width: 420, height: 297 };
+  const inspectedPage =
+    inspectedPageIndex !== null && inspectedPageIndex >= 0 && inspectedPageIndex < pages.length
+      ? pages[inspectedPageIndex]
+      : null;
+
+  const sheetDim = inspectedPage
+    ? {
+        width: Math.max(10, Math.round(inspectedPage.mediaWmm * 10) / 10),
+        height: Math.max(10, Math.round(inspectedPage.mediaHmm * 10) / 10),
+      }
+    : plan?.sheetDim || { width: 420, height: 297 };
   const sheets = plan?.sheets || [];
   const safeIndex = Math.min(currentSheetIndex, Math.max(0, sheets.length - 1));
   const activeSheet = sheets[safeIndex] || null;
 
-  const BASE_WIDTH = splitStickerPreview ? 460 : 780;
-  const BASE_HEIGHT = splitStickerPreview ? 500 : 560;
+  const BASE_WIDTH = !inspectedPage && splitStickerPreview ? 460 : 760;
+  const BASE_HEIGHT = !inspectedPage && splitStickerPreview ? 500 : 540;
   const previewAspect = sheetDim.width / Math.max(1, sheetDim.height);
   const containerAspect = BASE_WIDTH / BASE_HEIGHT;
 
@@ -267,6 +280,97 @@ export default function PdfCanvasPreview({
       ctx.strokeStyle = '#94a3b8';
       ctx.lineWidth = 1.5;
       ctx.strokeRect(0, 0, canvasWidth, canvasHeight);
+
+      // Single-Page Inspector Mode (when user clicks a page thumbnail in the Left Pages panel)
+      if (inspectedPage) {
+        if (inspectedPage.img) {
+          ctx.drawImage(inspectedPage.img, 0, 0, canvasWidth, canvasHeight);
+        }
+
+        // Draw TrimBox / Auto-Crop InkBox overlay
+        const useInk = autoCropInk && inspectedPage.inkBox;
+        const tLeft = useInk
+          ? inspectedPage.inkBox.offsetLeftMm
+          : inspectedPage.hasExplicitTrimBox
+          ? inspectedPage.trimOffsetLeftMm
+          : bleedMm;
+        const tTop = useInk
+          ? inspectedPage.inkBox.offsetTopMm
+          : inspectedPage.hasExplicitTrimBox
+          ? inspectedPage.trimOffsetTopMm
+          : bleedMm;
+        const tW = useInk
+          ? inspectedPage.inkBox.trimWmm
+          : inspectedPage.hasExplicitTrimBox
+          ? inspectedPage.trimWmm
+          : Math.max(1, inspectedPage.mediaWmm - 2 * bleedMm);
+        const tH = useInk
+          ? inspectedPage.inkBox.trimHmm
+          : inspectedPage.hasExplicitTrimBox
+          ? inspectedPage.trimHmm
+          : Math.max(1, inspectedPage.mediaHmm - 2 * bleedMm);
+
+        ctx.save();
+        ctx.strokeStyle = useInk ? '#16a34a' : '#2563eb';
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([5, 3]);
+        ctx.strokeRect(tLeft * scale, tTop * scale, tW * scale, tH * scale);
+        ctx.restore();
+
+        // Draw extracted CutContours on this page if present
+        if (inspectedPage.extractedContours && inspectedPage.extractedContours.length > 0) {
+          ctx.save();
+          ctx.strokeStyle = '#e11d48';
+          ctx.lineWidth = 1.6;
+          for (const c of inspectedPage.extractedContours) {
+            if (!c.ptsMm || c.ptsMm.length < 2) continue;
+            ctx.beginPath();
+            c.ptsMm.forEach(([mx, my], idx) => {
+              if (idx === 0) ctx.moveTo(mx * scale, my * scale);
+              else ctx.lineTo(mx * scale, my * scale);
+            });
+            if (c.closed) ctx.closePath();
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+
+        // Draw mm ruler ticks along top and left borders
+        ctx.save();
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
+        ctx.lineWidth = 0.8;
+        ctx.font = '9px monospace';
+        const stepMm = sheetDim.width <= 160 ? 10 : 20;
+        for (let mm = 0; mm <= sheetDim.width; mm += stepMm / 2) {
+          const px = mm * scale;
+          const isMajor = mm % stepMm === 0;
+          ctx.beginPath();
+          ctx.moveTo(px, 0);
+          ctx.lineTo(px, isMajor ? 7 : 4);
+          ctx.stroke();
+          if (isMajor && mm > 0 && px < canvasWidth - 16) {
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillText(`${mm}`, px, 7.5);
+          }
+        }
+        for (let mm = 0; mm <= sheetDim.height; mm += stepMm / 2) {
+          const py = mm * scale;
+          const isMajor = mm % stepMm === 0;
+          ctx.beginPath();
+          ctx.moveTo(0, py);
+          ctx.lineTo(isMajor ? 7 : 4, py);
+          ctx.stroke();
+          if (isMajor && mm > 0 && py < canvasHeight - 12) {
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`${mm}`, 8, py);
+          }
+        }
+        ctx.restore();
+        return;
+      }
 
       // Margins dashed boundary
       const mL = Number(margins?.left) || 0;
@@ -525,25 +629,23 @@ export default function PdfCanvasPreview({
       ctx.restore();
     };
 
-    if (splitStickerPreview) {
+    if (!inspectedPage && splitStickerPreview) {
       drawSheetToCanvas(canvasRef.current, 'printOnly');
       drawSheetToCanvas(cutCanvasRef.current, 'cutOnly');
     } else {
       drawSheetToCanvas(canvasRef.current, 'all');
     }
-  }, [activeSheet, pages, sheetDim, margins, bleedMm, showBleedOverlay, showSafeArea, safeInsetMm, splitStickerPreview, canvasWidth, canvasHeight]);
+  }, [activeSheet, pages, sheetDim, margins, bleedMm, showBleedOverlay, showSafeArea, safeInsetMm, splitStickerPreview, autoCropInk, inspectedPage, canvasWidth, canvasHeight]);
 
-  // 3. Ctrl + Wheel Zoom (non-passive so browser page zoom is prevented)
+  // 3. Direct Mouse Wheel Zoom (no Ctrl required — smooth zoom on wheel over canvas)
   useEffect(() => {
     const el = viewportRef.current;
     if (!el || !onZoomChange) return;
 
     const handleWheel = (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const delta = e.deltaY < 0 ? 0.15 : -0.15;
-        onZoomChange((prev) => Math.round(Math.min(4.0, Math.max(0.4, prev + delta)) * 100) / 100);
-      }
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 0.15 : -0.15;
+      onZoomChange((prev) => Math.round(Math.min(5.0, Math.max(0.35, prev + delta)) * 100) / 100);
     };
 
     el.addEventListener('wheel', handleWheel, { passive: false });
@@ -586,14 +688,41 @@ export default function PdfCanvasPreview({
         </div>
       )}
 
+      {inspectedPage && (
+        <div className="w-full mb-2.5 px-3.5 py-2 rounded-xl bg-[#112A24] text-white flex flex-wrap items-center justify-between gap-2 shadow-xs">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold">
+              ĐANG XEM TRANG GỐC #{inspectedPageIndex + 1} / {pages.length}
+            </span>
+            <span className="font-semibold truncate max-w-[240px]">{inspectedPage.fileName}</span>
+            <span className="font-mono text-emerald-200 text-[11px]">
+              · Khổ trang: {inspectedPage.mediaWmm.toFixed(1)}×{inspectedPage.mediaHmm.toFixed(1)}mm
+              {autoCropInk && inspectedPage.inkBox
+                ? ` → Vùng mực: ${inspectedPage.inkBox.trimWmm.toFixed(1)}×${inspectedPage.inkBox.trimHmm.toFixed(1)}mm`
+                : inspectedPage.hasExplicitTrimBox
+                ? ` → Thành phẩm: ${inspectedPage.trimWmm.toFixed(1)}×${inspectedPage.trimHmm.toFixed(1)}mm`
+                : ''}
+            </span>
+          </div>
+          {onExitInspectPage && (
+            <button
+              onClick={onExitInspectPage}
+              className="px-3 py-1 rounded-lg bg-[#146C53] hover:bg-emerald-600 text-white text-xs font-bold cursor-pointer"
+            >
+              ← Quay lại Xem Tờ Bình
+            </button>
+          )}
+        </div>
+      )}
+
       <div
         ref={viewportRef}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={stopPanning}
         onMouseLeave={stopPanning}
-        title="Giữ Ctrl + cuộn chuột để Zoom · Kéo chuột trái để di chuyển tờ in"
-        className={`p-6 rounded-2xl border border-slate-200 w-full overflow-auto h-[540px] select-none ${
+        title="Cuộn chuột để Phóng to / Thu nhỏ · Kéo chuột trái để di chuyển"
+        className={`p-6 rounded-2xl border border-slate-200 w-full overflow-auto h-[540px] select-none flex ${
           isPanning ? 'cursor-grabbing' : 'cursor-grab'
         }`}
         style={{
@@ -603,7 +732,7 @@ export default function PdfCanvasPreview({
           backgroundSize: '24px 24px',
         }}
       >
-        {splitStickerPreview ? (
+        {!inspectedPage && splitStickerPreview ? (
           <div className="flex flex-wrap xl:flex-nowrap items-start justify-center gap-5 m-auto w-fit">
             <div className="flex flex-col items-center gap-1.5 shrink-0">
               <span className="px-2.5 py-0.5 rounded-full bg-[#146C53] text-white text-[11px] font-bold">
