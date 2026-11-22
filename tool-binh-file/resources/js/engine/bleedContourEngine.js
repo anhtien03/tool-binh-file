@@ -25,9 +25,21 @@ import { MM_TO_PT } from './impositionEngine.js';
 export const TARGET_PRINT_DPI = 300;
 export const PX_PER_MM_300DPI = TARGET_PRINT_DPI / 25.4; // ~11.8110236 px/mm
 
+function mulMatPdf(m1, m2) {
+  return [
+    m1[0] * m2[0] + m1[1] * m2[2],
+    m1[0] * m2[1] + m1[1] * m2[3],
+    m1[2] * m2[0] + m1[3] * m2[2],
+    m1[2] * m2[1] + m1[3] * m2[3],
+    m1[4] * m2[0] + m1[5] * m2[2] + m2[4],
+    m1[4] * m2[1] + m1[5] * m2[3] + m2[5],
+  ];
+}
+
 /**
- * Inspect a PDF page's content stream & XObject dictionary to extract exact mm bounding boxes
- * and SMask flags of all embedded /Image XObjects (e.g. /Im0 .. /Im16).
+ * Inspect a PDF page's content stream & XObject dictionary (including nested Form XObjects and full CTM stack)
+ * to extract exact mm bounding boxes and SMask flags of all embedded /Image XObjects from ANY PDF generator
+ * (Illustrator, CorelDRAW, Canva, InDesign, Photoshop, Affinity).
  */
 export async function extractPdfImagePlacementsMm(pdfBytes, pageNum = 1) {
   try {
@@ -36,75 +48,134 @@ export async function extractPdfImagePlacementsMm(pdfBytes, pageNum = 1) {
     const pg = pages[Math.max(0, Math.min(pages.length - 1, (pageNum || 1) - 1))];
     if (!pg) return [];
 
-    const { height } = pg.getSize();
+    const mediaBox = pg.getMediaBox();
+    const pageH = mediaBox.height;
+    const pageW = mediaBox.width;
     const PT_TO_MM = 25.4 / 72;
-    const res = pg.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
-    const xo = res && res.lookupMaybe(PDFName.of('XObject'), PDFDict);
-    if (!xo) return [];
+    const placements = [];
+
+    const getStreamBytes = (obj) => {
+      if (!obj) return new Uint8Array(0);
+      const resolved = obj instanceof PDFRef ? doc.context.lookup(obj) : obj;
+      if (!resolved) return new Uint8Array(0);
+      if (resolved instanceof PDFArray) {
+        const chunks = [];
+        let total = 0;
+        for (let i = 0; i < resolved.size(); i++) {
+          const b = getStreamBytes(resolved.get(i));
+          chunks.push(b);
+          total += b.length + 1;
+        }
+        const merged = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) {
+          merged.set(c, off);
+          off += c.length;
+          merged[off++] = 32;
+        }
+        return merged;
+      }
+      try {
+        return decodePDFRawStream(resolved).decode();
+      } catch {
+        return new Uint8Array(0);
+      }
+    };
+
+    const parseStream = (streamObj, resources, initialCtm, depth = 0) => {
+      if (depth > 6 || !streamObj) return;
+      const bytes = getStreamBytes(streamObj);
+      if (!bytes || bytes.length === 0) return;
+
+      const xoDict = resources instanceof PDFDict ? resources.lookupMaybe(PDFName.of('XObject'), PDFDict) : null;
+      const str = new TextDecoder('latin1').decode(bytes);
+      const tokenRe = /\/([A-Za-z0-9_.-]+)|([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)|([a-zA-Z*']+)/g;
+      const stack = [];
+      let ctm = [...initialCtm];
+      const args = [];
+      let m;
+
+      while ((m = tokenRe.exec(str)) !== null) {
+        if (m[1] !== undefined) {
+          args.push({ type: 'name', val: m[1] });
+        } else if (m[2] !== undefined) {
+          args.push({ type: 'num', val: Number(m[2]) });
+        } else if (m[3] !== undefined) {
+          const op = m[3];
+          if (op === 'q') {
+            stack.push([...ctm]);
+          } else if (op === 'Q') {
+            if (stack.length > 0) ctm = stack.pop();
+          } else if (op === 'cm') {
+            const nums = args.filter((a) => a.type === 'num').map((a) => a.val);
+            if (nums.length >= 6) {
+              ctm = mulMatPdf(nums.slice(-6), ctm);
+            }
+          } else if (op === 'Do' && xoDict) {
+            const last = args[args.length - 1];
+            if (last && last.type === 'name') {
+              const ref = xoDict.get(PDFName.of(last.val));
+              const xo = ref ? doc.context.lookup(ref) : null;
+              const subType = xo?.dict?.lookup(PDFName.of('Subtype'));
+              const subName = subType instanceof PDFName ? subType.decodeText() : '';
+
+              if (subName === 'Image') {
+                const hasSMask = Boolean(xo.dict.lookup(PDFName.of('SMask')) || xo.dict.lookup(PDFName.of('Mask')));
+                const [A, B, C, D, E, F] = ctm;
+                const cornersMm = [
+                  [0, 0],
+                  [1, 0],
+                  [1, 1],
+                  [0, 1],
+                ].map(([u, v]) => [
+                  (A * u + C * v + E - mediaBox.x) * PT_TO_MM,
+                  (mediaBox.y + pageH - (B * u + D * v + F)) * PT_TO_MM,
+                ]);
+                const xs = cornersMm.map((p) => p[0]);
+                const ys = cornersMm.map((p) => p[1]);
+                const minX = Math.min(...xs);
+                const maxX = Math.max(...xs);
+                const minY = Math.min(...ys);
+                const maxY = Math.max(...ys);
+                const w = maxX - minX;
+                const h = maxY - minY;
+                // Ignore full-page background image XObjects covering >= 96% of page
+                if (w < pageW * PT_TO_MM * 0.96 || h < pageH * PT_TO_MM * 0.96) {
+                  const isAxisAligned = Math.abs(B) < 0.5 && Math.abs(C) < 0.5;
+                  placements.push({
+                    name: last.val,
+                    hasSMask,
+                    isAxisAligned,
+                    minX,
+                    maxX,
+                    minY,
+                    maxY,
+                    w,
+                    h,
+                    cornersMm,
+                  });
+                }
+              } else if (subName === 'Form') {
+                let formCtm = [...ctm];
+                const matArr = xo.dict.lookupMaybe(PDFName.of('Matrix'), PDFArray);
+                if (matArr && matArr.size() >= 6) {
+                  const fm = [];
+                  for (let i = 0; i < 6; i++) fm.push(matArr.get(i).asNumber());
+                  formCtm = mulMatPdf(fm, ctm);
+                }
+                const formRes = xo.dict.lookupMaybe(PDFName.of('Resources'), PDFDict) || resources;
+                parseStream(xo, formRes, formCtm, depth + 1);
+              }
+            }
+          }
+          args.length = 0;
+        }
+      }
+    };
 
     const contents = pg.node.get(PDFName.of('Contents'));
-    if (!contents) return [];
-    const resolved = contents instanceof PDFRef ? doc.context.lookup(contents) : contents;
-    let rawBytes = new Uint8Array(0);
-    if (resolved instanceof PDFArray) {
-      const chunks = [];
-      let total = 0;
-      for (let i = 0; i < resolved.size(); i++) {
-        const s = doc.context.lookup(resolved.get(i));
-        const b = decodePDFRawStream(s).decode();
-        chunks.push(b);
-        total += b.length + 1;
-      }
-      rawBytes = new Uint8Array(total);
-      let off = 0;
-      for (const c of chunks) {
-        rawBytes.set(c, off);
-        off += c.length;
-        rawBytes[off++] = 32;
-      }
-    } else if (resolved) {
-      rawBytes = decodePDFRawStream(resolved).decode();
-    }
-
-    const str = new TextDecoder('latin1').decode(rawBytes);
-    const re = /([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+cm\s*\/(Im\d+)\s+Do/g;
-    const placements = [];
-    let m;
-    while ((m = re.exec(str)) !== null) {
-      const [, a, b, c, d, e, f, name] = m;
-      const [A, B, C, D, E, F] = [a, b, c, d, e, f].map(Number);
-      const ref = xo.get(PDFName.of(name));
-      const obj = ref ? doc.context.lookup(ref) : null;
-      const hasSMask = Boolean(obj && obj.dict && obj.dict.lookup(PDFName.of('SMask')));
-
-      const cornersMm = [
-        [0, 0],
-        [1, 0],
-        [1, 1],
-        [0, 1],
-      ].map(([u, v]) => [(A * u + C * v + E) * PT_TO_MM, (height - (B * u + D * v + F)) * PT_TO_MM]);
-
-      const xs = cornersMm.map((p) => p[0]);
-      const ys = cornersMm.map((p) => p[1]);
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-      const isAxisAligned = Math.abs(B) < 0.5 && Math.abs(C) < 0.5;
-
-      placements.push({
-        name,
-        hasSMask,
-        isAxisAligned,
-        minX,
-        maxX,
-        minY,
-        maxY,
-        w: maxX - minX,
-        h: maxY - minY,
-        cornersMm,
-      });
-    }
+    const resources = pg.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
+    parseStream(contents, resources, [1, 0, 0, 1, 0, 0], 0);
     return placements;
   } catch {
     return [];
@@ -914,6 +985,7 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     cornerIgnoreMm = 14,
     alphaThreshold = 28,
     bgTolerance = 26,
+    mergeGapMm = 0.35, // Intra-sticker detail bridge distance (mm) before segmenting isolated stickers
     imagePlacementsMm = [],
   } = options;
 
@@ -1065,6 +1137,25 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
   // Fill internal holes inside each sticker (1 sticker = 1 solid outer contour without MORPH_CLOSE bridging fins)
   fgMask = fillInteriorHoles(fgMask, cw, ch);
 
+  // Optional intra-sticker micro-bridge (mergeGapMm, default 0.35mm; user can raise to e.g. 2.0mm on flat PNG/JPG with detached text)
+  const bridgeRadPx = Math.max(0, Number(mergeGapMm) || 0) * 0.5 * pxPerMm;
+  if (bridgeRadPx >= 0.6) {
+    const dBridge = computeDistanceField(fgMask, cw, ch);
+    let bDil = new Uint8Array(cw * ch);
+    for (let i = 0; i < cw * ch; i++) {
+      if (dBridge[i] <= bridgeRadPx) bDil[i] = 1;
+    }
+    bDil = fillInteriorHoles(bDil, cw, ch);
+    const bgB = new Uint8Array(cw * ch);
+    for (let i = 0; i < cw * ch; i++) bgB[i] = bDil[i] ? 0 : 1;
+    const dErode = computeDistanceField(bgB, cw, ch);
+    const bridged = new Uint8Array(cw * ch);
+    for (let i = 0; i < cw * ch; i++) {
+      if (fgMask[i] || dErode[i] > bridgeRadPx * 0.92) bridged[i] = 1;
+    }
+    fgMask = fillInteriorHoles(bridged, cw, ch);
+  }
+
   // STEP 1B: Segment fgMask into individual connected components FIRST (at 0mm) BEFORE dilating by offsetMm or minSmoothBallPx!
   // This guarantees two stickers that are only 2mm apart (like /Im1 and /Im3) NEVER merge into a single contour when dilated!
   const minAreaPx = Math.max(16, minAreaMm2 * pxPerMm * pxPerMm);
@@ -1203,6 +1294,33 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
       const ly = gy - comp.minPY + compPadPx;
       locFg[ly * lw + lx] = 1;
     }
+
+    // Generalized Rectangular Photo Completion (works even on flat PNG/JPG without PDF XObjects!):
+    // If at least 3 sides of the component's bounding box have >68% straight-edge support and fillRatio > 0.78,
+    // complete any missing white highlight along the 4th edge so rectangular photos never get indented!
+    if (comp.fillRatio >= 0.78 && bw >= 16 && bh >= 16) {
+      let topCnt = 0, botCnt = 0, leftCnt = 0, rightCnt = 0;
+      for (let x = 0; x < bw; x++) {
+        if (locFg[compPadPx * lw + (compPadPx + x)] || locFg[(compPadPx + 1) * lw + (compPadPx + x)]) topCnt++;
+        if (locFg[(compPadPx + bh - 1) * lw + (compPadPx + x)] || locFg[(compPadPx + bh - 2) * lw + (compPadPx + x)]) botCnt++;
+      }
+      for (let y = 0; y < bh; y++) {
+        if (locFg[(compPadPx + y) * lw + compPadPx] || locFg[(compPadPx + y) * lw + (compPadPx + 1)]) leftCnt++;
+        if (locFg[(compPadPx + y) * lw + (compPadPx + bw - 1)] || locFg[(compPadPx + y) * lw + (compPadPx + bw - 2)]) rightCnt++;
+      }
+      const straightSides =
+        (topCnt / bw >= 0.68 ? 1 : 0) +
+        (botCnt / bw >= 0.68 ? 1 : 0) +
+        (leftCnt / bh >= 0.68 ? 1 : 0) +
+        (rightCnt / bh >= 0.68 ? 1 : 0);
+      if (straightSides >= 3 && comp.fillRatio >= 0.82) {
+        for (let y = 0; y < bh; y++) {
+          const row = (compPadPx + y) * lw + compPadPx;
+          for (let x = 0; x < bw; x++) locFg[row + x] = 1;
+        }
+      }
+    }
+
     locFg = fillInteriorHoles(locFg, lw, lh);
 
     // Compute Euclidean Distance Field once on this isolated component

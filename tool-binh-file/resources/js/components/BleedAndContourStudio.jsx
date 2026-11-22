@@ -31,6 +31,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   const [smoothLevel, setSmoothLevel] = useState(1);
   const [simplifyMm, setSimplifyMm] = useState(0.18); // ~0.45px equivalent
   const [minAreaMm2, setMinAreaMm2] = useState(8.0);
+  const [mergeGapMm, setMergeGapMm] = useState(0.35); // Intra-sticker detail merge gap (mm)
   const [ignoreCornerMarks, setIgnoreCornerMarks] = useState(true);
   const [contoursMm, setContoursMm] = useState([]);
   const [imagePlacementsMm, setImagePlacementsMm] = useState([]);
@@ -72,7 +73,8 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     const c = document.createElement('canvas');
     c.width = Math.round(vp.width);
     c.height = Math.round(vp.height);
-    await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    // Pass transparent background so PDFs without a full-page white rect preserve their native vector/SMask Alpha channel!
+    await page.render({ canvasContext: c.getContext('2d'), viewport: vp, background: 'rgba(0,0,0,0)' }).promise;
     const placements = await extractPdfImagePlacementsMm(bytes, safePage);
     setImagePlacementsMm(placements);
     setRenderedCanvas(c);
@@ -137,6 +139,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
           simplifyMm,
           cornerAngleDeg,
           minAreaMm2,
+          mergeGapMm,
           shapeMode,
           ignoreCornerMarks,
           imagePlacementsMm,
@@ -160,6 +163,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     smoothLevel,
     simplifyMm,
     minAreaMm2,
+    mergeGapMm,
     shapeMode,
     ignoreCornerMarks,
     imagePlacementsMm,
@@ -714,9 +718,9 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-1.5">
                 <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-500">Độ bám sát (~0.18mm)</label>
+                  <label className="text-[10px] text-slate-500">Độ bám (~0.18)</label>
                   <input
                     type="number"
                     min="0.05"
@@ -728,7 +732,21 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
                   />
                 </div>
                 <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-500">Lọc nhiễu (&lt; mm²)</label>
+                  <label className="text-[10px] text-slate-500" title="Gộp các chữ/chi tiết rời nằm gần nhau vào cùng 1 tem (mm)">
+                    Gộp chữ (mm)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="8"
+                    step="0.25"
+                    value={mergeGapMm}
+                    onChange={(e) => setMergeGapMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-500">Lọc nhiễu (mm²)</label>
                   <input
                     type="number"
                     min="0.5"
