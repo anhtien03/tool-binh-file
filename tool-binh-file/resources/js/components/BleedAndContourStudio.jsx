@@ -35,6 +35,9 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   const [ignoreCornerMarks, setIgnoreCornerMarks] = useState(true);
   const [contoursMm, setContoursMm] = useState([]);
   const [imagePlacementsMm, setImagePlacementsMm] = useState([]);
+  const [inputMode, setInputMode] = useState('multi'); // 'single' (PDF/PNG đã có biên) | 'multi' (Tách nhiều tem)
+  const [settingsOpen, setSettingsOpen] = useState(true);
+  const [bleedCompleted, setBleedCompleted] = useState(false);
 
   // 4-Edge Bleed Extension Options
   const [bleedAllMm, setBleedAllMm] = useState(2.0);
@@ -406,18 +409,31 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     }
   };
 
-  const handleSplitExport = async (sendToImpose = false) => {
+  const handleSplitExport = async (sendToImpose = false, preferredLayout = 'nesting') => {
     if (!renderedCanvas || contoursMm.length === 0) return;
     setLoading(true);
     try {
       const padMm = showBleedContour ? Math.max(0.5, bleedOffsetMm) : 1.5;
-      const bytes = await exportSplitStickersPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, padMm);
+      let bytes;
+      let outName;
       const base = (sourceFile?.name || 'stickers').replace(/\.(pdf|png|jpg|jpeg)$/i, '');
-      const outName = `Tach_${contoursMm.length}Tem_${base}.pdf`;
+
+      if (inputMode === 'single' || contoursMm.length === 1) {
+        bytes = await exportContourTracedPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, padMm + Math.max(1, offsetMm), {
+          sourceType,
+          sourceFile,
+          activePdfPage,
+          includeBleedContour: showBleedContour && bleedOffsetMm > 0,
+        });
+        outName = `CutContour_${base}.pdf`;
+      } else {
+        bytes = await exportSplitStickersPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, padMm);
+        outName = `Tach_${contoursMm.length}Tem_${base}.pdf`;
+      }
 
       if (sendToImpose && onSendSplitStickersToImpose) {
         const fileObj = new File([bytes], outName, { type: 'application/pdf' });
-        onSendSplitStickersToImpose(fileObj);
+        onSendSplitStickersToImpose(fileObj, preferredLayout);
         return;
       }
 
@@ -543,47 +559,137 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
         </div>
       </main>
 
-      {/* MIDDLE-RIGHT: SETTINGS & EXPORT PANEL */}
-      <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-3.5 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
-        <div className="flex flex-col gap-3.5">
+      {/* MIDDLE-RIGHT: SETTINGS & EXPORT PANEL (PrynX 2-Phase Wizard Layout) */}
+      <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-3 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
+        <div className="flex flex-col gap-3">
+          {/* Top Utility Header Bar: File Size MB Badge + Save / Undo / Close */}
           <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-            <div>
-              <div className="text-xs font-bold text-slate-800">BÙ XÉN &amp; TẠO ĐƯỜNG CẮT</div>
-              <div className="text-[10px] text-slate-400">
-                {subMode === 'contour' ? 'Dò đường bế Sticker tự động' : 'Bù tràn lề 4 cạnh'}
-              </div>
-            </div>
-            <span className="px-2 py-0.5 rounded bg-[#E6F4EF] text-[#146C53] text-[10px] font-mono font-bold">
-              {sizeMm.w}×{sizeMm.h}mm
+            <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-mono font-bold">
+              {sourceFile ? `${(sourceFile.size / (1024 * 1024)).toFixed(2)} MB` : `${sizeMm.w}×${sizeMm.h} mm`}
             </span>
+            <div className="flex items-center gap-1.5 text-slate-400">
+              <button
+                onClick={handleExportPdf}
+                disabled={!renderedCanvas || loading}
+                title="Lưu / Xuất nhanh PDF"
+                className="p-1 rounded hover:bg-slate-100 hover:text-[#146C53] disabled:opacity-30 cursor-pointer text-xs"
+              >
+                💾
+              </button>
+              <button
+                onClick={() => {
+                  setOffsetMm(0.5);
+                  setBleedOffsetMm(1.5);
+                  setCornerAngleDeg(130);
+                  setSmoothLevel(1);
+                  setSimplifyMm(0.18);
+                  setMergeGapMm(0.35);
+                  setBleedCompleted(false);
+                  setSettingsOpen(true);
+                }}
+                title="Hoàn tác / Khôi phục mặc định"
+                className="p-1 rounded hover:bg-slate-100 hover:text-amber-600 cursor-pointer text-xs"
+              >
+                ↩️
+              </button>
+              <button
+                onClick={onOpenStickerImpose}
+                title="Chuyển sang Bình Tem Bế"
+                className="p-1 rounded hover:bg-slate-100 hover:text-slate-700 cursor-pointer text-xs"
+              >
+                ✕
+              </button>
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-xl">
+          <div className="text-center pb-1">
+            <div className="text-xs font-extrabold text-slate-800 tracking-wide">🔪 BÙ XÉN - TẠO ĐƯỜNG CẮT</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Quét hình ảnh, tự động offset viền và tràn lề cho tem nhãn.
+            </div>
+          </div>
+
+          {/* Row 1: Input Mode Cards (PDF/PNG đã có biên vs Tách nhiều tem) */}
+          <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={() => setSubMode('contour')}
-              className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                subMode === 'contour' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500'
+              onClick={() => {
+                setInputMode('single');
+                setMergeGapMm(2.5);
+                setBleedCompleted(false);
+              }}
+              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                inputMode === 'single'
+                  ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53] shadow-2xs'
+                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
               }`}
             >
-              Dò đường bế Sticker
+              <span>📄</span>
+              <span>PDF/PNG đã có biên</span>
             </button>
             <button
-              onClick={() => setSubMode('bleed')}
-              className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                subMode === 'bleed' ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500'
+              onClick={() => {
+                setInputMode('multi');
+                setMergeGapMm(0.35);
+                setBleedCompleted(false);
+              }}
+              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                inputMode === 'multi'
+                  ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53] shadow-2xs'
+                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
               }`}
             >
-              Bù tràn lề 4 cạnh
+              <span>🥞</span>
+              <span>Tách nhiều tem</span>
+            </button>
+          </div>
+
+          {/* Row 2: Output Cut Type Cards (Bế tem nhãn vs Xén vuông góc) */}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => {
+                setSubMode('contour');
+                setShapeMode('auto');
+                setBleedCompleted(false);
+              }}
+              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                subMode === 'contour' && shapeMode !== 'rect'
+                  ? 'bg-indigo-50 border-indigo-500 text-indigo-700 shadow-2xs'
+                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <span>🎯</span>
+              <span>Bế tem nhãn</span>
+            </button>
+            <button
+              onClick={() => {
+                if (subMode === 'contour' && shapeMode === 'rect') {
+                  setSubMode('bleed');
+                } else {
+                  setSubMode('contour');
+                  setShapeMode('rect');
+                }
+                setBleedCompleted(false);
+              }}
+              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                subMode === 'bleed' || shapeMode === 'rect'
+                  ? 'bg-indigo-50 border-indigo-500 text-indigo-700 shadow-2xs'
+                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <span>{subMode === 'bleed' || shapeMode === 'rect' ? '☑️' : '☐'}</span>
+              <span>Xén vuông góc</span>
             </button>
           </div>
 
           {/* File Upload */}
-          <div className="relative border border-dashed border-slate-300 hover:border-[#146C53] rounded-xl p-3 text-center cursor-pointer bg-[#FAFBF9]">
+          <div className="relative border border-dashed border-slate-300 hover:border-[#146C53] rounded-xl p-2.5 text-center cursor-pointer bg-[#FAFBF9]">
             <input
               type="file"
               accept=".png,.jpg,.jpeg,.pdf"
               onChange={(e) => {
                 handleUpload(e.target.files[0]);
+                setBleedCompleted(false);
+                setSettingsOpen(true);
                 e.target.value = '';
               }}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
@@ -593,34 +699,47 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
             </div>
             {renderedCanvas && (
               <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                Kích thước: {sizeMm.w} × {sizeMm.h} mm
+                Kích thước: {sizeMm.w} × {sizeMm.h} mm · Đã nhận diện {contoursMm.length} tem
               </div>
             )}
           </div>
           {error && <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px]">⚠️ {error}</div>}
 
-          <div className="grid grid-cols-2 gap-2">
-            <div className="flex flex-col gap-0.5">
-              <label className="text-[10px] text-slate-500">Rộng thực tế (mm)</label>
-              <input
-                type="number"
-                min="10"
-                value={sizeMm.w}
-                onChange={(e) => setSizeMm((s) => ({ ...s, w: Math.max(10, parseFloat(e.target.value) || 10) }))}
-                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-              />
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <label className="text-[10px] text-slate-500">Cao thực tế (mm)</label>
-              <input
-                type="number"
-                min="10"
-                value={sizeMm.h}
-                onChange={(e) => setSizeMm((s) => ({ ...s, h: Math.max(10, parseFloat(e.target.value) || 10) }))}
-                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-              />
-            </div>
-          </div>
+          {/* Accordion Header: THIẾT LẬP BÙ XÉN (Xem lại / chỉnh sửa ⌄) */}
+          <button
+            onClick={() => setSettingsOpen((v) => !v)}
+            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-bold text-slate-800 cursor-pointer"
+          >
+            <span>THIẾT LẬP BÙ XÉN</span>
+            <span className="text-[11px] font-semibold text-slate-500">
+              {settingsOpen ? 'Thu gọn ⌃' : 'Xem lại / chỉnh sửa ⌄'}
+            </span>
+          </button>
+
+          {settingsOpen && (
+            <div className="flex flex-col gap-3 px-0.5">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-500">Rộng thực tế (mm)</label>
+                  <input
+                    type="number"
+                    min="10"
+                    value={sizeMm.w}
+                    onChange={(e) => setSizeMm((s) => ({ ...s, w: Math.max(10, parseFloat(e.target.value) || 10) }))}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-500">Cao thực tế (mm)</label>
+                  <input
+                    type="number"
+                    min="10"
+                    value={sizeMm.h}
+                    onChange={(e) => setSizeMm((s) => ({ ...s, h: Math.max(10, parseFloat(e.target.value) || 10) }))}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+              </div>
 
           {subMode === 'contour' ? (
             <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
@@ -864,50 +983,93 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
               )}
             </div>
           )}
-        </div>
-
-        <div className="flex flex-col gap-2 pt-3 border-t border-slate-100">
-          <button
-            onClick={handleExportPdf}
-            disabled={loading || !renderedCanvas}
-            className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-              loading || !renderedCanvas
-                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
-            }`}
-          >
-            {loading
-              ? 'Đang xử lý...'
-              : subMode === 'contour'
-              ? '✂️ Xuất PDF nguyên tờ (có CutContour)'
-              : '📐 Xuất PDF đã bù Bleed'}
-          </button>
-
-          {subMode === 'contour' && contoursMm.length > 1 && (
-            <>
-              <button
-                onClick={() => handleSplitExport(false)}
-                disabled={loading}
-                className="w-full py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition-colors cursor-pointer"
-              >
-                📑 Tách {contoursMm.length} tem thành PDF nhiều trang
-              </button>
-              <button
-                onClick={() => handleSplitExport(true)}
-                disabled={loading}
-                className="w-full py-2 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold transition-colors cursor-pointer"
-              >
-                🚀 Tách {contoursMm.length} tem &amp; Bình Tem Bế ngay →
-              </button>
-            </>
+            </div>
           )}
 
-          <button
-            onClick={onOpenStickerImpose}
-            className="w-full py-2 rounded-xl border border-slate-200 hover:border-[#146C53] text-slate-700 text-xs font-semibold cursor-pointer"
-          >
-            Sang Bình Tem Bế →
-          </button>
+          {/* Phase 2 Green Handoff Card (Exact Image 1 UX: Đã tạo bù xén thành công -> Chọn kiểu dàn trang) */}
+          {renderedCanvas && (
+            <div className="rounded-2xl border border-emerald-200 bg-[#E6F4EF]/55 p-3 flex flex-col gap-2.5 mt-1">
+              <div className="flex items-start gap-2">
+                <span className="w-6 h-6 rounded-full bg-emerald-100 text-[#146C53] flex items-center justify-center text-xs font-bold shrink-0">
+                  ✓
+                </span>
+                <div>
+                  <div className="text-xs font-bold text-[#146C53]">
+                    Đã tạo bù xén thành công ({contoursMm.length} tem)!
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Bước tiếp theo: Chọn kiểu dàn trang (Imposition)
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => handleSplitExport(true, 'optimal')}
+                disabled={loading || contoursMm.length === 0}
+                className="w-full p-2.5 rounded-xl bg-white hover:bg-emerald-50/60 border border-slate-200 hover:border-[#146C53] flex items-center justify-between gap-2 text-left transition-all cursor-pointer shadow-2xs"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="text-lg shrink-0">✂️</span>
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-800">Bình bài Bế Tem</div>
+                    <div className="text-[11px] text-slate-500 truncate">Xếp tem bế so le / lưới tiêu chuẩn</div>
+                  </div>
+                </div>
+                <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9px] font-extrabold shrink-0">
+                  PRO
+                </span>
+              </button>
+
+              <button
+                onClick={() => handleSplitExport(true, 'nesting')}
+                disabled={loading || contoursMm.length === 0}
+                className="w-full p-2.5 rounded-xl bg-white hover:bg-emerald-50/60 border border-slate-200 hover:border-[#146C53] flex items-center justify-between gap-2 text-left transition-all cursor-pointer shadow-2xs"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="text-lg shrink-0">🔗</span>
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-800">Bình lồng ghép tự do</div>
+                    <div className="text-[11px] text-slate-500 truncate">Xếp nhiều loại khuôn, xoay tự do mọi góc</div>
+                  </div>
+                </div>
+                <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9px] font-extrabold shrink-0">
+                  PRO
+                </span>
+              </button>
+
+              {!settingsOpen && (
+                <button
+                  onClick={() => setSettingsOpen(true)}
+                  className="text-[11px] font-semibold text-slate-500 hover:text-[#146C53] text-center pt-0.5 cursor-pointer"
+                >
+                  Quay lại chỉnh sửa bù xén
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2 pt-2.5 border-t border-slate-100">
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              onClick={handleExportPdf}
+              disabled={loading || !renderedCanvas}
+              className={`py-2 px-2 rounded-xl text-[11px] font-bold transition-colors cursor-pointer ${
+                loading || !renderedCanvas
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
+              }`}
+            >
+              {loading ? 'Đang xử lý...' : '✂️ Tải PDF nguyên tờ'}
+            </button>
+            <button
+              onClick={() => handleSplitExport(false)}
+              disabled={loading || contoursMm.length === 0}
+              className="py-2 px-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-bold transition-colors cursor-pointer disabled:opacity-40"
+            >
+              📑 Tách {contoursMm.length} trang PDF
+            </button>
+          </div>
         </div>
       </aside>
     </div>

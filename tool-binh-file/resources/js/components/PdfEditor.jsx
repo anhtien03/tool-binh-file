@@ -53,6 +53,7 @@ export default function PdfEditor() {
   const [coverPagesAtEnd, setCoverPagesAtEnd] = useState(0);
 
   // --- Sticker Die-Cut Settings ('sticker' mode) ---
+  const [stickerUnit, setStickerUnit] = useState('single'); // 'single' (Từng tem) | 'sheet' (Nguyên tấm decal)
   const [stickerShape, setStickerShape] = useState('rect'); // 'rect' | 'circle' | 'oval' | 'pdfContour'
   const [cornerRadiusMm, setCornerRadiusMm] = useState(3);
   const [stickerLayout, setStickerLayout] = useState('nesting'); // 'nesting' | 'optimal' | 'honeycomb' | 'simple'
@@ -64,6 +65,15 @@ export default function PdfEditor() {
   const [splitStickerPreview, setSplitStickerPreview] = useState(false);
   const [autoCropInk, setAutoCropInk] = useState(false);
   const [pageRangeExpr, setPageRangeExpr] = useState('');
+  const [stickerAutoFillSheet, setStickerAutoFillSheet] = useState(true);
+  const [stickerQtyInput, setStickerQtyInput] = useState('');
+  const [showStickerQtyTable, setShowStickerQtyTable] = useState(false);
+  const [showExtendedStickerSettings, setShowExtendedStickerSettings] = useState(false);
+  const [openStickerSubSection, setOpenStickerSubSection] = useState('pont');
+  const [clusterSplit, setClusterSplit] = useState('none'); // 'none' | 'split2H' | 'split2V' | 'split3H'
+  const [stickerTrimMarks, setStickerTrimMarks] = useState('none'); // 'none' | 'guillotine'
+  const [showTrimMarkModal, setShowTrimMarkModal] = useState(false);
+  const [markThicknessPt, setMarkThicknessPt] = useState(0.25);
 
   // --- Margins & Marks ---
   const [marginTop, setMarginTop] = useState(10);
@@ -409,6 +419,7 @@ export default function PdfEditor() {
       bookletCreep,
       pagesPerSignature,
       coverPagesAtEnd,
+      stickerUnit,
       stickerShape,
       cornerRadiusMm,
       stickerLayout,
@@ -417,6 +428,9 @@ export default function PdfEditor() {
       pontSizeMm,
       avoidCornerMarks,
       singleCut1Dao,
+      stickerAutoFillSheet,
+      clusterSplit,
+      stickerTrimMarks,
       marginTop,
       marginBottom,
       marginLeft,
@@ -429,7 +443,7 @@ export default function PdfEditor() {
       registrationColor,
       showSlugLine,
       safeInsetMm,
-      markThicknessPt: 0.25,
+      markThicknessPt,
       autoCropInk,
       gangItems,
     }),
@@ -460,6 +474,7 @@ export default function PdfEditor() {
       bookletCreep,
       pagesPerSignature,
       coverPagesAtEnd,
+      stickerUnit,
       stickerShape,
       cornerRadiusMm,
       stickerLayout,
@@ -468,6 +483,9 @@ export default function PdfEditor() {
       pontSizeMm,
       avoidCornerMarks,
       singleCut1Dao,
+      stickerAutoFillSheet,
+      clusterSplit,
+      stickerTrimMarks,
       marginTop,
       marginBottom,
       marginLeft,
@@ -480,6 +498,7 @@ export default function PdfEditor() {
       registrationColor,
       showSlugLine,
       safeInsetMm,
+      markThicknessPt,
       autoCropInk,
       gangItems,
     ]
@@ -654,7 +673,7 @@ export default function PdfEditor() {
               setActiveStudio('sticker');
               setCurrentSheetIndex(0);
             }}
-            onSendSplitStickersToImpose={(splitPdfFile) => {
+            onSendSplitStickersToImpose={(splitPdfFile, preferredLayout = 'nesting') => {
               setSourceFiles([{ id: `split-${Date.now()}`, file: splitPdfFile }]);
               setPaperSizeKey('D330x390');
               setOrientation('portrait');
@@ -664,8 +683,9 @@ export default function PdfEditor() {
               setMarginRight(5);
               setGutterX(2);
               setGutterY(2);
+              setStickerUnit('single');
               setStickerShape('pdfContour');
-              setStickerLayout('nesting');
+              setStickerLayout(preferredLayout);
               setCollation('sequential');
               setActiveStudio('sticker');
               setInspectedPageIndex(null);
@@ -1405,71 +1425,233 @@ export default function PdfEditor() {
               </div>
             ) : mode === 'sticker' ? (
               <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
-                <span className="text-xs font-bold text-slate-800">3. Cấu hình Bình Tem Bế (Decal)</span>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-slate-500">Hình dáng dao bế</label>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800">3. Cấu hình Bình Bài Bế Tem</span>
+                  <span className="px-2 py-0.5 rounded-full bg-[#E6F4EF] text-[#146C53] text-[10px] font-bold">
+                    {stickerUnit === 'sheet' ? 'Nguyên tấm decal' : 'Từng tem'}
+                  </span>
+                </div>
+
+                {/* ĐƠN VỊ BÌNH: Từng tem vs Nguyên tấm decal (Exact Images 3 & 4) */}
+                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                  <label className="text-[11px] font-bold text-slate-600">ĐƠN VỊ BÌNH</label>
+                  <select
+                    value={stickerUnit}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setStickerUnit(val);
+                      if (val === 'sheet') {
+                        setStickerLayout('optimal');
+                        setStickerTrimMarks('guillotine');
+                        setGutterX(0);
+                        setGutterY(0);
+                      } else {
+                        setStickerLayout('nesting');
+                        setStickerTrimMarks('none');
+                        setGutterX(2);
+                        setGutterY(2);
+                      }
+                    }}
+                    className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                  >
+                    <option value="single">Từng tem (Bế rời / Nesting)</option>
+                    <option value="sheet">Nguyên tấm decal (Sticker Sheet)</option>
+                  </select>
+                </div>
+
+                {/* TÁC VỤ */}
+                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                  <label className="text-[11px] font-bold text-slate-600">TÁC VỤ</label>
+                  <select
+                    value={collation === 'stepAndRepeat' ? 'stepAndRepeat' : 'sequential'}
+                    onChange={(e) => setCollation(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                  >
+                    <option value="sequential">Dàn nhiều mẫu (N-Up)</option>
+                    <option value="stepAndRepeat">Bình trang (S&amp;R — 1 mẫu/tờ)</option>
+                  </select>
+                </div>
+
+                {/* CÁCH THỨC RÁP (Appears when ĐƠN VỊ BÌNH = Nguyên tấm decal, Image 4) */}
+                {stickerUnit === 'sheet' && (
+                  <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                    <label className="text-[11px] font-bold text-slate-600">CÁCH THỨC RÁP</label>
                     <select
-                      value={stickerShape}
-                      onChange={(e) => setStickerShape(e.target.value)}
-                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
+                      value={collation}
+                      onChange={(e) => setCollation(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
                     >
-                      <option value="pdfContour">Theo CutContour PDF</option>
-                      <option value="rect">Chữ nhật / Bo góc</option>
-                      <option value="circle">Hình tròn</option>
-                      <option value="oval">Hình Oval / Elip</option>
+                      <option value="sequential">Xếp lần lượt</option>
+                      <option value="cutAndStack">Xếp chồng (Cut &amp; Stack)</option>
+                      <option value="ratioStack">Ghép theo tỷ lệ SL</option>
                     </select>
                   </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-slate-500">Kiểu xếp tem</label>
-                    <select
-                      value={stickerLayout}
-                      onChange={(e) => setStickerLayout(e.target.value)}
-                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
+                )}
+
+                {/* CÁCH XẾP & HÌNH DÁNG DAO BẾ */}
+                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                  <label className="text-[11px] font-bold text-slate-600">CÁCH XẾP</label>
+                  <select
+                    value={stickerLayout}
+                    onChange={(e) => setStickerLayout(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                  >
+                    {stickerUnit === 'single' && (
+                      <option value="nesting">Xếp tối ưu (Lồng ghép tự do 1:1)</option>
+                    )}
+                    <option value="optimal">Xếp tối ưu (Trộn 0°+90°)</option>
+                    <option value="honeycomb">Tổ ong so le (Honeycomb)</option>
+                    <option value="simple">Lưới đơn giản</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                  <label className="text-[11px] font-bold text-slate-600">DAO BẾ</label>
+                  <select
+                    value={stickerShape}
+                    onChange={(e) => setStickerShape(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                  >
+                    <option value="pdfContour">Theo CutContour PDF</option>
+                    <option value="rect">Chữ nhật / Bo góc</option>
+                    <option value="circle">Hình tròn</option>
+                    <option value="oval">Hình Oval / Elip</option>
+                  </select>
+                </div>
+
+                {/* HỞ TEM (Từng tem) vs KHOẢNG CÁCH TẤM + BLEED + 👁️ (Nguyên tấm decal) */}
+                {stickerUnit === 'single' ? (
+                  <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                    <label className="text-[11px] font-bold text-slate-600">HỞ TEM</label>
+                    <div className="relative flex items-center">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        value={gutterX}
+                        onChange={(e) => {
+                          const v = Math.max(0, parseFloat(e.target.value) || 0);
+                          setGutterX(v);
+                          setGutterY(v);
+                        }}
+                        className="w-full bg-white border border-slate-200 rounded-lg pl-2.5 pr-9 py-1.5 text-xs font-mono"
+                      />
+                      <span className="absolute right-2.5 text-[10px] font-mono text-slate-400">MM</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                    <label className="text-[10px] font-bold text-slate-600 leading-tight">KHOẢNG CÁCH TẤM</label>
+                    <div className="grid grid-cols-[1fr_1fr_auto] items-center gap-1.5">
+                      <div className="relative flex items-center">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={gutterX}
+                          onChange={(e) => {
+                            const v = Math.max(0, parseFloat(e.target.value) || 0);
+                            setGutterX(v);
+                            setGutterY(v);
+                          }}
+                          title="Khoảng cách giữa các tấm decal (mm)"
+                          className="w-full bg-white border border-slate-200 rounded-lg pl-2 pr-7 py-1.5 text-xs font-mono"
+                        />
+                        <span className="absolute right-1.5 text-[9px] font-mono text-slate-400">MM</span>
+                      </div>
+                      <div className="relative flex items-center">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={bleedMm}
+                          onChange={(e) => setBleedMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                          title="Tràn lề Bleed (mm)"
+                          className="w-full bg-white border border-slate-200 rounded-lg pl-2 pr-7 py-1.5 text-xs font-mono"
+                        />
+                        <span className="absolute right-1.5 text-[9px] font-mono text-slate-400">Bleed</span>
+                      </div>
+                      <button
+                        onClick={() => setShowBleedOverlay((v) => !v)}
+                        title="Bật/Tắt xem trước đường Tràn lề (Bleed)"
+                        className={`p-1.5 rounded-lg border text-xs cursor-pointer ${
+                          showBleedOverlay
+                            ? 'bg-indigo-50 border-indigo-400 text-indigo-700'
+                            : 'bg-white border-slate-200 text-slate-400'
+                        }`}
+                      >
+                        👁️
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* SL MỖI LOẠI / SỐ TẤM DECAL (with ⌄ drawer toggle) */}
+                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                  <label className="text-[11px] font-bold text-slate-600">
+                    {stickerUnit === 'sheet' ? 'SỐ TẤM DECAL' : 'SL MỖI LOẠI'}
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="text"
+                      value={stickerQtyInput}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setStickerQtyInput(val);
+                        const trimmed = val.trim();
+                        if (!trimmed || trimmed === '0') {
+                          setStickerAutoFillSheet(true);
+                        } else {
+                          const n = parseInt(trimmed, 10);
+                          if (n > 0) {
+                            setStickerAutoFillSheet(false);
+                            setGangItems((prev) => prev.map((it) => ({ ...it, quantity: n })));
+                          }
+                        }
+                      }}
+                      placeholder="Trống = Tự lấp đầy tờ"
+                      className="flex-1 min-w-0 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800"
+                    />
+                    <button
+                      onClick={() => setShowStickerQtyTable((v) => !v)}
+                      title="Mở bảng chỉnh số lượng riêng từng mẫu"
+                      className="px-2 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs cursor-pointer shrink-0"
                     >
-                      <option value="nesting">Xếp lồng 1:1 (Nesting đa cỡ)</option>
-                      <option value="optimal">Trộn 0°+90°</option>
-                      <option value="honeycomb">Tổ ong so le</option>
-                      <option value="simple">Lưới thẳng</option>
-                    </select>
+                      {showStickerQtyTable ? '⌃' : '⌄'}
+                    </button>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="flex flex-col gap-0.5">
-                    <label className="text-[10px] text-slate-500">Bleed (mm)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      value={bleedMm}
-                      onChange={(e) => setBleedMm(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                    />
+                {showStickerQtyTable && gangItems.length > 0 && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 flex flex-col gap-1.5 max-h-36 overflow-y-auto">
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 font-semibold">
+                      <span>Số lượng in từng mẫu:</span>
+                      <label className="flex items-center gap-1 text-[#146C53] cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={stickerAutoFillSheet}
+                          onChange={(e) => setStickerAutoFillSheet(e.target.checked)}
+                          className="accent-[#146C53]"
+                        />
+                        Tự lấp đầy khoảng trống cuối tờ
+                      </label>
+                    </div>
+                    {gangItems.map((it, idx) => (
+                      <div key={it.id} className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="truncate text-slate-700 font-medium">
+                          #{idx + 1}. {it.name}
+                        </span>
+                        <input
+                          type="number"
+                          min="1"
+                          value={it.quantity}
+                          onChange={(e) => updateItemQuantity(idx, e.target.value)}
+                          className="w-16 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px] font-mono text-right font-bold text-[#146C53]"
+                        />
+                      </div>
+                    ))}
                   </div>
-                  <div className="flex flex-col gap-0.5">
-                    <label className="text-[10px] text-slate-500">Hở X (Gap)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      value={gutterX}
-                      onChange={(e) => setGutterX(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-0.5">
-                    <label className="text-[10px] text-slate-500">Hở Y (Gap)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      value={gutterY}
-                      onChange={(e) => setGutterY(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                    />
-                  </div>
-                </div>
+                )}
 
                 {stickerShape === 'rect' && (
                   <div className="flex items-center justify-between gap-2">
@@ -1485,63 +1667,393 @@ export default function PdfEditor() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-slate-500">Boong máy bế</label>
-                    <select
-                      value={pontType}
-                      onChange={(e) => setPontType(e.target.value)}
-                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
-                    >
-                      <option value="circle5mm">Tròn đặc 5mm</option>
-                      <option value="circleHollow">Tròn rỗng</option>
-                      <option value="graphtec">Graphtec (L)</option>
-                      <option value="none">Tắt boong</option>
-                    </select>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-slate-500">Lề đặt boong (mm)</label>
-                    <input
-                      type="number"
-                      min="5"
-                      value={pontMarginMm}
-                      onChange={(e) => setPontMarginMm(Math.max(5, parseFloat(e.target.value) || 10))}
-                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-mono"
-                    />
-                  </div>
-                </div>
+                {/* Accordion: 🎛️ THIẾT LẬP MỞ RỘNG (Exact Image 5 UX) */}
+                <button
+                  onClick={() => setShowExtendedStickerSettings((v) => !v)}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-bold text-slate-800 cursor-pointer mt-1"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span>🎛️</span>
+                    <span>THIẾT LẬP MỞ RỘNG</span>
+                  </span>
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    {showExtendedStickerSettings ? 'Đóng lại ⌃' : 'Mở rộng ⌄'}
+                  </span>
+                </button>
 
-                <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="accent-[#146C53]"
-                    checked={avoidCornerMarks}
-                    onChange={(e) => setAvoidCornerMarks(e.target.checked)}
-                  />
-                  Tránh 4 góc boong (nhét thêm tem dải giữa)
-                </label>
+                {showExtendedStickerSettings && (
+                  <div className="flex flex-col gap-2.5 bg-slate-50/70 border border-slate-200/90 rounded-xl p-2.5">
+                    {/* Sub-accordion 1: 🎯 ĐỊNH VỊ & CẮT */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-2 flex flex-col gap-2">
+                      <button
+                        onClick={() =>
+                          setOpenStickerSubSection((s) => (s === 'pont' ? null : 'pont'))
+                        }
+                        className="w-full flex items-center justify-between text-[11px] font-extrabold text-indigo-900 cursor-pointer"
+                      >
+                        <span>🎯 ĐỊNH VỊ &amp; CẮT</span>
+                        <span>{openStickerSubSection === 'pont' ? '⌄' : '›'}</span>
+                      </button>
+                      {openStickerSubSection === 'pont' && (
+                        <div className="flex flex-col gap-2 pt-1 border-t border-slate-100">
+                          <div className="grid grid-cols-[95px_1fr] items-center gap-2">
+                            <label className="text-[10px] font-bold text-slate-500">BOONG ĐỊNH VỊ</label>
+                            <select
+                              value={pontType}
+                              onChange={(e) => setPontType(e.target.value)}
+                              className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold"
+                            >
+                              <option value="circle5mm">Boong 5mm (Tròn đặc)</option>
+                              <option value="circleHollow">Boong Tròn rỗng</option>
+                              <option value="graphtec">Graphtec (Chữ L)</option>
+                              <option value="none">Không dùng boong</option>
+                            </select>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="flex flex-col gap-0.5">
+                              <label className="text-[10px] text-slate-500">Lề đặt boong (mm)</label>
+                              <input
+                                type="number"
+                                min="5"
+                                value={pontMarginMm}
+                                onChange={(e) => setPontMarginMm(Math.max(5, parseFloat(e.target.value) || 10))}
+                                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                              />
+                            </div>
+                            <div className="flex flex-col gap-0.5">
+                              <label className="text-[10px] text-slate-500">Đường kính (mm)</label>
+                              <input
+                                type="number"
+                                min="3"
+                                max="10"
+                                value={pontSizeMm}
+                                onChange={(e) => setPontSizeMm(Math.max(3, parseFloat(e.target.value) || 5))}
+                                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                              />
+                            </div>
+                          </div>
+                          <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              className="accent-[#146C53]"
+                              checked={avoidCornerMarks}
+                              onChange={(e) => setAvoidCornerMarks(e.target.checked)}
+                            />
+                            Tránh vùng góc boong (nhét thêm tem dải giữa)
+                          </label>
+                        </div>
+                      )}
+                    </div>
 
-                {stickerShape === 'rect' && (
-                  <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="accent-[#146C53]"
-                      checked={singleCut1Dao}
-                      onChange={(e) => setSingleCut1Dao(e.target.checked)}
-                    />
-                    Cắt 1 dao (Gộp nét trùng khi Gap = 0)
-                  </label>
+                    {/* Sub-accordion 2: 🏷️ THÔNG TIN SẢN PHẨM (REPORT) */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-2 flex flex-col gap-2">
+                      <button
+                        onClick={() =>
+                          setOpenStickerSubSection((s) => (s === 'report' ? null : 'report'))
+                        }
+                        className="w-full flex items-center justify-between text-[11px] font-extrabold text-indigo-900 cursor-pointer"
+                      >
+                        <span>🏷️ THÔNG TIN SẢN PHẨM (REPORT)</span>
+                        <span>{openStickerSubSection === 'report' ? '⌄' : '›'}</span>
+                      </button>
+                      {openStickerSubSection === 'report' && (
+                        <div className="flex flex-col gap-1.5 pt-1 border-t border-slate-100 text-[11px] text-slate-600">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              className="accent-[#146C53]"
+                              checked={showSlugLine}
+                              onChange={(e) => setShowSlugLine(e.target.checked)}
+                            />
+                            In dòng thông tin bài in (Slug Line) ở chân tờ
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              className="accent-[#146C53]"
+                              checked={showSafeArea}
+                              onChange={(e) => setShowSafeArea(e.target.checked)}
+                            />
+                            Hiển thị vùng an toàn ({safeInsetMm} mm)
+                          </label>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Sub-accordion 3: 💾 XUẤT & LƯU FILE */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-2 flex flex-col gap-2">
+                      <button
+                        onClick={() =>
+                          setOpenStickerSubSection((s) => (s === 'export' ? null : 'export'))
+                        }
+                        className="w-full flex items-center justify-between text-[11px] font-extrabold text-indigo-900 cursor-pointer"
+                      >
+                        <span>💾 XUẤT &amp; LƯU FILE</span>
+                        <span>{openStickerSubSection === 'export' ? '⌄' : '›'}</span>
+                      </button>
+                      {openStickerSubSection === 'export' && (
+                        <div className="flex flex-col gap-1.5 pt-1 border-t border-slate-100 text-[11px] text-slate-600">
+                          <label className="flex items-center gap-2 font-semibold text-[#146C53] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              className="accent-[#146C53]"
+                              checked={splitStickerPreview}
+                              onChange={(e) => setSplitStickerPreview(e.target.checked)}
+                            />
+                            Tách xem song song Bài In + Khuôn Bế
+                          </label>
+                          {stickerShape === 'rect' && (
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="accent-[#146C53]"
+                                checked={singleCut1Dao}
+                                onChange={(e) => setSingleCut1Dao(e.target.checked)}
+                              />
+                              Cắt 1 dao (Gộp nét trùng khi Gap = 0)
+                            </label>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* CÁCH CHIA CỤM (Cluster Splitting for long sheets) */}
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold text-slate-600">CÁCH CHIA CỤM (CHỐNG LỆCH MÁY BẾ)</label>
+                      <select
+                        value={clusterSplit}
+                        onChange={(e) => setClusterSplit(e.target.value)}
+                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                      >
+                        <option value="none">Không chia cụm (4 boong góc tờ)</option>
+                        <option value="split2H">Chia 2 cụm Ngang (8 boong — Nửa trên &amp; Nửa dưới)</option>
+                        <option value="split2V">Chia 2 cụm Dọc (8 boong — Trái &amp; Phải)</option>
+                        <option value="split3H">Chia 3 cụm Ngang (12 boong — Khổ dài)</option>
+                      </select>
+                    </div>
+
+                    {/* CANH KHỐI SAU KHI XẾP */}
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-bold text-slate-600">CANH KHỐI SAU KHI XẾP</label>
+                      <select
+                        value={alignment}
+                        onChange={(e) => setAlignment(e.target.value)}
+                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                      >
+                        <option value="center">Canh Giữa trung tâm</option>
+                        <option value="top">Canh Đỉnh trên (Nhíp trên)</option>
+                        <option value="bottom">Canh Đáy dưới (Nhíp dưới)</option>
+                      </select>
+                    </div>
+
+                    {/* DẤU XÉN (TRIM MARKS) + Button ⚙️ to open Modal (Exact Image 5 & 6) */}
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-bold text-slate-600">DẤU XÉN (TRIM MARKS)</label>
+                        <button
+                          onClick={() => setShowTrimMarkModal(true)}
+                          title="Tuỳ chỉnh kiểu và kích thước Dấu Xén"
+                          className="text-xs text-slate-500 hover:text-[#146C53] cursor-pointer font-bold px-1"
+                        >
+                          ⚙️ Tuỳ chỉnh
+                        </button>
+                      </div>
+                      <select
+                        value={stickerTrimMarks}
+                        onChange={(e) => setStickerTrimMarks(e.target.value)}
+                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                      >
+                        <option value="none">Không đánh dấu xén (Chỉ dùng Boong bế)</option>
+                        <option value="guillotine">Xén thành phẩm (dao thẳng)</option>
+                      </select>
+                    </div>
+                  </div>
                 )}
 
-                <label className="flex items-center gap-2 text-[11px] font-semibold text-[#146C53] cursor-pointer pt-1 border-t border-slate-100">
-                  <input
-                    type="checkbox"
-                    className="accent-[#146C53]"
-                    checked={splitStickerPreview}
-                    onChange={(e) => setSplitStickerPreview(e.target.checked)}
-                  />
-                  Tách xem song song Bài In + Khuôn Bế
-                </label>
+                {/* Color-Coded Pastel Mini-Map Preview Card (Exact Images 3 & 4) */}
+                {plan.sheets.length > 0 && (
+                  <div className="rounded-2xl border border-slate-200 bg-[#FAFBF9] p-3 flex flex-col items-center gap-2 mt-1">
+                    {stickerUnit === 'sheet' ? (
+                      <div className="text-center flex flex-col gap-0.5 text-[11px]">
+                        <div className="font-semibold text-slate-700">
+                          {plan.sheets.length} bố cục · Đã xếp{' '}
+                          <span className="font-bold text-[#146C53]">
+                            {plan.summary.totalPlacedItems || plan.summary.itemsPerSheet}/
+                            {Math.max(plan.summary.totalNeededItems || 1, plan.summary.totalPlacedItems || 1)}
+                          </span>{' '}
+                          tem
+                        </div>
+                        <div className="text-slate-600">
+                          Đã xếp: <strong className="text-slate-900">{plan.summary.itemsPerSheet}</strong> tem/tờ · Cần in:{' '}
+                          <strong className="text-indigo-700">{plan.summary.physicalSheets}</strong> tờ
+                        </div>
+                        <div className="text-slate-600">
+                          Tem thành phẩm:{' '}
+                          <strong className="text-[#146C53] font-mono">
+                            {plan.summary.trimW.toFixed(1)} × {plan.summary.trimH.toFixed(1)} mm
+                          </strong>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs font-semibold text-slate-700">
+                        Sức chứa:{' '}
+                        <strong className="text-slate-950 font-extrabold">
+                          {plan.sheets[Math.min(currentSheetIndex, plan.sheets.length - 1)]?.placements?.length ||
+                            plan.summary.itemsPerSheet}
+                        </strong>{' '}
+                        tem/tờ
+                      </div>
+                    )}
+
+                    {plan.sheets.length > 1 && (
+                      <div className="flex items-center gap-2 text-[11px] font-semibold text-slate-700">
+                        <button
+                          disabled={currentSheetIndex <= 0}
+                          onClick={() => setCurrentSheetIndex((i) => Math.max(0, i - 1))}
+                          className="px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
+                        >
+                          ◀
+                        </button>
+                        <span>
+                          {stickerUnit === 'sheet'
+                            ? `Bố cục ${currentSheetIndex + 1}/${plan.sheets.length} · In 1 tờ`
+                            : `tờ ${currentSheetIndex + 1} / ${plan.sheets.length}`}
+                        </span>
+                        <button
+                          disabled={currentSheetIndex >= plan.sheets.length - 1}
+                          onClick={() => setCurrentSheetIndex((i) => Math.min(plan.sheets.length - 1, i + 1))}
+                          className="px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
+                        >
+                          ▶
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Mini-Map SVG with Pastel Color per Design Index */}
+                    {(() => {
+                      const curSheet =
+                        plan.sheets[Math.min(currentSheetIndex, Math.max(0, plan.sheets.length - 1))];
+                      if (!curSheet) return null;
+                      const pastelPalettes = [
+                        { fill: '#dbeafe', stroke: '#3b82f6', text: '#1d4ed8' },
+                        { fill: '#d1fae5', stroke: '#10b981', text: '#047857' },
+                        { fill: '#fce7f3', stroke: '#ec4899', text: '#be185d' },
+                        { fill: '#fef3c7', stroke: '#f59e0b', text: '#b45309' },
+                        { fill: '#ede9fe', stroke: '#8b5cf6', text: '#6d28d9' },
+                        { fill: '#ffedd5', stroke: '#f97316', text: '#c2410c' },
+                        { fill: '#cffafe', stroke: '#06b6d4', text: '#0e7490' },
+                        { fill: '#fae8ff', stroke: '#d946ef', text: '#a21caf' },
+                      ];
+                      return (
+                        <svg
+                          viewBox={`-6 -6 ${plan.sheetDim.width + 12} ${plan.sheetDim.height + 12}`}
+                          className="w-36 h-44 bg-white rounded-lg border border-slate-200 shadow-2xs"
+                        >
+                          <rect
+                            x="0"
+                            y="0"
+                            width={plan.sheetDim.width}
+                            height={plan.sheetDim.height}
+                            fill="#ffffff"
+                            stroke="#94a3b8"
+                            strokeWidth="2"
+                            strokeDasharray="6 4"
+                          />
+                          {curSheet.placements.map((p, pIdx) => {
+                            const pal = pastelPalettes[p.pageIndex % pastelPalettes.length];
+                            const srcMeta = pdfPages[p.pageIndex];
+                            const contours = srcMeta?.extractedContours || [];
+                            if (stickerUnit === 'single' && stickerShape === 'pdfContour' && contours.length > 0) {
+                              const effW = srcMeta.hasExplicitTrimBox ? srcMeta.trimWmm : srcMeta.mediaWmm;
+                              const effH = srcMeta.hasExplicitTrimBox ? srcMeta.trimHmm : srcMeta.mediaHmm;
+                              const offL = srcMeta.hasExplicitTrimBox ? srcMeta.trimOffsetLeftMm || 0 : 0;
+                              const offT = srcMeta.hasExplicitTrimBox ? srcMeta.trimOffsetTopMm || 0 : 0;
+                              const rot = ((p.rotate % 360) + 360) % 360;
+                              const isRot90 = rot === 90 || rot === 270;
+                              const sx = (isRot90 ? p.trimH : p.trimW) / Math.max(1, effW);
+                              const sy = (isRot90 ? p.trimW : p.trimH) / Math.max(1, effH);
+                              const ptsStr = contours[0].ptsMm
+                                .filter((_, i) => i % 3 === 0)
+                                .map(([mx, my]) => {
+                                  const ux = (mx - offL) * sx;
+                                  const uy = (my - offT) * sy;
+                                  let gx = p.x + ux;
+                                  let gy = p.y + uy;
+                                  if (rot === 90) {
+                                    gx = p.x + uy;
+                                    gy = p.y + p.trimH - ux;
+                                  } else if (rot === 180) {
+                                    gx = p.x + p.trimW - ux;
+                                    gy = p.y + p.trimH - uy;
+                                  } else if (rot === 270) {
+                                    gx = p.x + p.trimW - uy;
+                                    gy = p.y + ux;
+                                  }
+                                  return `${gx.toFixed(1)},${gy.toFixed(1)}`;
+                                })
+                                .join(' ');
+                              return (
+                                <g key={pIdx}>
+                                  <polygon
+                                    points={ptsStr}
+                                    fill={pal.fill}
+                                    stroke={pal.stroke}
+                                    strokeWidth="2.2"
+                                  />
+                                  <text
+                                    x={p.x + p.trimW / 2}
+                                    y={p.y + p.trimH / 2}
+                                    textAnchor="middle"
+                                    dominantBaseline="central"
+                                    fill={pal.text}
+                                    fontSize={Math.max(11, Math.min(22, Math.min(p.trimW, p.trimH) * 0.32))}
+                                    fontWeight="bold"
+                                  >
+                                    {p.pageIndex + 1}
+                                  </text>
+                                </g>
+                              );
+                            }
+                            return (
+                              <g key={pIdx}>
+                                <rect
+                                  x={p.x}
+                                  y={p.y}
+                                  width={p.trimW}
+                                  height={p.trimH}
+                                  rx={stickerShape === 'circle' ? Math.min(p.trimW, p.trimH) / 2 : 3}
+                                  fill={pal.fill}
+                                  stroke={pal.stroke}
+                                  strokeWidth="2"
+                                />
+                                <text
+                                  x={p.x + p.trimW / 2}
+                                  y={p.y + p.trimH / 2}
+                                  textAnchor="middle"
+                                  dominantBaseline="central"
+                                  fill={pal.text}
+                                  fontSize={Math.max(11, Math.min(22, Math.min(p.trimW, p.trimH) * 0.32))}
+                                  fontWeight="bold"
+                                >
+                                  {p.pageIndex + 1}
+                                </text>
+                              </g>
+                            );
+                          })}
+                          {(curSheet.pontMarks || []).map((pm, mIdx) => (
+                            <circle
+                              key={`pm-${mIdx}`}
+                              cx={pm.cx}
+                              cy={pm.cy}
+                              r={Math.max(4, pm.size)}
+                              fill="#e11d48"
+                            />
+                          ))}
+                        </svg>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
@@ -1625,7 +2137,15 @@ export default function PdfEditor() {
 
             {/* Marks */}
             <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
-              <span className="text-xs font-bold text-slate-800">4. Dấu xén &amp; Báo cáo</span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800">4. Dấu xén &amp; Báo cáo</span>
+                <button
+                  onClick={() => setShowTrimMarkModal(true)}
+                  className="text-[11px] font-semibold text-[#146C53] hover:underline cursor-pointer"
+                >
+                  ⚙️ Tuỳ chỉnh Dấu Xén
+                </button>
+              </div>
               <div className="grid grid-cols-[1.45fr_1fr_1fr] gap-2">
                 <select
                   value={markStyle}
@@ -1860,6 +2380,130 @@ export default function PdfEditor() {
           })}
         </aside>
       </div>
+
+      {/* Popup Modal: Tuỳ chỉnh Dấu Xén (Exact Image 6 UX) */}
+      {showTrimMarkModal && (
+        <div
+          onClick={() => setShowTrimMarkModal(false)}
+          className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-2xs flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl p-5 flex flex-col gap-4"
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+              <h3 className="text-sm font-extrabold text-slate-900">Tuỳ chỉnh Dấu Xén</h3>
+              <button
+                onClick={() => setShowTrimMarkModal(false)}
+                className="w-7 h-7 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 text-base cursor-pointer"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="text-xs font-bold text-slate-700">Kiểu Dấu Xén</span>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  onClick={() => setMarkStyle('western')}
+                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                    markStyle === 'western'
+                      ? 'bg-indigo-50/70 border-indigo-600 ring-2 ring-indigo-500/15'
+                      : 'bg-white border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="text-xs font-bold text-slate-900">Tiêu chuẩn</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">Nét đơn ở góc (Western)</div>
+                </button>
+                <button
+                  onClick={() => setMarkStyle('tonbo')}
+                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                    markStyle === 'tonbo'
+                      ? 'bg-indigo-50/70 border-indigo-600 ring-2 ring-indigo-500/15'
+                      : 'bg-white border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="text-xs font-bold text-slate-900">Nét đôi (Nhật)</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">Trim + Bleed (トンボ)</div>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <span className="text-xs font-bold text-slate-700">Kích Thước Dấu Xén (mm)</span>
+              <div className="grid grid-cols-3 gap-2.5">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-slate-500">Khoảng cách tới bài</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={markOffset}
+                    onChange={(e) => setMarkOffset(Math.max(0, parseFloat(e.target.value) || 1))}
+                    className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-slate-500">Độ dài dấu</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="0.5"
+                    value={markLength}
+                    onChange={(e) => setMarkLength(Math.max(1, parseFloat(e.target.value) || 2))}
+                    className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-slate-500">Độ dày nét (pt)</label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="2"
+                    step="0.05"
+                    value={markThicknessPt}
+                    onChange={(e) => setMarkThicknessPt(Math.max(0.1, parseFloat(e.target.value) || 0.25))}
+                    className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+              <button
+                onClick={() => {
+                  setMarkStyle('western');
+                  setMarkOffset(1);
+                  setMarkLength(2);
+                  setMarkThicknessPt(0.25);
+                }}
+                className="text-xs font-semibold text-slate-500 hover:text-slate-800 cursor-pointer"
+              >
+                Khôi phục mặc định
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowTrimMarkModal(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-bold text-slate-700 cursor-pointer"
+                >
+                  Hủy
+                </button>
+                <button
+                  onClick={() => {
+                    if (mode === 'sticker' && stickerTrimMarks === 'none') {
+                      setStickerTrimMarks('guillotine');
+                    }
+                    setShowTrimMarkModal(false);
+                  }}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer shadow-xs"
+                >
+                  Áp dụng
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

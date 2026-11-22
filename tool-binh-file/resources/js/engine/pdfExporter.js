@@ -374,6 +374,20 @@ export async function exportStickerPdf(sourceFilesInput, plan, config, exportRol
 
     drawPontMarksOnPdfPage(destPage, sheet.pontMarks, sheetHPt);
 
+    // Draw straight guillotine Trim Marks on sticker sheet when enabled (e.g. Nguyên tấm decal)
+    if (exportRole === 'print' && sheet.marks?.lines?.length > 0) {
+      const trimMarkColor = config.registrationColor ? cmyk(1, 1, 1, 1) : cmyk(0, 0, 0, 1);
+      const trimThickness = Math.max(0.15, Number(config.markThicknessPt) || 0.25);
+      for (const line of sheet.marks.lines) {
+        destPage.drawLine({
+          start: { x: line.x1 * MM_TO_PT, y: sheetHPt - line.y1 * MM_TO_PT },
+          end: { x: line.x2 * MM_TO_PT, y: sheetHPt - line.y2 * MM_TO_PT },
+          thickness: trimThickness,
+          color: trimMarkColor,
+        });
+      }
+    }
+
     if (sheet.slugText) {
       destPage.drawText(`${sheet.slugText} [${exportRole === 'print' ? 'FILE IN' : 'FILE BE'}]`, {
         x: 6 * MM_TO_PT,
