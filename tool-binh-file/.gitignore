@@ -25,3 +25,7 @@ _ide_helper.php
 Homestead.json
 Homestead.yaml
 Thumbs.db
+/desktop/build
+/desktop/web_dist
+/desktop/*.spec
+/release

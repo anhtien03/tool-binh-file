@@ -133,11 +133,14 @@ export default function PdfCanvasPreview({
         console.warn('Could not read PDF boxes via pdf-lib:', err);
       }
 
+      const isLocalDesktop = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
       const loadingTask = pdfjsLib.getDocument({
         data: bytes.slice(),
-        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/cmaps/',
+        cMapUrl: isLocalDesktop ? '/cmaps/' : 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/cmaps/',
         cMapPacked: true,
-        standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/standard_fonts/',
+        standardFontDataUrl: isLocalDesktop
+          ? '/standard_fonts/'
+          : 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/standard_fonts/',
       });
       const pdf = await loadingTask.promise;
       const renderedPages = [];

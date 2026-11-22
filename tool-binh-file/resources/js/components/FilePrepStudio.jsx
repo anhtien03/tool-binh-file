@@ -128,11 +128,14 @@ export default function FilePrepStudio({
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       setPdfBytes(bytes);
+      const isLocalDesktop = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
       const pdf = await pdfjsLib.getDocument({
         data: bytes.slice(),
-        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/cmaps/',
+        cMapUrl: isLocalDesktop ? '/cmaps/' : 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/cmaps/',
         cMapPacked: true,
-        standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/standard_fonts/',
+        standardFontDataUrl: isLocalDesktop
+          ? '/standard_fonts/'
+          : 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/standard_fonts/',
       }).promise;
       const loaded = [];
       for (let p = 1; p <= pdf.numPages; p++) {
