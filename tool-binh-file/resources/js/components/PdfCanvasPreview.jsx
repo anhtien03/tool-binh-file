@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
 import { MM_TO_PT, PAPER_SIZES } from '../engine/impositionEngine';
 import { extractCutContoursFromPdfPage } from '../engine/pdfCutContourExtractor';
+import { PrepressRulerBar } from './PrintKitUI';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
 
@@ -15,6 +16,7 @@ export default function PdfCanvasPreview({
   bleedMm = 0,
   showBleedOverlay = true,
   showSafeArea = true,
+  showRulers = true,
   safeInsetMm = 3,
   splitStickerPreview = false,
   autoCropInk = false,
@@ -30,6 +32,7 @@ export default function PdfCanvasPreview({
   const [pdfLoading, setPdfLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState({ pct: 0, page: 0, total: 0, fileName: '', stage: '' });
   const [isPanning, setIsPanning] = useState(false);
+  const [cursorMm, setCursorMm] = useState(null);
   const canvasRef = useRef(null);
   const cutCanvasRef = useRef(null);
   const viewportRef = useRef(null);
@@ -773,31 +776,31 @@ export default function PdfCanvasPreview({
   };
 
   return (
-    <div className="flex flex-col items-center w-full relative">
+    <div className="flex flex-col w-full h-full relative bg-[#52565E] overflow-hidden">
       {pdfLoading && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-2xs flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 flex flex-col items-center gap-3.5 text-center">
+          <div className="w-full max-w-md bg-white rounded-xl border border-[#E2E8F0] shadow-2xl p-6 flex flex-col items-center gap-3.5 text-center">
             <div className="relative w-14 h-14 flex items-center justify-center">
-              <div className="absolute inset-0 rounded-full border-4 border-emerald-100" />
-              <div className="absolute inset-0 rounded-full border-4 border-[#146C53] border-t-transparent animate-spin" />
-              <span className="text-xs font-extrabold font-mono text-[#146C53]">{loadProgress.pct}%</span>
+              <div className="absolute inset-0 rounded-full border-4 border-[#DDF5EC]" />
+              <div className="absolute inset-0 rounded-full border-4 border-[#087F5B] border-t-transparent animate-spin" />
+              <span className="text-xs font-extrabold font-mono text-[#087F5B]">{loadProgress.pct}%</span>
             </div>
             <div className="flex flex-col gap-1 w-full">
-              <div className="text-sm font-extrabold text-slate-900 truncate px-2">
-                📂 Đang tải: {loadProgress.fileName || 'File PDF'}
+              <div className="text-sm font-bold text-[#17212F] truncate px-2">
+                Đang mở: {loadProgress.fileName || 'File PDF'}
               </div>
-              <div className="text-xs font-medium text-slate-500">
+              <div className="text-xs font-medium text-[#64748B]">
                 {loadProgress.stage || 'Đang phân tích TrimBox/Bleed & trích xuất trang PDF...'}
               </div>
             </div>
-            <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+            <div className="w-full h-2 bg-[#F3F5F7] rounded-full overflow-hidden border border-[#E2E8F0]">
               <div
-                className="h-full bg-gradient-to-r from-[#146C53] to-emerald-400 transition-all duration-150 rounded-full"
+                className="h-full bg-[#087F5B] transition-all duration-150 rounded-full"
                 style={{ width: `${Math.max(6, loadProgress.pct)}%` }}
               />
             </div>
             {loadProgress.total > 0 && (
-              <div className="text-[11px] font-mono font-bold text-[#146C53]">
+              <div className="text-[11px] font-mono font-semibold text-[#087F5B]">
                 Tiến độ: {loadProgress.page} / {loadProgress.total} trang ({loadProgress.pct}%)
               </div>
             )}
@@ -806,130 +809,198 @@ export default function PdfCanvasPreview({
       )}
 
       {inspectedPage && (
-        <div className="w-full mb-2.5 px-3.5 py-2 rounded-xl bg-[#112A24] text-white flex flex-wrap items-center justify-between gap-2 shadow-xs">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold">
-              ĐANG XEM TRANG GỐC #{inspectedPageIndex + 1} / {pages.length}
+        <div className="w-full px-3 py-1.5 bg-[#064E3B] text-white flex flex-wrap items-center justify-between gap-2 border-b border-black/20 shrink-0">
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className="px-2 py-0.5 rounded bg-white/15 text-[#DDF5EC] font-mono font-bold">
+              TRANG GỐC #{inspectedPageIndex + 1} / {pages.length}
             </span>
-            <span className="font-semibold truncate max-w-[240px]">{inspectedPage.fileName}</span>
-            <span className="font-mono text-emerald-200 text-[11px]">
-              · Khổ trang: {inspectedPage.mediaWmm.toFixed(1)}×{inspectedPage.mediaHmm.toFixed(1)}mm
+            <span className="font-semibold truncate max-w-[260px]">{inspectedPage.fileName}</span>
+            <span className="font-mono text-emerald-100/90">
+              · {inspectedPage.mediaWmm.toFixed(1)} × {inspectedPage.mediaHmm.toFixed(1)} mm
               {autoCropInk && inspectedPage.inkBox
-                ? ` → Vùng mực: ${inspectedPage.inkBox.trimWmm.toFixed(1)}×${inspectedPage.inkBox.trimHmm.toFixed(1)}mm`
+                ? ` → Vùng mực: ${inspectedPage.inkBox.trimWmm.toFixed(1)}×${inspectedPage.inkBox.trimHmm.toFixed(1)} mm`
                 : inspectedPage.hasExplicitTrimBox
-                ? ` → Thành phẩm: ${inspectedPage.trimWmm.toFixed(1)}×${inspectedPage.trimHmm.toFixed(1)}mm`
+                ? ` → Thành phẩm: ${inspectedPage.trimWmm.toFixed(1)}×${inspectedPage.trimHmm.toFixed(1)} mm`
                 : ''}
             </span>
           </div>
           {onExitInspectPage && (
             <button
               onClick={onExitInspectPage}
-              className="px-3 py-1 rounded-lg bg-[#146C53] hover:bg-emerald-600 text-white text-xs font-bold cursor-pointer"
+              className="px-2.5 py-0.5 rounded bg-[#087F5B] hover:bg-emerald-600 text-white text-[11px] font-semibold cursor-pointer border border-white/15"
             >
-              ← Quay lại Xem Tờ Bình
+              ← Quay lại Tờ Bình
             </button>
           )}
         </div>
       )}
 
+      {/* DARK GRAY DESKTOP PASTEBOARD WITH OPTIONAL STICKY MM RULERS */}
       <div
         ref={viewportRef}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={stopPanning}
-        onMouseLeave={stopPanning}
-        title="Cuộn chuột để Phóng to / Thu nhỏ (tối đa 1000%) · Kéo chuột trái để di chuyển"
-        className={`p-3 rounded-2xl border border-slate-200 w-full overflow-auto h-[calc(100vh-195px)] min-h-[600px] select-none flex ${
+        onMouseLeave={() => {
+          stopPanning();
+          setCursorMm(null);
+        }}
+        title="Cuộn chuột để Zoom (tối đa 1000%) · Kéo chuột trái để di chuyển bàn vẽ"
+        className={`flex-1 w-full overflow-auto p-6 select-none flex bg-[#52565E] ${
           isPanning ? 'cursor-grabbing' : 'cursor-grab'
         }`}
-        style={{
-          backgroundColor: '#fafbf9',
-          backgroundImage:
-            'linear-gradient(to right, #eef2f1 1px, transparent 1px), linear-gradient(to bottom, #eef2f1 1px, transparent 1px)',
-          backgroundSize: '24px 24px',
-        }}
       >
         {!inspectedPage && splitStickerPreview ? (
-          <div className="flex flex-wrap xl:flex-nowrap items-start justify-center gap-5 m-auto w-fit">
-            <div className="flex flex-col items-center gap-1.5 shrink-0">
-              <span className="px-2.5 py-0.5 rounded-full bg-[#146C53] text-white text-[11px] font-bold">
-                🖨️ BÀI IN (PRINT)
+          <div className="flex flex-wrap xl:flex-nowrap items-start justify-center gap-6 m-auto w-fit">
+            <div className="flex flex-col items-center gap-2 shrink-0">
+              <span className="px-2.5 py-0.5 rounded bg-[#087F5B] text-white text-[11px] font-semibold shadow-sm">
+                BÀI IN (PRINT)
               </span>
               <canvas
                 ref={canvasRef}
-                className="shadow-lg bg-white rounded border border-slate-300 block"
-                style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
+                className="bg-white block"
+                style={{
+                  width: `${canvasWidth}px`,
+                  height: `${canvasHeight}px`,
+                  boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
+                }}
               />
             </div>
-            <div className="flex flex-col items-center gap-1.5 shrink-0">
-              <span className="px-2.5 py-0.5 rounded-full bg-rose-600 text-white text-[11px] font-bold">
-                ✂️ KHUÔN BẾ (CUT)
+            <div className="flex flex-col items-center gap-2 shrink-0">
+              <span className="px-2.5 py-0.5 rounded bg-[#DC4545] text-white text-[11px] font-semibold shadow-sm">
+                KHUÔN BẾ (CUT)
               </span>
               <canvas
                 ref={cutCanvasRef}
-                className="shadow-lg bg-white rounded border border-slate-300 block"
-                style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
+                className="bg-white block"
+                style={{
+                  width: `${canvasWidth}px`,
+                  height: `${canvasHeight}px`,
+                  boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
+                }}
               />
             </div>
           </div>
         ) : (
-          <div
-            className="m-auto shrink-0"
-            style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
-          >
-            <canvas
-              ref={canvasRef}
-              className="shadow-lg bg-white rounded border border-slate-300 block"
-              style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
-            />
+          <div className="m-auto shrink-0 flex flex-col">
+            {showRulers && pages.length > 0 && (
+              <div className="flex items-end">
+                <div className="w-5 h-5 bg-[#E2E8F0] border-r border-b border-[#CBD5E1] text-[8px] font-mono font-bold text-[#475569] flex items-center justify-center shrink-0">
+                  mm
+                </div>
+                <PrepressRulerBar
+                  orientation="horizontal"
+                  lengthMm={sheetDim.width}
+                  pxPerMm={canvasWidth / Math.max(1, sheetDim.width)}
+                  cursorMm={cursorMm?.x ?? null}
+                />
+              </div>
+            )}
+            <div className="flex items-start">
+              {showRulers && pages.length > 0 && (
+                <PrepressRulerBar
+                  orientation="vertical"
+                  lengthMm={sheetDim.height}
+                  pxPerMm={canvasHeight / Math.max(1, sheetDim.height)}
+                  cursorMm={cursorMm?.y ?? null}
+                />
+              )}
+              <div
+                style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
+                onMouseMove={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const xMm = ((e.clientX - rect.left) / Math.max(1, rect.width)) * sheetDim.width;
+                  const yMm = ((e.clientY - rect.top) / Math.max(1, rect.height)) * sheetDim.height;
+                  setCursorMm({
+                    x: Math.max(0, Math.min(sheetDim.width, xMm)),
+                    y: Math.max(0, Math.min(sheetDim.height, yMm)),
+                  });
+                }}
+                onMouseLeave={() => setCursorMm(null)}
+              >
+                <canvas
+                  ref={canvasRef}
+                  className="bg-white block"
+                  style={{
+                    width: `${canvasWidth}px`,
+                    height: `${canvasHeight}px`,
+                    boxShadow: '0 14px 36px rgba(0,0,0,0.4)',
+                  }}
+                />
+              </div>
+            </div>
           </div>
         )}
       </div>
 
-      <div className="flex flex-wrap items-center justify-center gap-4 mt-2.5 text-[11px] text-slate-500">
-        <span className="flex items-center gap-1.5">
-          <span className="w-4 border-t border-dashed border-red-500 inline-block" /> Bleed (Tràn lề)
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="w-4 border-t border-slate-500 inline-block" /> Đường cắt thành phẩm (Trim)
-        </span>
-        {showSafeArea && (
-          <span className="flex items-center gap-1.5">
-            <span className="w-4 border-t border-dashed border-[#146C53] inline-block" /> Vùng an toàn ({safeInsetMm}mm)
-          </span>
-        )}
-        <span className="text-slate-400">· Ctrl+Cuộn: Zoom · Kéo chuột trái: Di chuyển</span>
-      </div>
-
-      {sheets.length > 0 && (
-        <div className="flex items-center gap-4 mt-4 bg-white px-5 py-2 rounded-full border border-slate-200 shadow-xs">
-          <button
-            onClick={() => setCurrentSheetIndex(Math.max(0, safeIndex - 1))}
-            disabled={safeIndex === 0}
-            className="px-3 py-1 bg-slate-100 hover:bg-slate-200 rounded-full text-xs font-semibold text-slate-700 disabled:opacity-30 cursor-pointer"
-          >
-            ◀ Tờ trước
-          </button>
-          <div className="text-xs font-bold text-slate-800 text-center min-w-[160px]">
-            Tờ {activeSheet.physicalSheet} / {plan.summary.physicalSheets || sheets.length}
-            <span className="text-[11px] font-semibold text-[#146C53] block">
-              {activeSheet.side === 'Front'
-                ? 'Mặt trước (Front)'
-                : activeSheet.side === 'Back'
-                ? 'Mặt sau (Back — Đã lật gương)'
-                : '1 Mặt (Simplex)'}{' '}
-              · {activeSheet.placements.length} con
+      {/* BOTTOM NATIVE DESKTOP STATUS BAR & PRINT GUIDES LEGEND */}
+      <div className="h-8 px-3 bg-[#FFFFFF] border-t border-[#E2E8F0] flex items-center justify-between gap-3 text-[11px] text-[#64748B] shrink-0 select-none">
+        <div className="flex items-center gap-3 font-mono">
+          {sheets.length > 0 && !inspectedPage ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setCurrentSheetIndex(Math.max(0, safeIndex - 1))}
+                disabled={safeIndex === 0}
+                title="Tờ trước"
+                className="w-5 h-5 rounded hover:bg-[#F3F5F7] text-[#17212F] font-bold disabled:opacity-30 cursor-pointer flex items-center justify-center"
+              >
+                ‹
+              </button>
+              <span className="font-semibold text-[#17212F]">
+                Tờ {activeSheet.physicalSheet}/{plan.summary.physicalSheets || sheets.length}
+              </span>
+              <button
+                onClick={() => setCurrentSheetIndex(Math.min(sheets.length - 1, safeIndex + 1))}
+                disabled={safeIndex >= sheets.length - 1}
+                title="Tờ sau"
+                className="w-5 h-5 rounded hover:bg-[#F3F5F7] text-[#17212F] font-bold disabled:opacity-30 cursor-pointer flex items-center justify-center"
+              >
+                ›
+              </button>
+              <span className="text-[#087F5B] font-sans font-semibold ml-1">
+                {activeSheet.side === 'Front'
+                  ? 'Mặt trước'
+                  : activeSheet.side === 'Back'
+                  ? 'Mặt sau (Lật gương)'
+                  : '1 Mặt'}{' '}
+                · {activeSheet.placements.length} con
+              </span>
+            </div>
+          ) : (
+            <span className="font-semibold text-[#17212F]">
+              {pages.length > 0 ? `Trang ${(inspectedPageIndex ?? 0) + 1}/${pages.length}` : 'Chưa mở tài liệu'}
             </span>
-          </div>
-          <button
-            onClick={() => setCurrentSheetIndex(Math.min(sheets.length - 1, safeIndex + 1))}
-            disabled={safeIndex >= sheets.length - 1}
-            className="px-3 py-1 bg-slate-100 hover:bg-slate-200 rounded-full text-xs font-semibold text-slate-700 disabled:opacity-30 cursor-pointer"
-          >
-            Tờ sau ▶
-          </button>
+          )}
+          <span className="text-[#CBD5E1]">|</span>
+          <span>
+            {sheetDim.width.toFixed(1)} × {sheetDim.height.toFixed(1)} mm
+          </span>
+          <span className="text-[#CBD5E1]">|</span>
+          <span>Zoom {Math.round(zoom * 100)}%</span>
+          {cursorMm && (
+            <>
+              <span className="text-[#CBD5E1]">|</span>
+              <span className="text-[#087F5B] font-semibold">
+                X: {cursorMm.x.toFixed(1)} mm · Y: {cursorMm.y.toFixed(1)} mm
+              </span>
+            </>
+          )}
         </div>
-      )}
+
+        <div className="hidden md:flex items-center gap-3.5">
+          <span className="flex items-center gap-1.5">
+            <span className="w-3.5 border-t-[1.5px] border-dashed border-[#DC4545] inline-block" /> Bleed
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-3.5 border-t-[1.5px] border-[#475569] inline-block" /> Trim
+          </span>
+          {showSafeArea && (
+            <span className="flex items-center gap-1.5">
+              <span className="w-3.5 border-t-[1.5px] border-dashed border-[#087F5B] inline-block" /> Safe ({safeInsetMm}mm)
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

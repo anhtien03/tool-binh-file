@@ -410,22 +410,22 @@ export default function FilePrepStudio({
   };
 
   return (
-    <>
-      {/* 1. LEFT: VISUAL WORKSPACE / INTERACTIVE PREVIEW */}
-      <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3 shadow-xs">
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+    <div className="flex flex-1 min-w-0 h-full overflow-hidden">
+      {/* 1. LEFT: VISUAL WORKSPACE / DARK PASTEBOARD PREVIEW */}
+      <main className="flex-1 min-w-0 bg-[#52565E] flex flex-col overflow-hidden">
+        <div className="h-10 px-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between gap-2 shrink-0">
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
+            <span className="px-2 py-0.5 rounded bg-[#DDF5EC] text-[#064E3B] font-bold">
               {activeTool === 'organizer'
-                ? '🔀 XÁO TRỘN & SẮP XẾP TRANG'
+                ? 'XÁO TRỘN & SẮP XẾP TRANG'
                 : activeTool === 'resize'
-                ? '📏 CO GIÃN TRANG (RESIZE PDF)'
+                ? 'CO GIÃN TRANG (RESIZE PDF)'
                 : activeTool === 'crop'
-                ? '✂️ CẮT KHỔ TRANG (CROP PDF)'
-                : '↘️ TRIM & SHIFT (DỊCH LỀ CHẴN / LẺ)'}
+                ? 'CẮT KHỔ TRANG (CROP PDF)'
+                : 'TRIM & SHIFT (DỊCH LỀ CHẴN / LẺ)'}
             </span>
             {curPage && (
-              <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-mono font-semibold">
+              <span className="px-2 py-0.5 rounded bg-white border border-[#E2E8F0] text-[#17212F] font-mono font-semibold">
                 Gốc: {curPage.widthMm} × {curPage.heightMm} mm · {rawPages.length} trang
               </span>
             )}
@@ -436,23 +436,23 @@ export default function FilePrepStudio({
               <button
                 onClick={() => setActivePageIdx((p) => Math.max(0, p - 1))}
                 disabled={activePageIdx <= 0}
-                className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 disabled:opacity-40 cursor-pointer"
+                className="px-2 py-0.5 rounded bg-white border border-[#E2E8F0] hover:bg-[#F3F5F7] disabled:opacity-40 cursor-pointer"
               >
                 ‹
               </button>
-              <span className="font-bold text-slate-700">
+              <span className="font-bold text-[#17212F]">
                 Trang {activePageIdx + 1}/{rawPages.length} ({(activePageIdx + 1) % 2 === 1 ? 'Lẻ' : 'Chẵn'})
               </span>
               <button
                 onClick={() => setActivePageIdx((p) => Math.min(rawPages.length - 1, p + 1))}
                 disabled={activePageIdx >= rawPages.length - 1}
-                className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 disabled:opacity-40 cursor-pointer"
+                className="px-2 py-0.5 rounded bg-white border border-[#E2E8F0] hover:bg-[#F3F5F7] disabled:opacity-40 cursor-pointer"
               >
                 ›
               </button>
               <button
                 onClick={() => setZoom(1.0)}
-                className="ml-2 px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 font-sans font-semibold cursor-pointer"
+                className="ml-1 px-2 py-0.5 rounded bg-white border border-[#E2E8F0] hover:text-[#087F5B] font-sans font-semibold cursor-pointer"
               >
                 Fit ({Math.round(zoom * 100)}%)
               </button>
@@ -460,11 +460,11 @@ export default function FilePrepStudio({
           )}
         </div>
 
-        {error && <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs">⚠️ {error}</div>}
+        {error && <div className="mx-3 mt-2 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs">{error}</div>}
 
         <div
           ref={viewportRef}
-          className="relative flex-1 min-h-[540px] rounded-xl bg-[#e5e7eb] border border-slate-300 overflow-auto p-6 flex items-center justify-center"
+          className="relative flex-1 overflow-auto p-6 flex items-center justify-center bg-[#52565E]"
         >
           {loading && (
             <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-2xs flex items-center justify-center p-4">
@@ -732,7 +732,7 @@ export default function FilePrepStudio({
       </main>
 
       {/* 2. MIDDLE-RIGHT: SETTINGS PANEL FOR CURRENT FILE PREP TOOL */}
-      <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3.5 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
+      <aside className="w-[330px] bg-white border-l border-[#E2E8F0] p-4 flex flex-col gap-3.5 overflow-y-auto h-full shrink-0">
         <div className="border-b border-slate-100 pb-2">
           <div className="text-xs font-bold text-slate-800 uppercase">
             {activeTool === 'organizer'
@@ -1172,12 +1172,12 @@ export default function FilePrepStudio({
           <button
             onClick={() => handleExportOrImpose('download')}
             disabled={loading || !pdfBytes}
-            className="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold cursor-pointer disabled:opacity-40 shadow-xs"
+            className="w-full py-2 rounded-lg bg-[#17212F] hover:bg-slate-800 text-white text-xs font-bold cursor-pointer disabled:opacity-40"
           >
-            {loading ? '⏳ Đang xử lý PDF...' : '💾 Tải File PDF Đã Xử Lý'}
+            {loading ? 'Đang xử lý PDF...' : 'Tải File PDF Đã Xử Lý'}
           </button>
         </div>
       </aside>
-    </>
+    </div>
   );
 }

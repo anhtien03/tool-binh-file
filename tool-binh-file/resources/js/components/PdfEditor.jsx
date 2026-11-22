@@ -5,6 +5,7 @@ import Book3DViewer from './Book3DViewer';
 import FilePrepStudio from './FilePrepStudio';
 import TemplateLibrary from './TemplateLibrary';
 import BleedAndContourStudio from './BleedAndContourStudio';
+import { PkIcon } from './PrintKitUI';
 import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
 import { exportImposedPdf, exportStickerPdf, exportStickerCutSvg } from '../engine/pdfExporter';
 
@@ -100,15 +101,31 @@ export default function PdfEditor() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [zoom, setZoom] = useState(1.0);
+  const [showRulers, setShowRulers] = useState(true);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [showBook3D, setShowBook3D] = useState(false);
 
   useEffect(() => {
     const preventDefault = (e) => e.preventDefault();
+    const onKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+        e.preventDefault();
+        setZoom(1.0);
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        setZoom((z) => Math.min(10.0, Math.round((z + 0.25) * 100) / 100));
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+        e.preventDefault();
+        setZoom((z) => Math.max(0.35, Math.round((z - 0.25) * 100) / 100));
+      }
+    };
     window.addEventListener('dragover', preventDefault);
     window.addEventListener('drop', preventDefault);
+    window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('dragover', preventDefault);
       window.removeEventListener('drop', preventDefault);
+      window.removeEventListener('keydown', onKeyDown);
     };
   }, []);
 
@@ -584,67 +601,52 @@ export default function PdfEditor() {
   const firstPage = pdfPages[0];
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F4F6F5] text-slate-900 font-sans">
-      {/* GLOBAL DEEP FOREST GREEN TOP APP BAR (#112A24) */}
-      <header className="h-12 bg-[#112A24] text-white px-4 sm:px-5 flex items-center justify-between gap-4 shrink-0 shadow-sm sticky top-0 z-30">
-        <div className="flex items-center gap-4">
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#F3F5F7] text-[#17212F] font-sans">
+      {/* 1. TOP NAVIGATION BAR (Light Desktop Professional Shell — 52px) */}
+      <header className="h-[52px] bg-white border-b border-[#E2E8F0] px-3.5 flex items-center justify-between gap-3 shrink-0 z-30 select-none">
+        <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={() => setActiveStudio('viewer')}
-            className="flex items-center gap-2 cursor-pointer group"
+            title="PrintKit Professional 2.0 — Về chế độ Xem tài liệu gốc"
+            className="flex items-center gap-2 cursor-pointer group shrink-0"
           >
             <img
               src="/printkit_icon.png"
               alt="PrintKit"
-              className="w-7 h-7 rounded-lg bg-white p-0.5 object-contain shadow-xs"
+              className="w-7 h-7 rounded-md border border-[#E2E8F0] bg-white p-0.5 object-contain"
             />
-            <span className="font-extrabold tracking-wide text-sm text-white group-hover:text-emerald-200 transition-colors">
-              Print<span className="text-[#F96328]">Kit</span>
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="font-bold tracking-tight text-[15px] text-[#17212F]">
+                Print<span className="text-[#087F5B]">Kit</span>
+              </span>
+              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider uppercase bg-[#DDF5EC] text-[#064E3B]">
+                PRO 2.0
+              </span>
+            </div>
           </button>
 
-          <span className="hidden sm:inline-flex px-2.5 py-0.5 rounded-full bg-white/10 text-emerald-200 text-[11px] font-semibold">
-            {activeStudio === 'viewer'
-              ? 'Xem & Kiểm tra File gốc'
-              : activeStudio === 'namecard'
-              ? 'Bình Cắt Xén / Namecard'
-              : activeStudio === 'sticker'
-              ? 'Bình Tem Bế (Decal)'
-              : activeStudio === 'booklet'
-              ? 'Bình Sách & Tạp chí'
-              : activeStudio === 'bleed'
-              ? 'Bù xén & Tạo đường cắt'
-              : activeStudio === 'resize'
-              ? 'Co giãn trang (Resize)'
-              : activeStudio === 'organizer'
-              ? 'Xáo trộn & Sắp xếp trang'
-              : activeStudio === 'crop'
-              ? 'Cắt khổ trang (Crop)'
-              : activeStudio === 'trimShift'
-              ? 'Trim & Shift (Dịch lề)'
-              : activeStudio === 'dieline'
-              ? 'Khuôn Bế 2D & 3D'
-              : 'Thư viện Khuôn Bế'}
-          </span>
-        </div>
+          <span className="h-5 w-px bg-[#E2E8F0] hidden sm:block shrink-0" />
 
-        {/* Right Quick Actions */}
-        <div className="flex items-center gap-2 shrink-0">
+          {/* Active Document Tab Pill */}
           {sourceFiles.length > 0 ? (
-            <div className="flex items-center bg-white/10 rounded-lg border border-white/15 overflow-hidden">
+            <div className="flex items-center bg-[#F3F5F7] rounded-md border border-[#E2E8F0] overflow-hidden max-w-[300px]">
               <button
                 onClick={() => {
                   setActiveStudio('viewer');
                   setShowSettingsPanel(false);
                   setInspectedPageIndex(0);
                 }}
-                title={`Bấm để hiển thị file: ${sourceFiles[0].file.name}`}
-                className="px-2.5 py-1 hover:bg-white/15 text-xs font-semibold text-emerald-100 cursor-pointer flex items-center gap-1.5 max-w-[230px]"
+                title={`Đang mở: ${sourceFiles[0].file.name} (${pdfPages.length} trang) — Bấm để xem trang gốc`}
+                className="px-2.5 py-1 hover:bg-[#E2E8F0]/60 text-xs font-medium text-[#17212F] cursor-pointer flex items-center gap-1.5 min-w-0"
               >
-                <span className="shrink-0">📄</span>
-                <span className="truncate">
+                <PkIcon name="file" className="w-3.5 h-3.5 text-[#087F5B] shrink-0" />
+                <span className="truncate font-semibold">
                   {sourceFiles[0].file.name}
                   {sourceFiles.length > 1 ? ` (+${sourceFiles.length - 1})` : ''}
                 </span>
+                {pdfPages.length > 0 && (
+                  <span className="text-[10px] font-mono text-[#64748B] shrink-0">({pdfPages.length} tr)</span>
+                )}
               </button>
               <button
                 onClick={() => {
@@ -653,14 +655,27 @@ export default function PdfEditor() {
                   setActiveStudio('viewer');
                 }}
                 title="Đóng file đang mở"
-                className="px-2 py-1 hover:bg-rose-500/80 text-emerald-200 hover:text-white text-xs font-bold cursor-pointer border-l border-white/10 transition-colors"
+                className="px-2 py-1 hover:bg-[#DC4545] text-[#64748B] hover:text-white text-xs font-bold cursor-pointer border-l border-[#E2E8F0] transition-colors shrink-0"
               >
                 ×
               </button>
             </div>
-          ) : null}
-          <label className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-emerald-100 cursor-pointer flex items-center gap-1.5">
-            <span>{sourceFiles.length > 0 ? '📂 Đổi File' : '📂 Mở File PDF'}</span>
+          ) : (
+            <span className="hidden md:inline-flex items-center gap-1.5 text-xs text-[#64748B]">
+              <span className="w-2 h-2 rounded-full bg-[#CBD5E1]" />
+              Chưa mở tài liệu PDF
+            </span>
+          )}
+        </div>
+
+        {/* Right Primary & Secondary Utility Actions */}
+        <div className="flex items-center gap-2 shrink-0">
+          <label
+            title="Mở file PDF mới từ máy tính"
+            className="h-8 px-3 rounded-md bg-white hover:bg-[#F3F5F7] border border-[#CBD5E1] text-xs font-semibold text-[#17212F] cursor-pointer flex items-center gap-1.5 transition-colors"
+          >
+            <PkIcon name="folder" className="w-3.5 h-3.5 text-[#087F5B]" />
+            <span>{sourceFiles.length > 0 ? 'Mở file khác' : 'Mở file PDF'}</span>
             <input
               type="file"
               accept=".pdf,application/pdf"
@@ -675,40 +690,69 @@ export default function PdfEditor() {
               }}
             />
           </label>
+
+          {(activeStudio === 'viewer' ||
+            activeStudio === 'namecard' ||
+            activeStudio === 'sticker' ||
+            activeStudio === 'booklet') && (
+            <button
+              onClick={() => setShowPagesSidebar((v) => !v)}
+              title={showPagesSidebar ? 'Thu gọn cột Quản lý Trang' : 'Mở cột Quản lý Trang'}
+              className={`h-8 px-2.5 rounded-md border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                showPagesSidebar
+                  ? 'bg-[#DDF5EC]/60 border-[#087F5B]/30 text-[#064E3B]'
+                  : 'bg-white border-[#E2E8F0] text-[#64748B] hover:bg-[#F3F5F7]'
+              }`}
+            >
+              <PkIcon name="panelLeft" className="w-3.5 h-3.5" />
+              <span className="hidden xl:inline">Trang</span>
+            </button>
+          )}
+
           {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
             <>
               <button
                 onClick={() => setShowSettingsPanel((v) => !v)}
-                className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-emerald-100 cursor-pointer"
+                title={showSettingsPanel ? 'Ẩn bảng thông số' : 'Hiện bảng thông số'}
+                className={`h-8 px-2.5 rounded-md border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  showSettingsPanel
+                    ? 'bg-[#DDF5EC]/60 border-[#087F5B]/30 text-[#064E3B]'
+                    : 'bg-white border-[#E2E8F0] text-[#64748B] hover:bg-[#F3F5F7]'
+                }`}
               >
-                {showSettingsPanel ? 'Ẩn thông số' : 'Hiện thông số'}
+                <PkIcon name="sliders" className="w-3.5 h-3.5" />
+                <span className="hidden xl:inline">Thông số</span>
               </button>
               <button
                 onClick={() => handleDownload('print')}
                 disabled={loading || sourceFiles.length === 0}
-                className={`px-3.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                title="Xuất file PDF chuẩn vector để đưa vào máy in"
+                className={`h-8 px-3.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
                   loading || sourceFiles.length === 0
-                    ? 'bg-white/10 text-emerald-100/40 cursor-not-allowed'
-                    : 'bg-[#146C53] hover:bg-[#198768] text-white shadow-xs'
+                    ? 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed'
+                    : 'bg-[#087F5B] hover:bg-[#064E3B] text-white shadow-xs'
                 }`}
               >
-                {loading
-                  ? 'Đang xuất...'
-                  : activeStudio === 'booklet'
-                  ? 'Xuất PDF Bình Sách'
-                  : activeStudio === 'sticker'
-                  ? 'Xuất File IN Tem'
-                  : 'Xuất PDF Bình Bài'}
+                <PkIcon name="download" className="w-3.5 h-3.5" />
+                <span>
+                  {loading
+                    ? 'Đang xuất...'
+                    : activeStudio === 'booklet'
+                    ? 'Xuất PDF Sách'
+                    : activeStudio === 'sticker'
+                    ? 'Xuất File IN'
+                    : 'Xuất PDF In'}
+                </span>
               </button>
             </>
           )}
         </div>
       </header>
 
-      {/* UNIFIED PRO WORKSPACE: [LEFT: CANVAS] + [MIDDLE: ACTIVE TOOL SETTINGS] + [FAR RIGHT: TOOLS DOCK] */}
-      <div className="flex-1 flex flex-col lg:flex-row gap-3 p-3 min-w-0">
+      {/* EDGE-TO-EDGE 4-ZONE DESKTOP SHELL: [LEFT PAGES] | [CENTER WORKSPACE] | [RIGHT SETTINGS] | [FAR-RIGHT TOOLS] */}
+      <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden bg-[#F3F5F7]">
         {activeStudio === 'library' && (
-          <div className="flex-1 min-w-0 overflow-y-auto">
+          <div className="flex-1 min-w-0 h-full overflow-y-auto p-4">
             <TemplateLibrary
               onSelectTemplate={(id) => {
                 setSelectedTemplateId(id);
@@ -716,10 +760,12 @@ export default function PdfEditor() {
               }}
               onOpenImpose={() => {
                 setActiveStudio('namecard');
+                setShowSettingsPanel(true);
                 setCurrentSheetIndex(0);
               }}
               onOpenBooklet={() => {
                 setActiveStudio('booklet');
+                setShowSettingsPanel(true);
                 setCurrentSheetIndex(0);
               }}
             />
@@ -727,15 +773,18 @@ export default function PdfEditor() {
         )}
 
         {activeStudio === 'dieline' && (
-          <DielineStudio
-            templateId={selectedTemplateId}
-            onChangeTemplate={(id) => setSelectedTemplateId(id)}
-            onOpenLibrary={() => setActiveStudio('library')}
-            onOpenImpose={() => {
-              setActiveStudio('namecard');
-              setCurrentSheetIndex(0);
-            }}
-          />
+          <div className="flex-1 min-w-0 h-full overflow-y-auto p-3 flex">
+            <DielineStudio
+              templateId={selectedTemplateId}
+              onChangeTemplate={(id) => setSelectedTemplateId(id)}
+              onOpenLibrary={() => setActiveStudio('library')}
+              onOpenImpose={() => {
+                setActiveStudio('namecard');
+                setShowSettingsPanel(true);
+                setCurrentSheetIndex(0);
+              }}
+            />
+          </div>
         )}
 
         {activeStudio === 'bleed' && (
@@ -805,17 +854,17 @@ export default function PdfEditor() {
           activeStudio === 'sticker' ||
           activeStudio === 'booklet') && (
           <>
-            {/* 0. FAR-LEFT: IMPOSIO-STYLE PAGES THUMBNAIL & PAGE RANGE SIDEBAR */}
+            {/* 2. LEFT SIDEBAR: PAGES MANAGER (204px flush) */}
             {showPagesSidebar && (
-              <aside className="w-full lg:w-[180px] bg-white rounded-2xl border border-slate-200 p-2.5 flex flex-col gap-2 overflow-hidden max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
-                  <span className="text-[11px] font-bold text-slate-700 tracking-wide uppercase">
-                    Pages ({gangItems.length}/{pdfPages.length})
+              <aside className="w-[204px] bg-white border-r border-[#E2E8F0] p-2.5 flex flex-col gap-2 overflow-hidden h-full shrink-0">
+                <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-2">
+                  <span className="text-[11px] font-bold text-[#17212F] tracking-wider uppercase">
+                    Trang ({gangItems.length}/{pdfPages.length})
                   </span>
                   <button
                     onClick={() => setShowPagesSidebar(false)}
-                    title="Thu gọn cột Pages"
-                    className="w-5 h-5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700 text-xs cursor-pointer"
+                    title="Thu gọn cột Trang"
+                    className="w-5 h-5 rounded hover:bg-[#F3F5F7] text-[#64748B] hover:text-[#17212F] text-xs cursor-pointer flex items-center justify-center"
                   >
                     ×
                   </button>
@@ -954,107 +1003,200 @@ export default function PdfEditor() {
               </aside>
             )}
 
-            {/* 1. LEFT: WIDE CANVAS VIEWER */}
-            <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3 shadow-xs">
-              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
-                <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-                  {!showPagesSidebar && (
+            {/* 3. CENTER WORKSPACE: RIBBON TOOLBAR + DARK GRAY PASTEBOARD CANVAS */}
+            <main className="flex-1 min-w-0 h-full flex flex-col overflow-hidden bg-[#52565E]">
+              {/* WORKSPACE RIBBON TOOLBAR (40px) */}
+              <div className="h-10 px-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between gap-2 shrink-0 select-none">
+                {/* Left: Zoom & View Guides Controls */}
+                <div className="flex items-center gap-1.5">
+                  <div className="flex items-center bg-white border border-[#E2E8F0] rounded-md px-1 py-0.5 text-xs font-mono text-[#64748B]">
                     <button
-                      onClick={() => setShowPagesSidebar(true)}
-                      className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-sans font-bold cursor-pointer"
+                      onClick={() =>
+                        setZoom((z) => Math.max(0.35, Math.round((z - (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))
+                      }
+                      title="Thu nhỏ"
+                      className="w-6 h-6 rounded hover:bg-[#F3F5F7] text-[#17212F] flex items-center justify-center cursor-pointer"
                     >
-                      📑 Mở cột Pages ({gangItems.length})
+                      −
                     </button>
-                  )}
-                  {activeStudio === 'viewer' ? (
-                    <span className="px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-[#146C53] font-sans font-bold">
-                      👁️ Chế độ Xem &amp; Kiểm tra File gốc ({pdfPages.length} trang) — Chọn công cụ ở cột phải để bắt đầu xử lý
+                    <span className="min-w-[46px] text-center font-bold text-[#087F5B] text-[11px]">
+                      {Math.round(zoom * 100)}%
                     </span>
-                  ) : (
-                    <>
-                      <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
-                        {plan.summary.itemsPerSheet} con/tờ
-                        {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount} ngang + ${plan.summary.secondaryCount} dọc)`}
-                      </span>
-                      <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-semibold">
-                        {plan.sheetDim.width}×{plan.sheetDim.height}mm · {plan.summary.utilizationPct}%
-                      </span>
-                      {plan.summary.ratioSheetsNeeded > 0 && (
-                        <span className="px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 font-bold">
-                          Cần in: {plan.summary.ratioSheetsNeeded} tờ
-                        </span>
-                      )}
-                    </>
-                  )}
+                    <button
+                      onClick={() =>
+                        setZoom((z) => Math.min(10.0, Math.round((z + (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))
+                      }
+                      title="Phóng to"
+                      className="w-6 h-6 rounded hover:bg-[#F3F5F7] text-[#17212F] flex items-center justify-center cursor-pointer"
+                    >
+                      +
+                    </button>
+                    <span className="h-4 w-px bg-[#E2E8F0] mx-0.5" />
+                    <button
+                      onClick={() => setZoom(1.0)}
+                      title="Vừa khung nhìn (Fit)"
+                      className={`px-1.5 py-0.5 rounded text-[11px] font-sans font-semibold cursor-pointer ${
+                        Math.abs(zoom - 1.0) < 0.05 ? 'bg-[#DDF5EC] text-[#064E3B]' : 'hover:bg-[#F3F5F7] text-[#475569]'
+                      }`}
+                    >
+                      Fit
+                    </button>
+                    <button
+                      onClick={() => setZoom(2.0)}
+                      className={`px-1.5 py-0.5 rounded text-[11px] cursor-pointer ${
+                        Math.abs(zoom - 2.0) < 0.05 ? 'bg-[#DDF5EC] text-[#064E3B]' : 'hover:bg-[#F3F5F7] text-[#475569]'
+                      }`}
+                    >
+                      200%
+                    </button>
+                    <button
+                      onClick={() => setZoom(4.0)}
+                      className={`px-1.5 py-0.5 rounded text-[11px] cursor-pointer ${
+                        Math.abs(zoom - 4.0) < 0.05 ? 'bg-[#DDF5EC] text-[#064E3B]' : 'hover:bg-[#F3F5F7] text-[#475569]'
+                      }`}
+                    >
+                      400%
+                    </button>
+                  </div>
+
+                  <span className="h-5 w-px bg-[#E2E8F0] mx-0.5" />
+
+                  <button
+                    onClick={() => setShowRulers((v) => !v)}
+                    title="Bật / Tắt thước đo mm trên bàn vẽ"
+                    className={`h-7 px-2 rounded-md border text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-colors ${
+                      showRulers
+                        ? 'bg-[#DDF5EC] border-[#087F5B]/30 text-[#064E3B]'
+                        : 'bg-white border-[#E2E8F0] text-[#64748B] hover:bg-[#F3F5F7]'
+                    }`}
+                  >
+                    <PkIcon name="ruler" className="w-3.5 h-3.5" />
+                    <span className="hidden lg:inline">Thước mm</span>
+                  </button>
+
+                  <button
+                    onClick={() => setShowBleedOverlay((v) => !v)}
+                    title="Hiển thị đường Tràn lề (Bleed)"
+                    className={`h-7 px-2 rounded-md border text-[11px] font-semibold cursor-pointer transition-colors ${
+                      showBleedOverlay
+                        ? 'bg-rose-50 border-rose-200 text-[#DC4545]'
+                        : 'bg-white border-[#E2E8F0] text-[#64748B] hover:bg-[#F3F5F7]'
+                    }`}
+                  >
+                    Bleed
+                  </button>
+
+                  <button
+                    onClick={() => setShowSafeArea((v) => !v)}
+                    title="Hiển thị Vùng an toàn (Safe Zone)"
+                    className={`h-7 px-2 rounded-md border text-[11px] font-semibold cursor-pointer transition-colors ${
+                      showSafeArea
+                        ? 'bg-[#DDF5EC] border-[#087F5B]/30 text-[#064E3B]'
+                        : 'bg-white border-[#E2E8F0] text-[#64748B] hover:bg-[#F3F5F7]'
+                    }`}
+                  >
+                    Safe
+                  </button>
+
                   {mode === 'booklet' && (
                     <button
                       onClick={() => setShowBook3D(true)}
                       disabled={pdfPages.length === 0}
-                      className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-sans font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       title="Xem cuốn sách thành phẩm dạng 3D, lật từng trang"
+                      className="h-7 px-2.5 rounded-md bg-[#087F5B] hover:bg-[#064E3B] text-white text-[11px] font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      🧊 Xem 3D cuốn sách
+                      <PkIcon name="cube" className="w-3.5 h-3.5" />
+                      <span>Xem Sách 3D</span>
                     </button>
                   )}
                 </div>
 
-                <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs font-mono text-slate-600">
-                  <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
-                    Fit
-                  </button>
-                  <button onClick={() => setZoom(2.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
-                    200%
-                  </button>
-                  <button onClick={() => setZoom(4.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
-                    400%
-                  </button>
-                  <button
-                    onClick={() =>
-                      setZoom((z) => Math.max(0.35, Math.round((z - (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))
-                    }
-                    className="px-1.5 hover:text-slate-900 cursor-pointer"
-                  >
-                    −
-                  </button>
-                  <span className="min-w-[46px] text-center font-bold text-[#146C53]">{Math.round(zoom * 100)}%</span>
-                  <button
-                    onClick={() =>
-                      setZoom((z) => Math.min(10.0, Math.round((z + (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))
-                    }
-                    className="px-1.5 hover:text-slate-900 cursor-pointer"
-                  >
-                    +
-                  </button>
+                {/* Right: Live Imposition / Document Summary Metrics */}
+                <div className="flex items-center gap-1.5 text-[11px] font-mono">
+                  {activeStudio === 'viewer' ? (
+                    <span className="px-2 py-0.5 rounded bg-white border border-[#E2E8F0] text-[#475569] font-sans font-medium">
+                      Chế độ Xem tài liệu gốc
+                    </span>
+                  ) : (
+                    <>
+                      <span className="px-2 py-0.5 rounded bg-[#DDF5EC] text-[#064E3B] font-bold">
+                        {plan.summary.itemsPerSheet} con/tờ
+                        {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount}+${plan.summary.secondaryCount})`}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-white border border-[#E2E8F0] text-[#17212F] font-semibold">
+                        {plan.sheetDim.width}×{plan.sheetDim.height}mm · {plan.summary.utilizationPct}%
+                      </span>
+                      {plan.summary.ratioSheetsNeeded > 0 && (
+                        <span className="px-2 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 font-bold">
+                          In {plan.summary.ratioSheetsNeeded} tờ
+                        </span>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
 
-              {error && <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs">⚠️ {error}</div>}
+              {error && (
+                <div className="px-3 py-1.5 bg-rose-50 border-b border-rose-200 text-[#DC4545] text-xs font-medium shrink-0">
+                  {error}
+                </div>
+              )}
               {success && (
-                <div className="p-2.5 rounded-xl bg-[#E6F4EF] border border-emerald-200 text-[#146C53] text-xs font-semibold">
-                  🎉 Đã xuất file PDF vector chuẩn CMYK (giữ nguyên Bleed &amp; Smart Clipping)!
+                <div className="px-3 py-1.5 bg-[#DDF5EC] border-b border-[#087F5B]/20 text-[#064E3B] text-xs font-semibold shrink-0">
+                  Đã xuất file PDF vector chuẩn CMYK (giữ nguyên Bleed &amp; Smart Clipping).
                 </div>
               )}
 
-              <div className="flex-1 min-w-0 w-full flex items-center justify-center relative">
-                {sourceFiles.length === 0 && activeStudio === 'viewer' && (
-                  <div className="absolute inset-0 z-10 flex items-center justify-center p-6 pointer-events-none">
-                    <label className="pointer-events-auto cursor-pointer bg-white/95 hover:bg-emerald-50/90 border-2 border-dashed border-[#146C53]/60 rounded-2xl p-8 max-w-md flex flex-col items-center gap-2.5 text-center shadow-lg transition-all">
-                      <span className="text-4xl">📂</span>
-                      <span className="text-sm font-extrabold text-slate-800">
-                        Tải file PDF lên bàn làm việc chung
+              <div
+                className="flex-1 min-h-0 min-w-0 w-full relative overflow-hidden"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDraggingOver(true);
+                }}
+                onDragLeave={() => setIsDraggingOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDraggingOver(false);
+                  if (e.dataTransfer?.files?.length) {
+                    handleAddFiles(e.dataTransfer.files);
+                  }
+                }}
+              >
+                {sourceFiles.length === 0 && (
+                  <div className="absolute inset-0 z-10 flex items-center justify-center p-6 bg-[#52565E]">
+                    <label
+                      className={`cursor-pointer bg-white rounded-xl border-2 border-dashed p-9 max-w-[420px] w-full flex flex-col items-center gap-3 text-center shadow-2xl transition-all ${
+                        isDraggingOver
+                          ? 'border-[#087F5B] bg-[#DDF5EC]/30 scale-[1.01]'
+                          : 'border-[#CBD5E1] hover:border-[#087F5B]'
+                      }`}
+                    >
+                      <div className="w-14 h-14 rounded-xl bg-[#DDF5EC] text-[#087F5B] flex items-center justify-center">
+                        <PkIcon name="file" className="w-7 h-7" />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <h2 className="text-[17px] font-bold text-[#17212F]">Bắt đầu dự án in ấn</h2>
+                        <p className="text-xs text-[#64748B] leading-relaxed">
+                          Kéo thả file PDF vào đây hoặc bấm chọn từ máy tính. File sẽ được đồng bộ sẵn cho tất cả công cụ
+                          Bình bài, Bù xén đường cắt và Xử lý trang.
+                        </p>
+                      </div>
+                      <span className="mt-1 px-5 py-2.5 rounded-lg bg-[#087F5B] hover:bg-[#064E3B] text-white text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors">
+                        <PkIcon name="folder" className="w-4 h-4" />
+                        Mở file PDF
                       </span>
-                      <span className="text-xs text-slate-500 leading-relaxed">
-                        Mở file 1 lần duy nhất để xem kích thước từng trang ở cột <strong>Pages</strong> bên trái, sau đó chọn bất kỳ công cụ nào ở cột phải (<strong>Bù xén, Cắt khổ, Co giãn, Bình Tem, Bình Cắt Xén, Bình Sách</strong>) mà không cần tải lại file.
-                      </span>
-                      <span className="mt-1 px-4 py-2 rounded-xl bg-[#146C53] text-white text-xs font-bold shadow-xs">
-                        + Chọn file PDF từ máy tính
-                      </span>
+                      <span className="text-[11px] text-[#94A3B8]">Hỗ trợ PDF vector, CMYK, nhiều trang &amp; đường bế CutContour</span>
                       <input
                         type="file"
                         accept=".pdf,application/pdf"
                         multiple
                         className="hidden"
-                        onChange={(e) => handleAddFiles(e.target.files)}
+                        onChange={(e) => {
+                          if (e.target.files?.length) {
+                            handleAddFiles(e.target.files);
+                            e.target.value = '';
+                          }
+                        }}
                       />
                     </label>
                   </div>
@@ -1066,6 +1208,7 @@ export default function PdfEditor() {
                   bleedMm={bleedMm}
                   showBleedOverlay={showBleedOverlay}
                   showSafeArea={showSafeArea}
+                  showRulers={showRulers}
                   safeInsetMm={safeInsetMm}
                   splitStickerPreview={mode === 'sticker' && splitStickerPreview}
                   autoCropInk={autoCropInk}
@@ -1097,9 +1240,9 @@ export default function PdfEditor() {
               )}
             </main>
 
-            {/* 2. MIDDLE-RIGHT: ACTIVE TOOL SETTINGS + JOB CHECKS + EXPORT (Hidden in 'viewer' mode until a tool is picked) */}
+            {/* 4A. ACTIVE TOOL SETTINGS DRAWER (330px flush white panel) */}
             {showSettingsPanel && activeStudio !== 'viewer' && (
-              <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3.5 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
+              <aside className="w-[330px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col gap-3 overflow-y-auto h-full shrink-0">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                   <div>
                     <div className="text-xs font-bold text-slate-800 uppercase">
@@ -2485,47 +2628,120 @@ export default function PdfEditor() {
           </>
         )}
 
-        {/* 3. FAR-RIGHT TOOLS DOCK (Acrobat / PrynX Pro Style) */}
-        <aside className="w-full lg:w-[225px] bg-white rounded-2xl border border-slate-200 p-3 flex flex-col gap-3 shrink-0 shadow-xs max-h-[calc(100vh-80px)] overflow-y-auto">
-          <input
-            type="text"
-            value={toolSearch}
-            onChange={(e) => setToolSearch(e.target.value)}
-            placeholder="🔍 Tìm công cụ..."
-            className="w-full bg-[#FAFBF9] border border-slate-200 focus:border-[#146C53] focus:outline-none rounded-xl px-3 py-1.5 text-xs text-slate-700"
-          />
+        {/* 4B. FAR-RIGHT MODULE TOOLS DOCK (242px flush white panel — PrintKit 2.0 Vector Icons) */}
+        <aside className="w-[242px] bg-white border-l border-[#E2E8F0] p-2.5 flex flex-col gap-3 shrink-0 h-full overflow-y-auto select-none">
+          <div className="relative">
+            <PkIcon name="search" className="w-3.5 h-3.5 text-[#94A3B8] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={toolSearch}
+              onChange={(e) => setToolSearch(e.target.value)}
+              placeholder="Tìm công cụ..."
+              className="w-full h-8 bg-[#F3F5F7] border border-[#E2E8F0] focus:bg-white focus:border-[#087F5B] focus:outline-none rounded-md pl-8 pr-2.5 text-xs text-[#17212F] placeholder:text-[#94A3B8]"
+            />
+          </div>
 
           {[
             {
               group: 'BÀN LÀM VIỆC',
-              items: [{ id: 'viewer', label: 'Xem trang PDF gốc', icon: '👁️', badge: 'Gốc' }],
+              items: [
+                {
+                  id: 'viewer',
+                  label: 'Xem trang PDF gốc',
+                  icon: 'eye',
+                  badge: 'Gốc',
+                  tip: 'Kiểm tra từng trang PDF gốc, kích thước và TrimBox',
+                },
+              ],
             },
             {
               group: 'BÌNH BÀI IN',
               items: [
-                { id: 'namecard', label: 'Bình Cắt Xén (Namecard)', icon: '🪪', badge: 'N-Up' },
-                { id: 'sticker', label: 'Bình Tem Bế (Decal)', icon: '🏷️', badge: 'Boong' },
-                { id: 'booklet', label: 'Bình Sách & Tạp chí', icon: '📖', badge: 'Booklet' },
+                {
+                  id: 'namecard',
+                  label: 'Bình Cắt Xén',
+                  icon: 'grid',
+                  badge: 'N-Up',
+                  tip: 'Xếp tối ưu Namecard, Tờ rơi, Voucher (Dutch Cut, 2 mặt)',
+                },
+                {
+                  id: 'sticker',
+                  label: 'Bình Tem Bế',
+                  icon: 'sticker',
+                  badge: 'Boong',
+                  tip: 'Lồng ghép 1:1 tem nhãn Decal + Boong định vị máy cắt',
+                },
+                {
+                  id: 'booklet',
+                  label: 'Bình Sách & Tạp chí',
+                  icon: 'book',
+                  badge: '3D',
+                  tip: 'Đảo trang đóng ghim, keo gáy, Wire-O, Zine + Xem 3D',
+                },
               ],
             },
             {
               group: 'CHUẨN HÓA & ĐƯỜNG CẮT',
-              items: [{ id: 'bleed', label: 'Bù xén - Tạo đường cắt', icon: '🔪', badge: 'Trace' }],
+              items: [
+                {
+                  id: 'bleed',
+                  label: 'Bù xén - Tạo đường cắt',
+                  icon: 'blade',
+                  badge: 'Trace',
+                  tip: 'Tách nhiều tem 300 DPI, tạo CutContour & Bleed Bézier',
+                },
+              ],
             },
             {
               group: 'XỬ LÝ FILE (FILE PREP)',
               items: [
-                { id: 'resize', label: 'Co giãn trang (Resize)', icon: '📏', badge: 'PRO' },
-                { id: 'organizer', label: 'Xáo trộn trang', icon: '🔀', badge: 'Pages' },
-                { id: 'crop', label: 'Cắt khổ trang (Crop)', icon: '✂️', badge: 'Crop' },
-                { id: 'trimShift', label: 'Trim & Shift (Dịch lề)', icon: '↘️', badge: 'PRO' },
+                {
+                  id: 'resize',
+                  label: 'Co giãn trang (Resize)',
+                  icon: 'resize',
+                  badge: 'PRO',
+                  tip: 'Đổi khổ trang PDF hàng loạt và tự động thêm Bleed',
+                },
+                {
+                  id: 'organizer',
+                  label: 'Xáo trộn trang',
+                  icon: 'shuffle',
+                  badge: 'Pages',
+                  tip: 'Kéo thả đổi vị trí, xoay, nhân bản và bù trang trắng',
+                },
+                {
+                  id: 'crop',
+                  label: 'Cắt khổ trang (Crop)',
+                  icon: 'crop',
+                  badge: 'Crop',
+                  tip: 'Cắt bỏ lề thừa, bon cũ theo 4 cạnh hoặc vùng mực',
+                },
+                {
+                  id: 'trimShift',
+                  label: 'Trim & Shift',
+                  icon: 'shift',
+                  badge: 'PRO',
+                  tip: 'Dịch chuyển nội dung trang Chẵn / Lẻ để chừa lề gáy',
+                },
               ],
             },
             {
               group: 'KHUÔN BẾ BAO BÌ',
               items: [
-                { id: 'dieline', label: 'Khuôn Bế 2D & 3D', icon: '📦', badge: '3D' },
-                { id: 'library', label: 'Thư viện mẫu ECMA', icon: '📚', badge: '5 mẫu' },
+                {
+                  id: 'dieline',
+                  label: 'Khuôn Bế 2D & 3D',
+                  icon: 'box',
+                  badge: '3D',
+                  tip: 'Thiết kế khuôn hộp giấy 2D và gập mô phỏng 3D',
+                },
+                {
+                  id: 'library',
+                  label: 'Thư viện mẫu ECMA',
+                  icon: 'layers',
+                  badge: '5 mẫu',
+                  tip: 'Chọn nhanh khuôn hộp chuẩn ngành bao bì ECMA',
+                },
               ],
             },
           ].map((grp) => {
@@ -2535,8 +2751,8 @@ export default function PdfEditor() {
             );
             if (visibleItems.length === 0) return null;
             return (
-              <div key={grp.group} className="flex flex-col gap-1">
-                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              <div key={grp.group} className="flex flex-col gap-0.5">
+                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
                   {grp.group}
                 </div>
                 {visibleItems.map((tool) => {
@@ -2544,24 +2760,32 @@ export default function PdfEditor() {
                   return (
                     <button
                       key={tool.id}
+                      title={tool.tip}
                       onClick={() => {
                         setActiveStudio(tool.id);
-                        setShowSettingsPanel(true);
+                        setShowSettingsPanel(tool.id !== 'viewer');
                         setCurrentSheetIndex(0);
                       }}
-                      className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border text-left transition-all cursor-pointer ${
+                      className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-md border text-left transition-colors cursor-pointer ${
                         active
-                          ? 'bg-[#E6F4EF] border-[#146C53]/50 text-[#146C53] shadow-2xs'
-                          : 'bg-white border-transparent hover:bg-slate-50 hover:border-slate-200 text-slate-700'
+                          ? 'bg-[#DDF5EC] border-[#087F5B]/35 text-[#064E3B]'
+                          : 'bg-transparent border-transparent hover:bg-[#F3F5F7] text-[#17212F]'
                       }`}
                     >
-                      <span className="flex items-center gap-2 min-w-0">
-                        <span className="text-sm shrink-0">{tool.icon}</span>
-                        <span className="text-xs font-semibold truncate">{tool.label}</span>
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <PkIcon
+                          name={tool.icon}
+                          className={`w-4 h-4 shrink-0 ${active ? 'text-[#087F5B]' : 'text-[#64748B]'}`}
+                        />
+                        <span className="text-[12.5px] font-medium truncate">{tool.label}</span>
                       </span>
                       <span
                         className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
-                          active ? 'bg-[#146C53] text-white' : 'bg-slate-100 text-slate-500'
+                          active
+                            ? 'bg-[#087F5B] text-white'
+                            : tool.badge === 'PRO'
+                            ? 'bg-amber-50 text-amber-700 border border-amber-200/80'
+                            : 'bg-[#F3F5F7] text-[#64748B]'
                         }`}
                       >
                         {tool.badge}

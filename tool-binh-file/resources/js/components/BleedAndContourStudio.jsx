@@ -545,60 +545,60 @@ export default function BleedAndContourStudio({
   };
 
   return (
-    <div className="flex flex-col lg:flex-row gap-3 flex-1 min-w-0">
-      {/* LEFT: CENTER CANVAS */}
-      <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 p-4 flex flex-col items-center justify-between shadow-xs gap-2.5">
-        <div className="w-full flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+    <div className="flex flex-1 min-w-0 h-full overflow-hidden">
+      {/* LEFT: CENTER DARK PASTEBOARD CANVAS */}
+      <main className="flex-1 min-w-0 bg-[#52565E] flex flex-col justify-between overflow-hidden">
+        <div className="w-full h-10 px-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 text-xs font-mono">
-            <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
+            <span className="px-2 py-0.5 rounded bg-[#DDF5EC] text-[#064E3B] font-bold">
               {subMode === 'contour' ? `${contoursMm.length} tem nhận diện` : `Bleed +${bleedAllMm}mm`}
             </span>
-            <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-semibold">
-              {sizeMm.w}×{sizeMm.h}mm
+            <span className="px-2 py-0.5 rounded bg-white border border-[#E2E8F0] text-[#17212F] font-semibold">
+              {sizeMm.w} × {sizeMm.h} mm
             </span>
             {sourceType === 'pdf' && totalPdfPages > 1 && (
-              <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-0.5">
+              <div className="flex items-center gap-1 bg-white border border-[#E2E8F0] rounded px-1.5 py-0.5">
                 <button
                   disabled={activePdfPage <= 1 || loading}
                   onClick={() => pdfBytesRef.current && renderPdfPageAt(pdfBytesRef.current, activePdfPage - 1)}
-                  className="px-1 hover:text-[#146C53] disabled:opacity-30 cursor-pointer font-bold"
+                  className="px-1 hover:text-[#087F5B] disabled:opacity-30 cursor-pointer font-bold"
                 >
-                  ◀
+                  ‹
                 </button>
-                <span className="text-[11px] font-bold text-slate-700">
+                <span className="text-[11px] font-bold text-[#17212F]">
                   Trang {activePdfPage}/{totalPdfPages}
                 </span>
                 <button
                   disabled={activePdfPage >= totalPdfPages || loading}
                   onClick={() => pdfBytesRef.current && renderPdfPageAt(pdfBytesRef.current, activePdfPage + 1)}
-                  className="px-1 hover:text-[#146C53] disabled:opacity-30 cursor-pointer font-bold"
+                  className="px-1 hover:text-[#087F5B] disabled:opacity-30 cursor-pointer font-bold"
                 >
-                  ▶
+                  ›
                 </button>
               </div>
             )}
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs font-mono text-slate-600">
-            <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
+          <div className="flex items-center gap-1 bg-white border border-[#E2E8F0] rounded-md px-1.5 py-0.5 text-xs font-mono text-[#64748B]">
+            <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#087F5B] font-sans font-semibold cursor-pointer">
               Fit
             </button>
-            <button onClick={() => setZoom(2.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
+            <button onClick={() => setZoom(2.0)} className="px-1.5 hover:text-[#087F5B] text-[11px] cursor-pointer">
               200%
             </button>
-            <button onClick={() => setZoom(4.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
+            <button onClick={() => setZoom(4.0)} className="px-1.5 hover:text-[#087F5B] text-[11px] cursor-pointer">
               400%
             </button>
             <button
               onClick={() => setZoom((z) => Math.max(0.35, Math.round((z - (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))}
-              className="px-1.5 hover:text-slate-900 cursor-pointer"
+              className="px-1.5 hover:text-[#17212F] cursor-pointer"
             >
               −
             </button>
-            <span className="min-w-[46px] text-center font-bold text-[#146C53]">{Math.round(zoom * 100)}%</span>
+            <span className="min-w-[44px] text-center font-bold text-[#087F5B]">{Math.round(zoom * 100)}%</span>
             <button
               onClick={() => setZoom((z) => Math.min(10.0, Math.round((z + (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))}
-              className="px-1.5 hover:text-slate-900 cursor-pointer"
+              className="px-1.5 hover:text-[#17212F] cursor-pointer"
             >
               +
             </button>
@@ -611,33 +611,27 @@ export default function BleedAndContourStudio({
           onMouseMove={handleMouseMove}
           onMouseUp={stopPanning}
           onMouseLeave={stopPanning}
-          title="Cuộn chuột để Phóng to / Thu nhỏ (tối đa 1000%) · Kéo chuột trái để di chuyển"
-          className={`relative w-full h-[calc(100vh-190px)] min-h-[600px] rounded-2xl border border-slate-200 flex overflow-auto p-3 select-none ${
+          title="Cuộn chuột để Zoom (tối đa 1000%) · Kéo chuột trái để di chuyển"
+          className={`relative flex-1 w-full flex overflow-auto p-6 select-none bg-[#52565E] ${
             isPanning ? 'cursor-grabbing' : 'cursor-grab'
           }`}
-          style={{
-            backgroundColor: '#fafbf9',
-            backgroundImage:
-              'linear-gradient(to right, #eef2f1 1px, transparent 1px), linear-gradient(to bottom, #eef2f1 1px, transparent 1px)',
-            backgroundSize: '24px 24px',
-          }}
         >
           {(loading || isTracing) && (
             <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-2xs flex items-center justify-center p-4 pointer-events-none">
-              <div className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-2xl p-5 flex flex-col items-center gap-3 text-center">
+              <div className="w-full max-w-sm bg-white rounded-xl border border-[#E2E8F0] shadow-2xl p-5 flex flex-col items-center gap-3 text-center">
                 <div className="relative w-12 h-12 flex items-center justify-center">
-                  <div className="absolute inset-0 rounded-full border-4 border-emerald-100" />
-                  <div className="absolute inset-0 rounded-full border-4 border-[#146C53] border-t-transparent animate-spin" />
-                  <span className="text-[11px] font-extrabold font-mono text-[#146C53]">
+                  <div className="absolute inset-0 rounded-full border-4 border-[#DDF5EC]" />
+                  <div className="absolute inset-0 rounded-full border-4 border-[#087F5B] border-t-transparent animate-spin" />
+                  <span className="text-[11px] font-extrabold font-mono text-[#087F5B]">
                     {loading ? `${Math.max(10, loadPct)}%` : '300'}
                   </span>
                 </div>
-                <div className="text-xs font-extrabold text-slate-800">
+                <div className="text-xs font-bold text-[#17212F]">
                   {loading ? loadStage || 'Đang tải & kết xuất file ở 300 DPI...' : 'Đang dò đường bế Bézier & bù xén...'}
                 </div>
-                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                <div className="w-full h-2 bg-[#F3F5F7] rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-gradient-to-r from-[#146C53] to-emerald-400 transition-all duration-150 rounded-full"
+                    className="h-full bg-[#087F5B] transition-all duration-150 rounded-full"
                     style={{ width: `${loading ? Math.max(12, loadPct) : 92}%` }}
                   />
                 </div>
@@ -645,38 +639,45 @@ export default function BleedAndContourStudio({
             </div>
           )}
           <div className="m-auto shrink-0">
-            <canvas ref={previewCanvasRef} className="bg-white shadow-md rounded border border-slate-200 block" />
+            <canvas
+              ref={previewCanvasRef}
+              className="bg-white block"
+              style={{ boxShadow: '0 14px 36px rgba(0,0,0,0.4)' }}
+            />
           </div>
         </div>
-        <div className="flex gap-4 mt-2.5 text-[11px] text-slate-500">
-          {subMode === 'contour' ? (
-            <>
-              <span className="flex items-center gap-1.5">
-                <span className="w-4 border-t-2 border-pink-600 inline-block" /> Đường cắt Bézier (CUT — Magenta)
-              </span>
-              {showBleedContour && bleedOffsetMm > 0 && (
+        <div className="h-8 px-3 bg-white border-t border-[#E2E8F0] flex items-center justify-between gap-4 text-[11px] text-[#64748B] shrink-0">
+          <div className="flex items-center gap-4">
+            {subMode === 'contour' ? (
+              <>
                 <span className="flex items-center gap-1.5">
-                  <span className="w-4 border-t-2 border-dashed border-sky-600 inline-block" /> Đường bù xén Bézier (BLEED — Cyan)
+                  <span className="w-3.5 border-t-2 border-pink-600 inline-block" /> CutContour (Magenta)
                 </span>
-              )}
-              <span className="text-slate-400">· Ảnh nguồn: {actualDpi} DPI</span>
-              {isTracing && <span className="text-violet-600 font-semibold animate-pulse">⏳ Đang dò lại đường bế...</span>}
-            </>
-          ) : (
-            <>
-              <span className="flex items-center gap-1.5">
-                <span className="w-4 border-t border-blue-700 inline-block" /> Thành phẩm (TrimBox)
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-4 border-t border-dashed border-red-500 inline-block" /> Vùng bù xén (BleedBox)
-              </span>
-            </>
-          )}
+                {showBleedContour && bleedOffsetMm > 0 && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3.5 border-t-2 border-dashed border-sky-600 inline-block" /> BleedContour (Cyan)
+                  </span>
+                )}
+                <span className="font-mono text-[#475569]">· {actualDpi} DPI</span>
+                {isTracing && <span className="text-[#087F5B] font-semibold animate-pulse">Đang dò lại...</span>}
+              </>
+            ) : (
+              <>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3.5 border-t border-blue-700 inline-block" /> TrimBox
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3.5 border-t border-dashed border-[#DC4545] inline-block" /> BleedBox
+                </span>
+              </>
+            )}
+          </div>
+          <span className="font-mono text-[#64748B]">Cuộn chuột: Zoom · Kéo chuột: Di chuyển</span>
         </div>
       </main>
 
-      {/* MIDDLE-RIGHT: SETTINGS & EXPORT PANEL (PrynX 2-Phase Wizard Layout) */}
-      <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-3 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
+      {/* MIDDLE-RIGHT: SETTINGS & EXPORT PANEL */}
+      <aside className="w-[330px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col justify-between gap-3 overflow-y-auto h-full shrink-0">
         <div className="flex flex-col gap-3">
           {/* Top Utility Header Bar: File Size MB Badge + Save / Undo / Close */}
           <div className="flex items-center justify-between border-b border-slate-100 pb-2">
