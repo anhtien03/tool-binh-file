@@ -627,8 +627,38 @@ export default function PdfEditor() {
 
         {/* Right Quick Actions */}
         <div className="flex items-center gap-2 shrink-0">
+          {sourceFiles.length > 0 ? (
+            <div className="flex items-center bg-white/10 rounded-lg border border-white/15 overflow-hidden">
+              <button
+                onClick={() => {
+                  setActiveStudio('viewer');
+                  setShowSettingsPanel(false);
+                  setInspectedPageIndex(0);
+                }}
+                title={`Bấm để hiển thị file: ${sourceFiles[0].file.name}`}
+                className="px-2.5 py-1 hover:bg-white/15 text-xs font-semibold text-emerald-100 cursor-pointer flex items-center gap-1.5 max-w-[230px]"
+              >
+                <span className="shrink-0">📄</span>
+                <span className="truncate">
+                  {sourceFiles[0].file.name}
+                  {sourceFiles.length > 1 ? ` (+${sourceFiles.length - 1})` : ''}
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  clearAllFiles();
+                  setInspectedPageIndex(null);
+                  setActiveStudio('viewer');
+                }}
+                title="Đóng file đang mở"
+                className="px-2 py-1 hover:bg-rose-500/80 text-emerald-200 hover:text-white text-xs font-bold cursor-pointer border-l border-white/10 transition-colors"
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
           <label className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-emerald-100 cursor-pointer flex items-center gap-1.5">
-            <span>📂 {sourceFiles[0]?.file?.name ? `File: ${sourceFiles[0].file.name.slice(0, 22)}` : 'Mở File PDF'}</span>
+            <span>{sourceFiles.length > 0 ? '📂 Đổi File' : '📂 Mở File PDF'}</span>
             <input
               type="file"
               accept=".pdf,application/pdf"
@@ -638,6 +668,7 @@ export default function PdfEditor() {
                 if (e.target.files?.length) {
                   setSourceFiles([]);
                   handleAddFiles(e.target.files);
+                  e.target.value = '';
                 }
               }}
             />

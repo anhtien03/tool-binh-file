@@ -60,9 +60,18 @@ export default function PdfCanvasPreview({
 
       const boxesMeta = [];
       try {
-        const pdfDoc = await PDFDocument.load(bytes);
+        const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
         pdfDoc.getPages().forEach((p) => {
-          const mb = p.getMediaBox();
+          const rawMb = p.getMediaBox();
+          let mb = rawMb;
+          try {
+            const cb = p.getCropBox();
+            if (cb && cb.width > 0 && cb.height > 0 && (cb.width < rawMb.width - 0.5 || cb.height < rawMb.height - 0.5)) {
+              mb = cb;
+            }
+          } catch {
+            // fallback to MediaBox
+          }
           let tb = mb;
           let hasExplicitTrimBox = false;
           try {
@@ -79,15 +88,44 @@ export default function PdfCanvasPreview({
           } catch {
             // ignore
           }
+          const pageRot = ((p.getRotation()?.angle || 0) % 360 + 360) % 360;
+          const swapWH = pageRot === 90 || pageRot === 270;
+          const mW = swapWH ? mb.height : mb.width;
+          const mH = swapWH ? mb.width : mb.height;
+          const tW = swapWH ? tb.height : tb.width;
+          const tH = swapWH ? tb.width : tb.height;
+          const offL = (tb.x - mb.x) / MM_TO_PT;
+          const offB = (tb.y - mb.y) / MM_TO_PT;
+          const offT = (mb.y + mb.height - (tb.y + tb.height)) / MM_TO_PT;
+          const offR = (mb.x + mb.width - (tb.x + tb.width)) / MM_TO_PT;
+
+          let rotOffL = offL;
+          let rotOffT = offT;
+          let rotOffB = offB;
+          if (pageRot === 90) {
+            rotOffL = offT;
+            rotOffT = offR;
+            rotOffB = offL;
+          } else if (pageRot === 180) {
+            rotOffL = offR;
+            rotOffT = offB;
+            rotOffB = offT;
+          } else if (pageRot === 270) {
+            rotOffL = offB;
+            rotOffT = offL;
+            rotOffB = offR;
+          }
+
           boxesMeta.push({
-            mediaWmm: mb.width / MM_TO_PT,
-            mediaHmm: mb.height / MM_TO_PT,
-            trimWmm: tb.width / MM_TO_PT,
-            trimHmm: tb.height / MM_TO_PT,
-            trimOffsetLeftMm: (tb.x - mb.x) / MM_TO_PT,
-            trimOffsetBottomMm: (tb.y - mb.y) / MM_TO_PT,
-            trimOffsetTopMm: (mb.y + mb.height - (tb.y + tb.height)) / MM_TO_PT,
+            mediaWmm: mW / MM_TO_PT,
+            mediaHmm: mH / MM_TO_PT,
+            trimWmm: tW / MM_TO_PT,
+            trimHmm: tH / MM_TO_PT,
+            trimOffsetLeftMm: Math.max(0, rotOffL),
+            trimOffsetBottomMm: Math.max(0, rotOffB),
+            trimOffsetTopMm: Math.max(0, rotOffT),
             hasExplicitTrimBox,
+            pageRotation: pageRot,
             extractedContours: extractCutContoursFromPdfPage(pdfDoc, p),
           });
         });
@@ -95,7 +133,12 @@ export default function PdfCanvasPreview({
         console.warn('Could not read PDF boxes via pdf-lib:', err);
       }
 
-      const loadingTask = pdfjsLib.getDocument({ data: bytes.slice() });
+      const loadingTask = pdfjsLib.getDocument({
+        data: bytes.slice(),
+        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/cmaps/',
+        cMapPacked: true,
+        standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/standard_fonts/',
+      });
       const pdf = await loadingTask.promise;
       const renderedPages = [];
 

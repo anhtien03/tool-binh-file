@@ -128,7 +128,12 @@ export default function FilePrepStudio({
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       setPdfBytes(bytes);
-      const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+      const pdf = await pdfjsLib.getDocument({
+        data: bytes.slice(),
+        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/cmaps/',
+        cMapPacked: true,
+        standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/standard_fonts/',
+      }).promise;
       const loaded = [];
       for (let p = 1; p <= pdf.numPages; p++) {
         setLoadPct(Math.round((p / pdf.numPages) * 100));
@@ -187,7 +192,7 @@ export default function FilePrepStudio({
   // Build output PDF according to activeTool ('organizer' | 'resize' | 'crop' | 'trimShift')
   const buildProcessedPdfBytes = async () => {
     if (!pdfBytes || rawPages.length === 0) return null;
-    const srcDoc = await PDFDocument.load(pdfBytes);
+    const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
     const outDoc = await PDFDocument.create();
 
     if (activeTool === 'organizer') {

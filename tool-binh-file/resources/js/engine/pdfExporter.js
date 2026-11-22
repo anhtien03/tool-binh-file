@@ -16,7 +16,16 @@ import { drawClosedBezierContourOnPdfPage } from './bleedContourEngine.js';
  * Inspect MediaBox and TrimBox of each source page WITHOUT destroying Bleed.
  */
 function extractSourceBoxes(srcPage, declaredBleedMm) {
-  const mediaBox = srcPage.getMediaBox();
+  const rawMedia = srcPage.getMediaBox();
+  let mediaBox = rawMedia;
+  try {
+    const cb = srcPage.getCropBox();
+    if (cb && cb.width > 0 && cb.height > 0 && (cb.width < rawMedia.width - 0.5 || cb.height < rawMedia.height - 0.5)) {
+      mediaBox = cb;
+    }
+  } catch {
+    // fallback to MediaBox
+  }
   let trimBox = mediaBox;
   let hasExplicitTrim = false;
 
@@ -32,7 +41,7 @@ function extractSourceBoxes(srcPage, declaredBleedMm) {
       hasExplicitTrim = true;
     }
   } catch {
-    // Fallback to MediaBox
+    // Fallback to MediaBox/CropBox
   }
 
   const bleedPt = Math.max(0, Number(declaredBleedMm) || 0) * MM_TO_PT;
@@ -45,9 +54,11 @@ function extractSourceBoxes(srcPage, declaredBleedMm) {
     };
   }
 
+  const pageRot = ((srcPage.getRotation()?.angle || 0) % 360 + 360) % 360;
   return {
     mediaBox,
     trimBox,
+    pageRot,
     // Offset of TrimBox bottom-left inside MediaBox (in pt)
     trimOffsetX: trimBox.x - mediaBox.x,
     trimOffsetY: trimBox.y - mediaBox.y,
@@ -145,7 +156,7 @@ export async function exportImposedPdf(sourceFilesInput, plan, config) {
 
   for (const file of fileList) {
     const pdfBytes = await file.arrayBuffer();
-    const srcDoc = await PDFDocument.load(pdfBytes);
+    const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
     const srcPages = srcDoc.getPages();
     srcPages.forEach((p) => srcBoxes.push(extractSourceBoxes(p, config.bleedMm)));
     const embedded = await destDoc.embedPages(srcPages);
@@ -286,7 +297,7 @@ export async function exportStickerPdf(sourceFilesInput, plan, config, exportRol
   if (exportRole === 'print') {
     for (const file of fileList) {
       const pdfBytes = await file.arrayBuffer();
-      const srcDoc = await PDFDocument.load(pdfBytes);
+      const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
       const srcPages = srcDoc.getPages();
       srcPages.forEach((p) => srcBoxes.push(extractSourceBoxes(p, config.bleedMm)));
       const embedded = await destDoc.embedPages(srcPages);

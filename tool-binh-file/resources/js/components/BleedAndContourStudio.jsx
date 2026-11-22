@@ -69,7 +69,12 @@ export default function BleedAndContourStudio({
     setLoadPct(18);
     setLoadStage('Đang giải mã cấu trúc trang PDF...');
     await new Promise((r) => setTimeout(r, 0));
-    const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    const pdf = await pdfjsLib.getDocument({
+      data: bytes.slice(),
+      cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/cmaps/',
+      cMapPacked: true,
+      standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/standard_fonts/',
+    }).promise;
     setTotalPdfPages(pdf.numPages);
     const safePage = Math.max(1, Math.min(pdf.numPages, pageNum));
     setActivePdfPage(safePage);
