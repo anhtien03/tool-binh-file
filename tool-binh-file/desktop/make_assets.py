@@ -7,11 +7,13 @@ PROJECT_ROOT = os.path.dirname(BASE_DIR)
 LOGO_PATH = os.path.join(BASE_DIR, "printkit_logo.png")
 
 
-def load_font(size, bold=False):
-    candidates = [
-        r"C:\Windows\Fonts\segoeuib.ttf" if bold else r"C:\Windows\Fonts\segoeui.ttf",
-        r"C:\Windows\Fonts\arialbd.ttf" if bold else r"C:\Windows\Fonts\arial.ttf",
-    ]
+def load_font(size, weight="regular"):
+    if weight == "bold":
+        candidates = [r"C:\Windows\Fonts\segoeuib.ttf", r"C:\Windows\Fonts\arialbd.ttf"]
+    elif weight == "light":
+        candidates = [r"C:\Windows\Fonts\segoeuil.ttf", r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\arial.ttf"]
+    else:
+        candidates = [r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\arial.ttf"]
     for path in candidates:
         if os.path.exists(path):
             try:
@@ -109,34 +111,27 @@ def build_splash(logo_trimmed: Image.Image):
         draw.line([(cx, cy), (cx + dx * 16, cy)], fill=navy, width=2)
         draw.line([(cx, cy), (cx, cy + dy * 16)], fill=navy, width=2)
 
-    # Place PrintKit full logo centered in the upper-middle area
+    # Place PrintKit full logo centered with balanced breathing room
     lw, lh = logo_trimmed.size
-    scale = min(290 / max(1, lw), 155 / max(1, lh))
+    scale = min(300 / max(1, lw), 160 / max(1, lh))
     nw, nh = max(1, int(lw * scale)), max(1, int(lh * scale))
     logo_resized = logo_trimmed.resize((nw, nh), Image.Resampling.LANCZOS)
-    img.alpha_composite(logo_resized, ((w - nw) // 2, 36))
+    logo_y = 48
+    img.alpha_composite(logo_resized, ((w - nw) // 2, logo_y))
 
-    # Feature pills row
-    f_badge = load_font(12, bold=True)
-    f_foot = load_font(13, bold=False)
-    pills = ["Bình Cắt Xén", "Bình Tem Bế", "Bình Sách 3D", "Bù Xén & Đường Cắt", "File Prep"]
-    pill_widths = []
-    for label in pills:
-        tb = draw.textbbox((0, 0), label, font=f_badge)
-        pill_widths.append((tb[2] - tb[0]) + 20)
-    total_pw = sum(pill_widths) + 8 * (len(pills) - 1)
-    px = (w - total_pw) // 2
-    py = 216
-    for label, pw in zip(pills, pill_widths):
-        draw.rounded_rectangle([px, py, px + pw, py + 26], radius=13, fill=(248, 250, 252, 255), outline=(203, 213, 225, 255), width=1)
-        draw.text((px + 10, py + 5), label, fill=navy, font=f_badge)
-        px += pw + 8
+    # Minimalist light-weight gray subtitle right below "PrintKit"
+    f_sub = load_font(16, weight="light")
+    f_foot = load_font(13, weight="regular")
+    subtitle = "Giải pháp xử lý File In ấn chuyên nghiệp"
+    sb = draw.textbbox((0, 0), subtitle, font=f_sub)
+    sw = sb[2] - sb[0]
+    draw.text(((w - sw) // 2 - sb[0], logo_y + nh + 18), subtitle, fill=(100, 116, 139, 255), font=f_sub)
 
     # Progress bar track (Navy + PrintKit Orange fill)
     draw.rounded_rectangle([48, 282, w - 48, 290], radius=4, fill=(226, 232, 240, 255))
     draw.rounded_rectangle([48, 282, 280, 290], radius=4, fill=orange)
 
-    draw.text((48, 304), "Đang khởi tạo lõi xử lý PDF & giao diện PrintKit Offline...", fill=(71, 85, 105, 255), font=f_foot)
+    draw.text((48, 304), "Đang khởi tạo hệ thống xử lý PDF...", fill=(71, 85, 105, 255), font=f_foot)
     draw.text((w - 148, 304), "Desktop Edition", fill=navy, font=f_foot)
 
     splash_path = os.path.join(BASE_DIR, "splash.png")
