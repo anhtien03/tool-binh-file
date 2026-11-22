@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import PdfCanvasPreview from './PdfCanvasPreview';
 import DielineStudio from './DielineStudio';
 import Book3DViewer from './Book3DViewer';
+import FilePrepStudio from './FilePrepStudio';
 import TemplateLibrary from './TemplateLibrary';
 import BleedAndContourStudio from './BleedAndContourStudio';
 import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
@@ -700,6 +701,21 @@ export default function PdfEditor() {
               setStickerLayout(preferredLayout);
               setCollation('sequential');
               setActiveStudio('sticker');
+              setInspectedPageIndex(null);
+              setCurrentSheetIndex(0);
+            }}
+          />
+        )}
+
+        {(activeStudio === 'organizer' ||
+          activeStudio === 'resize' ||
+          activeStudio === 'crop' ||
+          activeStudio === 'trimShift') && (
+          <FilePrepStudio
+            activeTool={activeStudio}
+            onSendToImpose={(processedFile) => {
+              setSourceFiles([{ id: `prep-${Date.now()}`, file: processedFile }]);
+              setActiveStudio('namecard');
               setInspectedPageIndex(null);
               setCurrentSheetIndex(0);
             }}
@@ -2368,6 +2384,15 @@ export default function PdfEditor() {
             {
               group: 'CHUẨN HÓA & ĐƯỜNG CẮT',
               items: [{ id: 'bleed', label: 'Bù xén - Tạo đường cắt', icon: '🔪', badge: 'Trace' }],
+            },
+            {
+              group: 'XỬ LÝ FILE (FILE PREP)',
+              items: [
+                { id: 'resize', label: 'Co giãn trang (Resize)', icon: '📏', badge: 'PRO' },
+                { id: 'organizer', label: 'Xáo trộn trang', icon: '🔀', badge: 'Pages' },
+                { id: 'crop', label: 'Cắt khổ trang (Crop)', icon: '✂️', badge: 'Crop' },
+                { id: 'trimShift', label: 'Trim & Shift (Dịch lề)', icon: '↘️', badge: 'PRO' },
+              ],
             },
             {
               group: 'KHUÔN BẾ BAO BÌ',
