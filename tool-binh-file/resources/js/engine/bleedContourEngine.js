@@ -233,56 +233,99 @@ function computeVertexAngleDeg(prev, curr, next) {
 }
 
 /**
- * STEP 2: Corner-Preserving Vector Cleaning & Cubic Bézier Fitting
- * - Simplifies micro-staircases (~0.45px)
- * - Detects and pins sharp corners (angle <= cornerAngleDeg, default 130°)
- * - Does NOT apply catmull-rom across corners
- * - Fits smooth C1 Cubic Bézier curves along smooth spans while keeping sharp corners crisp
+ * Dense 1px closed-loop Gaussian pre-fairing to convert integer pixel staircases
+ * into sub-pixel smooth curves BEFORE RDP anchor selection.
+ */
+function smoothDenseLoopSubpixel(pts, passes = 3) {
+  if (!pts || pts.length < 6) return pts || [];
+  let cur = pts.map(([x, y]) => [x, y]);
+  const n = cur.length;
+  for (let p = 0; p < passes; p++) {
+    const next = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const p2 = cur[(i - 2 + n) % n];
+      const p1 = cur[(i - 1 + n) % n];
+      const p0 = cur[i];
+      const n1 = cur[(i + 1) % n];
+      const n2 = cur[(i + 2) % n];
+      next[i] = [
+        p2[0] * 0.1 + p1[0] * 0.225 + p0[0] * 0.35 + n1[0] * 0.225 + n2[0] * 0.1,
+        p2[1] * 0.1 + p1[1] * 0.225 + p0[1] * 0.35 + n1[1] * 0.225 + n2[1] * 0.1,
+      ];
+    }
+    cur = next;
+  }
+  return cur;
+}
+
+/**
+ * STEP 2: Corner-Preserving Vector Cleaning & Monotone C1 Cubic Bézier Fitting
+ * - Pre-fairs integer pixel staircase into sub-pixel smooth curve
+ * - Removes short micro-segments (< 0.45mm) so short-long chord transitions never kink or hook
+ * - Only pins TRUE sharp tips (angle <= effectiveCornerDeg with long arms), keeping concave transitions 100% C1 smooth
+ * - Clamps Bézier control handles monotonically along each chord so spikes/hooks can never occur
  */
 export function fitCornerPreservingBezier(rawPtsMm, options = {}) {
   const {
-    simplifyTolMm = 0.16, // ~0.45px at tracing resolution
+    simplifyTolMm = 0.22,
     cornerAngleDeg = 130,
-    smoothPasses = 1,
-    tension = 0.32,
+    smoothPasses = 2,
+    tension = 0.3,
   } = options;
 
-  let pts = rdpSimplifyClosed(rawPtsMm, Math.max(0.04, simplifyTolMm));
-  if (pts.length < 3) return { ptsMm: rawPtsMm, beziersMm: [], svgPathMm: '', cornerCount: 0 };
+  if (!rawPtsMm || rawPtsMm.length < 3) {
+    return { ptsMm: rawPtsMm || [], beziersMm: [], svgPathMm: '', cornerCount: 0 };
+  }
 
-  // Remove duplicate or near-zero-length edges (< 0.05 mm)
+  // 1. Sub-pixel Gaussian fairing on the dense 1px boundary loop to erase pixel staircase teeth
+  const preFaired = smoothDenseLoopSubpixel(rawPtsMm, Math.max(2, smoothPasses + 2));
+
+  // 2. Closed-loop RDP simplification
+  let pts = rdpSimplifyClosed(preFaired, Math.max(0.12, simplifyTolMm));
+  if (pts.length < 3) pts = preFaired;
+
+  // 3. Merge/filter vertices that are too close (< 0.45 mm) so short-long segment transitions never create hooks
+  const minEdgeMm = 0.45;
   const cleaned = [];
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
     const prev = cleaned[cleaned.length - 1];
-    if (!prev || Math.hypot(p[0] - prev[0], p[1] - prev[1]) >= 0.05) {
-      cleaned.push(p);
+    if (!prev || Math.hypot(p[0] - prev[0], p[1] - prev[1]) >= minEdgeMm) {
+      cleaned.push([p[0], p[1]]);
     }
   }
-  if (cleaned.length > 2 && Math.hypot(cleaned[0][0] - cleaned[cleaned.length - 1][0], cleaned[0][1] - cleaned[cleaned.length - 1][1]) < 0.05) {
+  while (
+    cleaned.length > 3 &&
+    Math.hypot(cleaned[0][0] - cleaned[cleaned.length - 1][0], cleaned[0][1] - cleaned[cleaned.length - 1][1]) < minEdgeMm
+  ) {
     cleaned.pop();
   }
-  pts = cleaned;
+  pts = cleaned.length >= 3 ? cleaned : pts;
   const n = pts.length;
   if (n < 3) return { ptsMm: pts, beziersMm: [], svgPathMm: '', cornerCount: 0 };
 
-  // 1. Identify sharp corners (angle <= cornerAngleDeg)
+  // 4. Identify TRUE sharp corners (only genuinely sharp tips, e.g. <= 85°..100°, with both arms >= 1.2mm)
+  // Shallow concave bends (105°..175°) are ALWAYS kept C1 smooth so neither Magenta nor Cyan ever kinks!
+  const strictCornerLimit = Math.min(95, Math.max(60, cornerAngleDeg - 35));
   const isCorner = new Uint8Array(n);
   let cornerCount = 0;
   for (let i = 0; i < n; i++) {
     const prev = pts[(i - 1 + n) % n];
     const curr = pts[i];
     const next = pts[(i + 1) % n];
+    const arm1 = Math.hypot(curr[0] - prev[0], curr[1] - prev[1]);
+    const arm2 = Math.hypot(next[0] - curr[0], next[1] - curr[1]);
     const deg = computeVertexAngleDeg(prev, curr, next);
-    if (deg <= cornerAngleDeg) {
+    if (deg <= strictCornerLimit && arm1 >= 1.1 && arm2 >= 1.1) {
       isCorner[i] = 1;
       cornerCount++;
     }
   }
 
-  // 2. Corner-locked light fairing ONLY on non-corner vertices to remove pixel staircase without rounding corners
+  // 5. Corner-locked Laplacian fairing on anchor vertices for silky-smooth curvature
   let faired = pts.map(([x, y]) => [x, y]);
-  for (let pass = 0; pass < smoothPasses; pass++) {
+  const anchorPasses = Math.max(1, smoothPasses);
+  for (let pass = 0; pass < anchorPasses; pass++) {
     const nextPts = new Array(n);
     for (let i = 0; i < n; i++) {
       if (isCorner[i]) {
@@ -292,43 +335,43 @@ export function fitCornerPreservingBezier(rawPtsMm, options = {}) {
         const curr = faired[i];
         const next = faired[(i + 1) % n];
         nextPts[i] = [
-          prev[0] * 0.2 + curr[0] * 0.6 + next[0] * 0.2,
-          prev[1] * 0.2 + curr[1] * 0.6 + next[1] * 0.2,
+          prev[0] * 0.22 + curr[0] * 0.56 + next[0] * 0.22,
+          prev[1] * 0.22 + curr[1] * 0.56 + next[1] * 0.22,
         ];
       }
     }
     faired = nextPts;
   }
 
-  // 3. Compute incoming & outgoing unit tangents at each vertex
-  // At non-corner vertices: C1 smooth bisector tangent
-  // At corner vertices: sharp cusp (incoming tangent = incoming chord, outgoing tangent = outgoing chord)
+  // 6. Compute chord-length weighted Bessel C1 tangents (hugs shorter segments to prevent any hook/overshoot)
   const outTangents = new Array(n);
   const inTangents = new Array(n);
+  const chordLengths = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const curr = faired[i];
+    const next = faired[(i + 1) % n];
+    chordLengths[i] = Math.hypot(next[0] - curr[0], next[1] - curr[1]) || 1e-3;
+  }
 
   for (let i = 0; i < n; i++) {
     const prev = faired[(i - 1 + n) % n];
     const curr = faired[i];
     const next = faired[(i + 1) % n];
 
-    let dxIn = curr[0] - prev[0];
-    let dyIn = curr[1] - prev[1];
-    const lenIn = Math.hypot(dxIn, dyIn) || 1;
-    dxIn /= lenIn;
-    dyIn /= lenIn;
-
-    let dxOut = next[0] - curr[0];
-    let dyOut = next[1] - curr[1];
-    const lenOut = Math.hypot(dxOut, dyOut) || 1;
-    dxOut /= lenOut;
-    dyOut /= lenOut;
+    const lenIn = chordLengths[(i - 1 + n) % n];
+    const lenOut = chordLengths[i];
+    const dxIn = (curr[0] - prev[0]) / lenIn;
+    const dyIn = (curr[1] - prev[1]) / lenIn;
+    const dxOut = (next[0] - curr[0]) / lenOut;
+    const dyOut = (next[1] - curr[1]) / lenOut;
 
     if (isCorner[i]) {
       inTangents[i] = [dxIn, dyIn];
       outTangents[i] = [dxOut, dyOut];
     } else {
-      let tx = dxIn + dxOut;
-      let ty = dyIn + dyOut;
+      // Bessel chord-weighted tangent: weight incoming unit vector by lenOut, outgoing by lenIn
+      let tx = dxIn * lenOut + dxOut * lenIn;
+      let ty = dyIn * lenOut + dyOut * lenIn;
       const tLen = Math.hypot(tx, ty);
       if (tLen < 1e-5) {
         inTangents[i] = [dxIn, dyIn];
@@ -342,7 +385,7 @@ export function fitCornerPreservingBezier(rawPtsMm, options = {}) {
     }
   }
 
-  // 4. Build closed Cubic Bézier path commands & dense preview polyline
+  // 7. Build closed Cubic Bézier path commands with monotone chord projection & clamped handles (zero hooks!)
   const round3 = (v) => Math.round(v * 1000) / 1000;
   const beziersMm = [{ type: 'M', to: [round3(faired[0][0]), round3(faired[0][1])] }];
   const sampledPts = [];
@@ -351,20 +394,43 @@ export function fitCornerPreservingBezier(rawPtsMm, options = {}) {
     const j = (i + 1) % n;
     const p0 = faired[i];
     const p3 = faired[j];
-    const chord = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]);
-    const handleLen = chord * tension;
+    const chord = chordLengths[i];
+    const prevChord = chordLengths[(i - 1 + n) % n];
+    const nextChord = chordLengths[j];
 
-    const tOut = outTangents[i];
-    const tIn = inTangents[j];
+    const cx = (p3[0] - p0[0]) / chord;
+    const cy = (p3[1] - p0[1]) / chord;
 
-    const c1 = [round3(p0[0] + tOut[0] * handleLen), round3(p0[1] + tOut[1] * handleLen)];
-    const c2 = [round3(p3[0] - tIn[0] * handleLen), round3(p3[1] - tIn[1] * handleLen)];
+    let [tOutX, tOutY] = outTangents[i];
+    let [tInX, tInY] = inTangents[j];
+
+    // Ensure outgoing & incoming tangents project positively onto the chord (monotone guard against hooks)
+    if (tOutX * cx + tOutY * cy < 0.35) {
+      tOutX = tOutX * 0.4 + cx * 0.6;
+      tOutY = tOutY * 0.4 + cy * 0.6;
+      const l = Math.hypot(tOutX, tOutY) || 1;
+      tOutX /= l;
+      tOutY /= l;
+    }
+    if (tInX * cx + tInY * cy < 0.35) {
+      tInX = tInX * 0.4 + cx * 0.6;
+      tInY = tInY * 0.4 + cy * 0.6;
+      const l = Math.hypot(tInX, tInY) || 1;
+      tInX /= l;
+      tInY /= l;
+    }
+
+    // Clamp handle lengths by adjacent chords so short-long transitions never overshoot
+    const hOut = Math.min(chord * tension, prevChord * 0.42);
+    const hIn = Math.min(chord * tension, nextChord * 0.42);
+
+    const c1 = [round3(p0[0] + tOutX * hOut), round3(p0[1] + tOutY * hOut)];
+    const c2 = [round3(p3[0] - tInX * hIn), round3(p3[1] - tInY * hIn)];
     const to = [round3(p3[0]), round3(p3[1])];
 
     beziersMm.push({ type: 'C', c1, c2, to });
 
-    // Sample 4 sub-steps for canvas preview & geometric collision check
-    const steps = Math.max(2, Math.min(6, Math.ceil(chord / 1.8)));
+    const steps = Math.max(3, Math.min(8, Math.ceil(chord / 1.4)));
     for (let s = 0; s < steps; s++) {
       const t = s / steps;
       const u = 1 - t;
@@ -818,18 +884,41 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
   // Fill internal holes inside each sticker (1 sticker = 1 solid outer contour without MORPH_CLOSE bridging fins)
   fgMask = fillInteriorHoles(fgMask, cw, ch);
 
-  // Apply exact Euclidean distance offset for CUT line (and fill any enclosed interior pockets)
+  // Apply Euclidean Rolling-Ball Offset for CUT line:
+  // If offsetMm is small (< 1.25mm), roll a smooth 1.25mm ball over halftone pixel teeth first, then step back to exact offsetMm!
   let cutMask = fgMask;
   const offsetPx = offsetMm * pxPerMm;
+  const minSmoothBallPx = Math.max(2.2, 1.25 * pxPerMm);
 
-  if (offsetPx > 0.2) {
+  if (offsetPx >= minSmoothBallPx) {
     const dist = computeDistanceField(fgMask, cw, ch);
     cutMask = new Uint8Array(cw * ch);
     for (let i = 0; i < cw * ch; i++) {
       if (dist[i] <= offsetPx) cutMask[i] = 1;
     }
     cutMask = fillInteriorHoles(cutMask, cw, ch);
-  } else if (offsetPx < -0.2) {
+  } else if (offsetPx >= -0.2) {
+    // Rolling-ball smoothing: dilate by minSmoothBallPx, fill holes, then erode back by (minSmoothBallPx - max(0, offsetPx))
+    const distOut = computeDistanceField(fgMask, cw, ch);
+    let dilated = new Uint8Array(cw * ch);
+    for (let i = 0; i < cw * ch; i++) {
+      if (distOut[i] <= minSmoothBallPx) dilated[i] = 1;
+    }
+    dilated = fillInteriorHoles(dilated, cw, ch);
+
+    const erodePx = minSmoothBallPx - Math.max(0, offsetPx);
+    if (erodePx > 0.25) {
+      const bgMask = new Uint8Array(cw * ch);
+      for (let i = 0; i < cw * ch; i++) bgMask[i] = dilated[i] ? 0 : 1;
+      const distBg = computeDistanceField(bgMask, cw, ch);
+      cutMask = new Uint8Array(cw * ch);
+      for (let i = 0; i < cw * ch; i++) {
+        if (distBg[i] > erodePx) cutMask[i] = 1;
+      }
+    } else {
+      cutMask = dilated;
+    }
+  } else {
     const bgMask = new Uint8Array(cw * ch);
     for (let i = 0; i < cw * ch; i++) bgMask[i] = fgMask[i] ? 0 : 1;
     const distBg = computeDistanceField(bgMask, cw, ch);
@@ -907,60 +996,79 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     });
   }
 
-  // STEP 3: Create outward BLEED Cubic Bézier contours using exact Euclidean Distance Field (zero concave swallowtail loops!)
+  // STEP 3: Create outward BLEED Cubic Bézier contours using per-sticker ISOLATED Euclidean Distance Field
+  // (Because each sticker is dilated in its own isolated local bounding box, adjacent stickers on the sheet NEVER merge
+  // and concave corners NEVER produce miter spikes/hooks!)
   let bleedContoursMm = [];
   if (bleedOffsetMm > 0.05 && contoursMm.length > 0) {
-    const totalBleedPx = Math.max(0.25, (offsetMm + bleedOffsetMm) * pxPerMm);
-    const distForBleed = computeDistanceField(fgMask, cw, ch);
-    let bleedMask = new Uint8Array(cw * ch);
-    for (let i = 0; i < cw * ch; i++) {
-      if (distForBleed[i] <= totalBleedPx) bleedMask[i] = 1;
-    }
-    bleedMask = fillInteriorHoles(bleedMask, cw, ch);
-    const rawBleedLoops = traceConnectedContoursChainNone(bleedMask, cw, ch, minAreaPx);
+    const bleedPx = Math.max(0.5, bleedOffsetMm * pxPerMm);
+    const localPadPx = Math.ceil(bleedPx + 8);
 
-    const candidateBleeds = rawBleedLoops.map((loop) => {
-      const rawPtsMm = loop.map(([px, py]) => [(px - padPx) / pxPerMm, (py - padPx) / pxPerMm]);
-      if (shapeMode !== 'auto') {
-        return buildGeometricContourObj(rawPtsMm, shapeMode);
-      }
-      const fitted = fitCornerPreservingBezier(rawPtsMm, fitOpts);
-      const arr = [...fitted.ptsMm];
-      Object.assign(arr, fitted);
-      return arr;
-    });
-
-    // Match each CUT contour to its enclosing/nearest BLEED contour (1:1 correspondence, fallback to clean offset if needed)
     bleedContoursMm = contoursMm.map((cutPoly) => {
-      let cMinX = Infinity, cMinY = Infinity, cMaxX = -Infinity, cMaxY = -Infinity;
-      for (const [x, y] of cutPoly) {
-        if (x < cMinX) cMinX = x;
-        if (y < cMinY) cMinY = y;
-        if (x > cMaxX) cMaxX = x;
-        if (y > cMaxY) cMaxY = y;
+      if (shapeMode !== 'auto') {
+        return buildGeometricContourObj(
+          cutPoly.map(([x, y]) => [x, y]),
+          shapeMode
+        );
       }
-      const ccx = (cMinX + cMaxX) / 2;
-      const ccy = (cMinY + cMaxY) / 2;
 
-      let bestBleed = null;
-      let bestDist = Infinity;
-      for (const bPoly of candidateBleeds) {
-        let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
-        for (const [x, y] of bPoly) {
-          if (x < bMinX) bMinX = x;
-          if (y < bMinY) bMinY = y;
-          if (x > bMaxX) bMaxX = x;
-          if (y > bMaxY) bMaxY = y;
-        }
-        const bcx = (bMinX + bMaxX) / 2;
-        const bcy = (bMinY + bMaxY) / 2;
-        const d = Math.hypot(bcx - ccx, bcy - ccy);
-        if (d < bestDist && d < Math.max(cMaxX - cMinX, cMaxY - cMinY) * 0.45) {
-          bestDist = d;
-          bestBleed = bPoly;
-        }
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const [x, y] of cutPoly) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
       }
-      return bestBleed || offsetPolygonAndFitBezierMm(cutPoly, bleedOffsetMm, fitOpts);
+
+      const polyPxW = Math.max(8, Math.ceil((maxX - minX) * pxPerMm));
+      const polyPxH = Math.max(8, Math.ceil((maxY - minY) * pxPerMm));
+      const lw = polyPxW + localPadPx * 2;
+      const lh = polyPxH + localPadPx * 2;
+
+      // Rasterize this single closed cutPoly onto an isolated local canvas
+      const locCanvas = document.createElement('canvas');
+      locCanvas.width = lw;
+      locCanvas.height = lh;
+      const lctx = locCanvas.getContext('2d');
+      lctx.fillStyle = '#ffffff';
+      lctx.beginPath();
+      cutPoly.forEach(([x, y], idx) => {
+        const px = (x - minX) * pxPerMm + localPadPx;
+        const py = (y - minY) * pxPerMm + localPadPx;
+        if (idx === 0) lctx.moveTo(px, py);
+        else lctx.lineTo(px, py);
+      });
+      lctx.closePath();
+      lctx.fill();
+
+      const lData = lctx.getImageData(0, 0, lw, lh).data;
+      const locMask = new Uint8Array(lw * lh);
+      for (let i = 0; i < lw * lh; i++) {
+        if (lData[i * 4 + 3] > 128) locMask[i] = 1;
+      }
+
+      const distBleed = computeDistanceField(locMask, lw, lh);
+      let dilatedMask = new Uint8Array(lw * lh);
+      for (let i = 0; i < lw * lh; i++) {
+        if (distBleed[i] <= bleedPx) dilatedMask[i] = 1;
+      }
+      dilatedMask = fillInteriorHoles(dilatedMask, lw, lh);
+
+      const loops = traceConnectedContoursChainNone(dilatedMask, lw, lh, 12);
+      if (loops.length > 0) {
+        // Pick largest loop
+        loops.sort((a, b) => b.length - a.length);
+        const rawPtsMm = loops[0].map(([px, py]) => [
+          minX + (px - localPadPx) / pxPerMm,
+          minY + (py - localPadPx) / pxPerMm,
+        ]);
+        const fitted = fitCornerPreservingBezier(rawPtsMm, fitOpts);
+        const arr = [...fitted.ptsMm];
+        Object.assign(arr, fitted);
+        return arr;
+      }
+
+      return offsetPolygonAndFitBezierMm(cutPoly, bleedOffsetMm, fitOpts);
     });
   }
 
