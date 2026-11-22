@@ -1,5 +1,10 @@
 import {
   PDFDocument,
+  PDFName,
+  PDFDict,
+  PDFArray,
+  PDFRef,
+  decodePDFRawStream,
   cmyk,
   pushGraphicsState,
   popGraphicsState,
@@ -19,6 +24,92 @@ import { MM_TO_PT } from './impositionEngine.js';
 
 export const TARGET_PRINT_DPI = 300;
 export const PX_PER_MM_300DPI = TARGET_PRINT_DPI / 25.4; // ~11.8110236 px/mm
+
+/**
+ * Inspect a PDF page's content stream & XObject dictionary to extract exact mm bounding boxes
+ * and SMask flags of all embedded /Image XObjects (e.g. /Im0 .. /Im16).
+ */
+export async function extractPdfImagePlacementsMm(pdfBytes, pageNum = 1) {
+  try {
+    const doc = await PDFDocument.load(pdfBytes);
+    const pages = doc.getPages();
+    const pg = pages[Math.max(0, Math.min(pages.length - 1, (pageNum || 1) - 1))];
+    if (!pg) return [];
+
+    const { height } = pg.getSize();
+    const PT_TO_MM = 25.4 / 72;
+    const res = pg.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
+    const xo = res && res.lookupMaybe(PDFName.of('XObject'), PDFDict);
+    if (!xo) return [];
+
+    const contents = pg.node.get(PDFName.of('Contents'));
+    if (!contents) return [];
+    const resolved = contents instanceof PDFRef ? doc.context.lookup(contents) : contents;
+    let rawBytes = new Uint8Array(0);
+    if (resolved instanceof PDFArray) {
+      const chunks = [];
+      let total = 0;
+      for (let i = 0; i < resolved.size(); i++) {
+        const s = doc.context.lookup(resolved.get(i));
+        const b = decodePDFRawStream(s).decode();
+        chunks.push(b);
+        total += b.length + 1;
+      }
+      rawBytes = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) {
+        rawBytes.set(c, off);
+        off += c.length;
+        rawBytes[off++] = 32;
+      }
+    } else if (resolved) {
+      rawBytes = decodePDFRawStream(resolved).decode();
+    }
+
+    const str = new TextDecoder('latin1').decode(rawBytes);
+    const re = /([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+cm\s*\/(Im\d+)\s+Do/g;
+    const placements = [];
+    let m;
+    while ((m = re.exec(str)) !== null) {
+      const [, a, b, c, d, e, f, name] = m;
+      const [A, B, C, D, E, F] = [a, b, c, d, e, f].map(Number);
+      const ref = xo.get(PDFName.of(name));
+      const obj = ref ? doc.context.lookup(ref) : null;
+      const hasSMask = Boolean(obj && obj.dict && obj.dict.lookup(PDFName.of('SMask')));
+
+      const cornersMm = [
+        [0, 0],
+        [1, 0],
+        [1, 1],
+        [0, 1],
+      ].map(([u, v]) => [(A * u + C * v + E) * PT_TO_MM, (height - (B * u + D * v + F)) * PT_TO_MM]);
+
+      const xs = cornersMm.map((p) => p[0]);
+      const ys = cornersMm.map((p) => p[1]);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      const isAxisAligned = Math.abs(B) < 0.5 && Math.abs(C) < 0.5;
+
+      placements.push({
+        name,
+        hasSMask,
+        isAxisAligned,
+        minX,
+        maxX,
+        minY,
+        maxY,
+        w: maxX - minX,
+        h: maxY - minY,
+        cornersMm,
+      });
+    }
+    return placements;
+  } catch {
+    return [];
+  }
+}
 
 /**
  * 2-Pass Squared Euclidean Distance Transform (Meijster / Felzenszwalb-Huttenlocher 1D->2D)
@@ -823,9 +914,10 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     cornerIgnoreMm = 14,
     alphaThreshold = 28,
     bgTolerance = 26,
+    imagePlacementsMm = [],
   } = options;
 
-  // High-resolution tracing grid (up to 1400px so 1px ~ 0.25mm on 330x390mm sheet, fast & crisp)
+  // High-resolution tracing grid (up to 1280px so 1px ~ 0.25mm on 330x390mm sheet, fast & crisp)
   const maxDim = 1280;
   const aspect = imgElement.width / Math.max(1, imgElement.height);
   const workW = aspect >= 1 ? maxDim : Math.max(96, Math.round(maxDim * aspect));
@@ -864,8 +956,6 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
 
   let fgMask = new Uint8Array(cw * ch);
 
-  // Build foreground mask WITHOUT blind corner-pixel blanking (so large stickers near sheet corners never get their corner chopped off;
-  // actual small corner registration marks are filtered out as whole connected components in the post-filter step below).
   for (let y = padPx; y < padPx + workH; y++) {
     for (let x = padPx; x < padPx + workW; x++) {
       const i4 = (y * cw + x) * 4;
@@ -883,59 +973,207 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     }
   }
 
-  // Fill internal holes inside each sticker (1 sticker = 1 solid outer contour without MORPH_CLOSE bridging fins)
-  fgMask = fillInteriorHoles(fgMask, cw, ch);
+  // STEP 1A: PDF XObject-Aware Refinement (handles full rectangular photos with white floor highlights like /Im3,
+  // dirty off-white JPEG boxes like /Im11-/Im12, and multi-word text banners like /Im0)
+  if (Array.isArray(imagePlacementsMm) && imagePlacementsMm.length > 0) {
+    for (const im of imagePlacementsMm) {
+      if (im.hasSMask) continue;
+      const x1 = Math.max(padPx, Math.round(padPx + im.minX * pxPerMm));
+      const x2 = Math.min(padPx + workW - 1, Math.round(padPx + im.maxX * pxPerMm));
+      const y1 = Math.max(padPx, Math.round(padPx + im.minY * pxPerMm));
+      const y2 = Math.min(padPx + workH - 1, Math.round(padPx + im.maxY * pxPerMm));
+      if (x2 - x1 < 6 || y2 - y1 < 6) continue;
 
-  // Apply Euclidean Rolling-Ball Offset for CUT line:
-  // If offsetMm is small (< 1.25mm), roll a smooth 1.25mm ball over halftone pixel teeth first, then step back to exact offsetMm!
-  let cutMask = fgMask;
-  const offsetPx = offsetMm * pxPerMm;
-  const minSmoothBallPx = Math.max(2.2, 1.25 * pxPerMm);
-
-  if (offsetPx >= minSmoothBallPx) {
-    const dist = computeDistanceField(fgMask, cw, ch);
-    cutMask = new Uint8Array(cw * ch);
-    for (let i = 0; i < cw * ch; i++) {
-      if (dist[i] <= offsetPx) cutMask[i] = 1;
-    }
-    cutMask = fillInteriorHoles(cutMask, cw, ch);
-  } else if (offsetPx >= -0.2) {
-    // Rolling-ball smoothing: dilate by minSmoothBallPx, fill holes, then erode back by (minSmoothBallPx - max(0, offsetPx))
-    const distOut = computeDistanceField(fgMask, cw, ch);
-    let dilated = new Uint8Array(cw * ch);
-    for (let i = 0; i < cw * ch; i++) {
-      if (distOut[i] <= minSmoothBallPx) dilated[i] = 1;
-    }
-    dilated = fillInteriorHoles(dilated, cw, ch);
-
-    const erodePx = minSmoothBallPx - Math.max(0, offsetPx);
-    if (erodePx > 0.25) {
-      const bgMask = new Uint8Array(cw * ch);
-      for (let i = 0; i < cw * ch; i++) bgMask[i] = dilated[i] ? 0 : 1;
-      const distBg = computeDistanceField(bgMask, cw, ch);
-      cutMask = new Uint8Array(cw * ch);
-      for (let i = 0; i < cw * ch; i++) {
-        if (distBg[i] > erodePx) cutMask[i] = 1;
+      // Sample perimeter pixels of this opaque /Image XObject
+      let perimTotal = 0;
+      let perimFg = 0;
+      const inset = 2;
+      for (let x = x1 + inset; x <= x2 - inset; x += 2) {
+        perimTotal += 2;
+        if (fgMask[(y1 + inset) * cw + x]) perimFg++;
+        if (fgMask[(y2 - inset) * cw + x]) perimFg++;
       }
-    } else {
-      cutMask = dilated;
-    }
-  } else {
-    const bgMask = new Uint8Array(cw * ch);
-    for (let i = 0; i < cw * ch; i++) bgMask[i] = fgMask[i] ? 0 : 1;
-    const distBg = computeDistanceField(bgMask, cw, ch);
-    cutMask = new Uint8Array(cw * ch);
-    const thr = Math.abs(offsetPx);
-    for (let i = 0; i < cw * ch; i++) {
-      if (distBg[i] > thr) cutMask[i] = 1;
+      for (let y = y1 + inset; y <= y2 - inset; y += 2) {
+        perimTotal += 2;
+        if (fgMask[y * cw + (x1 + inset)]) perimFg++;
+        if (fgMask[y * cw + (x2 - inset)]) perimFg++;
+      }
+      const perimRatio = perimFg / Math.max(1, perimTotal);
+
+      if (im.isAxisAligned && perimRatio >= 0.45) {
+        // Full-bleed rectangular photo sticker (e.g. /Im3 chibi stage photo):
+        // Fill entire rectangle solid so white highlights touching the photo border are NEVER eaten away!
+        for (let y = y1; y <= y2; y++) {
+          const row = y * cw;
+          for (let x = x1; x <= x2; x++) {
+            fgMask[row + x] = 1;
+          }
+        }
+      } else if (perimRatio < 0.22) {
+        // Logo / icon / text banner on a white or slightly dirty off-white JPEG rectangle:
+        // 1. Clean 3px border of this XObject box so faint JPEG frame artifacts (like on /Im11, /Im12) don't trigger false edges
+        for (let y = y1; y <= y2; y++) {
+          for (let x = x1; x <= x2; x++) {
+            const distToBoxEdge = Math.min(x - x1, x2 - x, y - y1, y2 - y);
+            if (distToBoxEdge <= 3) {
+              const i4 = (y * cw + x) * 4;
+              const dr = Math.abs(imgData[i4] - bgR);
+              const dg = Math.abs(imgData[i4 + 1] - bgG);
+              const db = Math.abs(imgData[i4 + 2] - bgB);
+              if (dr + dg + db < bgTolerance * 3.6) {
+                fgMask[y * cw + x] = 0;
+              }
+            }
+          }
+        }
+        // 2. If this is an isolated wide text/title banner XObject (e.g. /Im0 "VŨ TRỤ SAY HI - LAS VEGAS 2026"),
+        // locally bridge disconnected letters inside this box so the whole title becomes 1 unified sticker!
+        const overlapsOther = imagePlacementsMm.some(
+          (other) =>
+            other !== im &&
+            !(other.maxX < im.minX + 1 || im.maxX < other.minX + 1 || other.maxY < im.minY + 1 || im.maxY < other.minY + 1)
+        );
+        if (!overlapsOther && im.w > 45 && im.w / Math.max(1, im.h) > 2.2) {
+          const bw = x2 - x1 + 1;
+          const bh = y2 - y1 + 1;
+          const subMask = new Uint8Array(bw * bh);
+          for (let y = 0; y < bh; y++) {
+            for (let x = 0; x < bw; x++) {
+              subMask[y * bw + x] = fgMask[(y1 + y) * cw + (x1 + x)];
+            }
+          }
+          const bridgePx = Math.max(3, Math.round(2.4 * pxPerMm));
+          const dOut = computeDistanceField(subMask, bw, bh);
+          const dDil = new Uint8Array(bw * bh);
+          for (let i = 0; i < bw * bh; i++) if (dOut[i] <= bridgePx) dDil[i] = 1;
+          const dClosed = fillInteriorHoles(dDil, bw, bh);
+          const bgSub = new Uint8Array(bw * bh);
+          for (let i = 0; i < bw * bh; i++) bgSub[i] = dClosed[i] ? 0 : 1;
+          const dBack = computeDistanceField(bgSub, bw, bh);
+          for (let y = 0; y < bh; y++) {
+            for (let x = 0; x < bw; x++) {
+              if (dBack[y * bw + x] > bridgePx * 0.85) {
+                fgMask[(y1 + y) * cw + (x1 + x)] = 1;
+              }
+            }
+          }
+        }
+      }
     }
   }
 
-  const minAreaPx = Math.max(16, minAreaMm2 * pxPerMm * pxPerMm);
-  const rawLoops = traceConnectedContoursChainNone(cutMask, cw, ch, minAreaPx);
+  // Fill internal holes inside each sticker (1 sticker = 1 solid outer contour without MORPH_CLOSE bridging fins)
+  fgMask = fillInteriorHoles(fgMask, cw, ch);
 
-  // Convert raw pixel loops to mm and run STEP 2 (Corner-Preserving Cubic Bézier Fitting)
-  // Default ~0.45px simplify tolerance in mm
+  // STEP 1B: Segment fgMask into individual connected components FIRST (at 0mm) BEFORE dilating by offsetMm or minSmoothBallPx!
+  // This guarantees two stickers that are only 2mm apart (like /Im1 and /Im3) NEVER merge into a single contour when dilated!
+  const minAreaPx = Math.max(16, minAreaMm2 * pxPerMm * pxPerMm);
+  const compVisited = new Uint8Array(cw * ch);
+  const rawComponents = [];
+
+  for (let y = 1; y < ch - 1; y++) {
+    for (let x = 1; x < cw - 1; x++) {
+      const startIdx = y * cw + x;
+      if (!fgMask[startIdx] || compVisited[startIdx]) continue;
+
+      const pixels = [];
+      const stack = [startIdx];
+      compVisited[startIdx] = 1;
+      let minPX = x, maxPX = x, minPY = y, maxPY = y;
+
+      while (stack.length > 0) {
+        const cur = stack.pop();
+        pixels.push(cur);
+        const cx = cur % cw;
+        const cy = (cur / cw) | 0;
+        if (cx < minPX) minPX = cx;
+        if (cx > maxPX) maxPX = cx;
+        if (cy < minPY) minPY = cy;
+        if (cy > maxPY) maxPY = cy;
+
+        // 8-connected flood fill
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (nx >= 0 && nx < cw && ny >= 0 && ny < ch) {
+              const nIdx = ny * cw + nx;
+              if (fgMask[nIdx] && !compVisited[nIdx]) {
+                compVisited[nIdx] = 1;
+                stack.push(nIdx);
+              }
+            }
+          }
+        }
+      }
+
+      if (pixels.length < minAreaPx) continue;
+
+      const rawWmm = (maxPX - minPX + 1) / pxPerMm;
+      const rawHmm = (maxPY - minPY + 1) / pxPerMm;
+      const rawMinXmm = (minPX - padPx) / pxPerMm;
+      const rawMaxXmm = (maxPX - padPx) / pxPerMm;
+      const rawMinYmm = (minPY - padPx) / pxPerMm;
+      const rawMaxYmm = (maxPY - padPx) / pxPerMm;
+      const fillRatio = pixels.length / Math.max(1, (maxPX - minPX + 1) * (maxPY - minPY + 1));
+
+      rawComponents.push({
+        pixels,
+        minPX,
+        maxPX,
+        minPY,
+        maxPY,
+        rawWmm,
+        rawHmm,
+        rawMinXmm,
+        rawMaxXmm,
+        rawMinYmm,
+        rawMaxYmm,
+        fillRatio,
+      });
+    }
+  }
+
+  // Filter out corner registration marks (L-marks) and tiny sheet-edge directional ticks (▲ < 7mm) on the un-dilated components
+  const filteredComponents =
+    ignoreCornerMarks && rawComponents.length > 1
+      ? rawComponents.filter((comp) => {
+          const cx = (comp.rawMinXmm + comp.rawMaxXmm) / 2;
+          const cy = (comp.rawMinYmm + comp.rawMaxYmm) / 2;
+          const cornerZoneX = Math.max(24, totalWidthMm * 0.085);
+          const cornerZoneY = Math.max(24, totalHeightMm * 0.085);
+          const nearLeft = cx < cornerZoneX;
+          const nearRight = cx > totalWidthMm - cornerZoneX;
+          const nearTop = cy < cornerZoneY;
+          const nearBottom = cy > totalHeightMm - cornerZoneY;
+
+          // 1. Corner L-marks / crop marks (hollow L-shape or small mark < 25mm in 4 corners)
+          if (
+            (nearLeft || nearRight) &&
+            (nearTop || nearBottom) &&
+            comp.rawWmm < 25 &&
+            comp.rawHmm < 25 &&
+            (comp.fillRatio < 0.52 || Math.min(totalWidthMm, totalHeightMm) >= 260)
+          ) {
+            return false;
+          }
+
+          // 2. Tiny sheet-edge directional ticks (like the 2.6x2.3mm ▲ triangle at the bottom edge of 330x390mm sheet)
+          // Strictly < 7.0mm so 12x14mm star stickers (/Im8, /Im9) near sheet borders are NEVER removed!
+          const onSheetBorder =
+            comp.rawMinXmm < 10 ||
+            comp.rawMaxXmm > totalWidthMm - 10 ||
+            comp.rawMinYmm < 10 ||
+            comp.rawMaxYmm > totalHeightMm - 10;
+          if (onSheetBorder && comp.rawWmm < 7.0 && comp.rawHmm < 7.0) {
+            return false;
+          }
+          return true;
+        })
+      : rawComponents;
+
+  // STEP 2 & 3: For each isolated sticker component, compute its CUT contour and BLEED contour in its own private local canvas!
   const effSimplifyMm = Math.max(0.08, Math.min(simplifyMm, 0.65 / Math.max(1, pxPerMm) + simplifyMm * 0.5));
   const fitOpts = {
     simplifyTolMm: effSimplifyMm,
@@ -943,135 +1181,133 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     smoothPasses: Math.max(0, Math.min(3, smoothLevel)),
   };
 
-  let contoursMm = rawLoops.map((loop) => {
-    const rawPtsMm = loop.map(([px, py]) => [
-      ((px - padPx) / pxPerMm),
-      ((py - padPx) / pxPerMm),
-    ]);
-    if (shapeMode !== 'auto') {
-      return buildGeometricContourObj(rawPtsMm, shapeMode);
+  const offsetPx = offsetMm * pxPerMm;
+  const minSmoothBallPx = Math.max(2.2, 1.25 * pxPerMm);
+  const bleedPx = Math.max(0.5, (offsetMm + bleedOffsetMm) * pxPerMm);
+  const compPadPx = Math.ceil(Math.max(minSmoothBallPx, Math.abs(offsetPx), bleedPx) + 8);
+
+  const contoursMm = [];
+  const bleedContoursMm = [];
+
+  for (const comp of filteredComponents) {
+    const bw = comp.maxPX - comp.minPX + 1;
+    const bh = comp.maxPY - comp.minPY + 1;
+    const lw = bw + compPadPx * 2;
+    const lh = bh + compPadPx * 2;
+
+    let locFg = new Uint8Array(lw * lh);
+    for (const gIdx of comp.pixels) {
+      const gx = gIdx % cw;
+      const gy = (gIdx / cw) | 0;
+      const lx = gx - comp.minPX + compPadPx;
+      const ly = gy - comp.minPY + compPadPx;
+      locFg[ly * lw + lx] = 1;
     }
-    const fitted = fitCornerPreservingBezier(rawPtsMm, fitOpts);
-    const arr = [...fitted.ptsMm];
-    Object.assign(arr, fitted);
-    return arr;
-  });
+    locFg = fillInteriorHoles(locFg, lw, lh);
 
-  // Post-filter residual corner & edge registration marks (e.g. L-marks at 4 corners or tiny ▲ feed triangle along sheet edge)
-  if (ignoreCornerMarks && contoursMm.length > 1) {
-    const cornerZoneX = Math.max(26, totalWidthMm * 0.095);
-    const cornerZoneY = Math.max(26, totalHeightMm * 0.095);
-    const maxMarkSize = Math.max(28, Math.min(totalWidthMm, totalHeightMm) * 0.085);
-    const edgeMarginMm = Math.max(16, Math.min(totalWidthMm, totalHeightMm) * 0.05);
-    const maxEdgeTickSize = Math.max(16, Math.min(totalWidthMm, totalHeightMm) * 0.045);
+    // Compute Euclidean Distance Field once on this isolated component
+    const distOut = computeDistanceField(locFg, lw, lh);
 
-    contoursMm = contoursMm.filter((poly) => {
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const [x, y] of poly) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
+    // --- A. Build isolated CUT mask with Rolling-Ball Euclidean smoothing ---
+    let locCut = locFg;
+    if (offsetPx >= minSmoothBallPx) {
+      locCut = new Uint8Array(lw * lh);
+      for (let i = 0; i < lw * lh; i++) {
+        if (distOut[i] <= offsetPx) locCut[i] = 1;
       }
-      const w = maxX - minX;
-      const h = maxY - minY;
-      const cx = (minX + maxX) / 2;
-      const cy = (minY + maxY) / 2;
-      const nearLeft = cx < cornerZoneX;
-      const nearRight = cx > totalWidthMm - cornerZoneX;
-      const nearTop = cy < cornerZoneY;
-      const nearBottom = cy > totalHeightMm - cornerZoneY;
-      // 1. Corner registration marks (L-marks / circle marks)
-      if ((nearLeft || nearRight) && (nearTop || nearBottom) && w < maxMarkSize && h < maxMarkSize) {
-        return false;
+      locCut = fillInteriorHoles(locCut, lw, lh);
+    } else if (offsetPx >= -0.2) {
+      let dilated = new Uint8Array(lw * lh);
+      for (let i = 0; i < lw * lh; i++) {
+        if (distOut[i] <= minSmoothBallPx) dilated[i] = 1;
       }
-      // 2. Small sheet-edge directional marks (like the ▲ triangle at the bottom edge of 330x390mm sheet)
-      const onSheetBorder =
-        minX < edgeMarginMm ||
-        maxX > totalWidthMm - edgeMarginMm ||
-        minY < edgeMarginMm ||
-        maxY > totalHeightMm - edgeMarginMm;
-      if (onSheetBorder && w < maxEdgeTickSize && h < maxEdgeTickSize) {
-        return false;
+      dilated = fillInteriorHoles(dilated, lw, lh);
+      const erodePx = minSmoothBallPx - Math.max(0, offsetPx);
+      if (erodePx > 0.25) {
+        const bgMask = new Uint8Array(lw * lh);
+        for (let i = 0; i < lw * lh; i++) bgMask[i] = dilated[i] ? 0 : 1;
+        const distBg = computeDistanceField(bgMask, lw, lh);
+        locCut = new Uint8Array(lw * lh);
+        for (let i = 0; i < lw * lh; i++) {
+          if (distBg[i] > erodePx) locCut[i] = 1;
+        }
+      } else {
+        locCut = dilated;
       }
-      return true;
-    });
-  }
+    } else {
+      const bgMask = new Uint8Array(lw * lh);
+      for (let i = 0; i < lw * lh; i++) bgMask[i] = locFg[i] ? 0 : 1;
+      const distBg = computeDistanceField(bgMask, lw, lh);
+      locCut = new Uint8Array(lw * lh);
+      const thr = Math.abs(offsetPx);
+      for (let i = 0; i < lw * lh; i++) {
+        if (distBg[i] > thr) locCut[i] = 1;
+      }
+    }
 
-  // STEP 3: Create outward BLEED Cubic Bézier contours using per-sticker ISOLATED Euclidean Distance Field
-  // (Because each sticker is dilated in its own isolated local bounding box, adjacent stickers on the sheet NEVER merge
-  // and concave corners NEVER produce miter spikes/hooks!)
-  let bleedContoursMm = [];
-  if (bleedOffsetMm > 0.05 && contoursMm.length > 0) {
-    const bleedPx = Math.max(0.5, bleedOffsetMm * pxPerMm);
-    const localPadPx = Math.ceil(bleedPx + 8);
+    const cutLoops = traceConnectedContoursChainNone(locCut, lw, lh, 10);
+    if (cutLoops.length === 0) continue;
+    cutLoops.sort((a, b) => b.length - a.length);
 
-    bleedContoursMm = contoursMm.map((cutPoly) => {
+    const rawCutPtsMm = cutLoops[0].map(([lx, ly]) => [
+      (lx - compPadPx + comp.minPX - padPx) / pxPerMm,
+      (ly - compPadPx + comp.minPY - padPx) / pxPerMm,
+    ]);
+
+    let cutPoly;
+    if (shapeMode !== 'auto') {
+      cutPoly = buildGeometricContourObj(rawCutPtsMm, shapeMode);
+    } else {
+      const fitted = fitCornerPreservingBezier(rawCutPtsMm, fitOpts);
+      cutPoly = [...fitted.ptsMm];
+      Object.assign(cutPoly, fitted);
+    }
+    contoursMm.push(cutPoly);
+
+    // --- B. Build isolated BLEED contour from the exact same isolated Distance Field (distOut <= bleedPx) ---
+    if (bleedOffsetMm > 0.05) {
       if (shapeMode !== 'auto') {
-        return buildGeometricContourObj(
-          cutPoly.map(([x, y]) => [x, y]),
-          shapeMode
+        bleedContoursMm.push(
+          buildGeometricContourObj(
+            cutPoly.map(([x, y]) => [x, y]),
+            shapeMode
+          )
         );
+      } else {
+        let locBleed = new Uint8Array(lw * lh);
+        const effBleedBallPx = Math.max(bleedPx, minSmoothBallPx);
+        for (let i = 0; i < lw * lh; i++) {
+          if (distOut[i] <= effBleedBallPx) locBleed[i] = 1;
+        }
+        locBleed = fillInteriorHoles(locBleed, lw, lh);
+        if (effBleedBallPx - bleedPx > 0.25) {
+          const bgB = new Uint8Array(lw * lh);
+          for (let i = 0; i < lw * lh; i++) bgB[i] = locBleed[i] ? 0 : 1;
+          const distBgB = computeDistanceField(bgB, lw, lh);
+          const erB = effBleedBallPx - bleedPx;
+          const shrunk = new Uint8Array(lw * lh);
+          for (let i = 0; i < lw * lh; i++) {
+            if (distBgB[i] > erB) shrunk[i] = 1;
+          }
+          locBleed = shrunk;
+        }
+
+        const bleedLoops = traceConnectedContoursChainNone(locBleed, lw, lh, 10);
+        if (bleedLoops.length > 0) {
+          bleedLoops.sort((a, b) => b.length - a.length);
+          const rawBleedPtsMm = bleedLoops[0].map(([lx, ly]) => [
+            (lx - compPadPx + comp.minPX - padPx) / pxPerMm,
+            (ly - compPadPx + comp.minPY - padPx) / pxPerMm,
+          ]);
+          const fittedB = fitCornerPreservingBezier(rawBleedPtsMm, fitOpts);
+          const bPoly = [...fittedB.ptsMm];
+          Object.assign(bPoly, fittedB);
+          bleedContoursMm.push(bPoly);
+        } else {
+          bleedContoursMm.push(offsetPolygonAndFitBezierMm(cutPoly, bleedOffsetMm, fitOpts));
+        }
       }
-
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const [x, y] of cutPoly) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-
-      const polyPxW = Math.max(8, Math.ceil((maxX - minX) * pxPerMm));
-      const polyPxH = Math.max(8, Math.ceil((maxY - minY) * pxPerMm));
-      const lw = polyPxW + localPadPx * 2;
-      const lh = polyPxH + localPadPx * 2;
-
-      // Rasterize this single closed cutPoly onto an isolated local canvas
-      const locCanvas = document.createElement('canvas');
-      locCanvas.width = lw;
-      locCanvas.height = lh;
-      const lctx = locCanvas.getContext('2d');
-      lctx.fillStyle = '#ffffff';
-      lctx.beginPath();
-      cutPoly.forEach(([x, y], idx) => {
-        const px = (x - minX) * pxPerMm + localPadPx;
-        const py = (y - minY) * pxPerMm + localPadPx;
-        if (idx === 0) lctx.moveTo(px, py);
-        else lctx.lineTo(px, py);
-      });
-      lctx.closePath();
-      lctx.fill();
-
-      const lData = lctx.getImageData(0, 0, lw, lh).data;
-      const locMask = new Uint8Array(lw * lh);
-      for (let i = 0; i < lw * lh; i++) {
-        if (lData[i * 4 + 3] > 128) locMask[i] = 1;
-      }
-
-      const distBleed = computeDistanceField(locMask, lw, lh);
-      let dilatedMask = new Uint8Array(lw * lh);
-      for (let i = 0; i < lw * lh; i++) {
-        if (distBleed[i] <= bleedPx) dilatedMask[i] = 1;
-      }
-      dilatedMask = fillInteriorHoles(dilatedMask, lw, lh);
-
-      const loops = traceConnectedContoursChainNone(dilatedMask, lw, lh, 12);
-      if (loops.length > 0) {
-        // Pick largest loop
-        loops.sort((a, b) => b.length - a.length);
-        const rawPtsMm = loops[0].map(([px, py]) => [
-          minX + (px - localPadPx) / pxPerMm,
-          minY + (py - localPadPx) / pxPerMm,
-        ]);
-        const fitted = fitCornerPreservingBezier(rawPtsMm, fitOpts);
-        const arr = [...fitted.ptsMm];
-        Object.assign(arr, fitted);
-        return arr;
-      }
-
-      return offsetPolygonAndFitBezierMm(cutPoly, bleedOffsetMm, fitOpts);
-    });
+    }
   }
 
   // STEP 4: Geometric Validation

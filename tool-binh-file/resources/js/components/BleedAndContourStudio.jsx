@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { MM_TO_PT } from '../engine/impositionEngine.js';
 import {
   extractStickerContoursFromImage,
+  extractPdfImagePlacementsMm,
   exportBleedExtendedPdf,
   exportContourTracedPdf,
   exportSplitStickersPdf,
@@ -32,6 +33,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   const [minAreaMm2, setMinAreaMm2] = useState(8.0);
   const [ignoreCornerMarks, setIgnoreCornerMarks] = useState(true);
   const [contoursMm, setContoursMm] = useState([]);
+  const [imagePlacementsMm, setImagePlacementsMm] = useState([]);
 
   // 4-Edge Bleed Extension Options
   const [bleedAllMm, setBleedAllMm] = useState(2.0);
@@ -71,6 +73,8 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     c.width = Math.round(vp.width);
     c.height = Math.round(vp.height);
     await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    const placements = await extractPdfImagePlacementsMm(bytes, safePage);
+    setImagePlacementsMm(placements);
     setRenderedCanvas(c);
   };
 
@@ -88,6 +92,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
       } else {
         setSourceType('image');
         pdfBytesRef.current = null;
+        setImagePlacementsMm([]);
         setTotalPdfPages(1);
         setActivePdfPage(1);
         const url = URL.createObjectURL(file);
@@ -134,6 +139,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
           minAreaMm2,
           shapeMode,
           ignoreCornerMarks,
+          imagePlacementsMm,
         });
         setContoursMm(traced);
       } catch (err) {
@@ -156,6 +162,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     minAreaMm2,
     shapeMode,
     ignoreCornerMarks,
+    imagePlacementsMm,
   ]);
 
   // Draw live preview canvas
