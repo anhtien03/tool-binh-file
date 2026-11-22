@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import PdfCanvasPreview from './PdfCanvasPreview';
 import DielineStudio from './DielineStudio';
+import Book3DViewer from './Book3DViewer';
 import TemplateLibrary from './TemplateLibrary';
 import BleedAndContourStudio from './BleedAndContourStudio';
 import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
@@ -98,6 +99,7 @@ export default function PdfEditor() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [zoom, setZoom] = useState(1.0);
+  const [showBook3D, setShowBook3D] = useState(false);
 
   useEffect(() => {
     const preventDefault = (e) => e.preventDefault();
@@ -879,6 +881,16 @@ export default function PdfEditor() {
                       Cần in: {plan.summary.ratioSheetsNeeded} tờ
                     </span>
                   )}
+                  {mode === 'booklet' && (
+                    <button
+                      onClick={() => setShowBook3D(true)}
+                      disabled={pdfPages.length === 0}
+                      className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-sans font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Xem cuốn sách thành phẩm dạng 3D, lật từng trang"
+                    >
+                      🧊 Xem 3D cuốn sách
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs font-mono text-slate-600">
@@ -938,6 +950,15 @@ export default function PdfEditor() {
                   onZoomChange={setZoom}
                 />
               </div>
+              {showBook3D && mode === 'booklet' && (
+                <Book3DViewer
+                  pages={pdfPages}
+                  bleedMm={bleedMm}
+                  binding={bookletBinding}
+                  bookletStyle={bookletStyle}
+                  onClose={() => setShowBook3D(false)}
+                />
+              )}
             </main>
 
             {/* 2. MIDDLE-RIGHT: ACTIVE TOOL SETTINGS + JOB CHECKS + EXPORT */}
@@ -2068,7 +2089,17 @@ export default function PdfEditor() {
               </div>
             ) : (
               <div className="flex flex-col gap-2.5 pt-2 border-t border-slate-100">
-                <span className="text-xs font-bold text-slate-800">3. Cấu hình Bình Sách</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-slate-800">3. Cấu hình Bình Sách</span>
+                  <button
+                    onClick={() => setShowBook3D(true)}
+                    disabled={pdfPages.length === 0}
+                    className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-[11px] font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+                    title="Mở cuốn sách 3D để lật kiểm tra thứ tự trang & gáy đóng sách"
+                  >
+                    🧊 Xem Sách 3D
+                  </button>
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                   <select
                     value={bookletStyle}
