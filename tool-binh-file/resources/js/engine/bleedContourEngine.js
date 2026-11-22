@@ -987,6 +987,7 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     bgTolerance = 26,
     mergeGapMm = 0.35, // Intra-sticker detail bridge distance (mm) before segmenting isolated stickers
     imagePlacementsMm = [],
+    perStickerOverrides = {}, // { [stickerIdx]: { shapeMode: 'auto'|'rect'|'circle'|'oval', offsetDeltaMm: 0, hidden: false } }
   } = options;
 
   // High-resolution tracing grid (up to 1280px so 1px ~ 0.25mm on 330x390mm sheet, fast & crisp)
@@ -1010,21 +1011,43 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
 
   const imgData = ctx.getImageData(0, 0, cw, ch).data;
 
-  // STEP 1: Alpha-first detection (check corners & sample grid for alpha transparency)
+  // STEP 1: Robust Alpha vs Opaque Background Detection
+  // (Handles PDFs like "VŨ TRỤ SAY HI" where a white background rect covers 99% of the page leaving a 1mm transparent sliver at y=0)
   let transparentSamples = 0;
   let totalSamples = 0;
-  for (let sy = padPx; sy < padPx + workH; sy += Math.max(1, (workH / 20) | 0)) {
-    for (let sx = padPx; sx < padPx + workW; sx += Math.max(1, (workW / 20) | 0)) {
+  const opaqueBorderSamples = [];
+  const stepY = Math.max(1, (workH / 24) | 0);
+  const stepX = Math.max(1, (workW / 24) | 0);
+
+  for (let sy = padPx + 2; sy < padPx + workH - 2; sy += stepY) {
+    for (let sx = padPx + 2; sx < padPx + workW - 2; sx += stepX) {
       totalSamples++;
-      if (imgData[(sy * cw + sx) * 4 + 3] < 242) transparentSamples++;
+      const idx4 = (sy * cw + sx) * 4;
+      const a = imgData[idx4 + 3];
+      if (a < 242) {
+        transparentSamples++;
+      } else {
+        const lx = sx - padPx;
+        const ly = sy - padPx;
+        if (lx < workW * 0.12 || lx > workW * 0.88 || ly < workH * 0.12 || ly > workH * 0.88) {
+          opaqueBorderSamples.push([imgData[idx4], imgData[idx4 + 1], imgData[idx4 + 2]]);
+        }
+      }
     }
   }
-  const cornerAlpha = imgData[(padPx * cw + padPx) * 4 + 3];
-  const useAlpha = cornerAlpha < 242 || transparentSamples > totalSamples * 0.03;
 
-  const bgR = imgData[(padPx * cw + padPx) * 4];
-  const bgG = imgData[(padPx * cw + padPx) * 4 + 1];
-  const bgB = imgData[(padPx * cw + padPx) * 4 + 2];
+  // Only use pure-alpha mode if at least 15% of the page grid is genuinely transparent
+  const useAlpha = transparentSamples > totalSamples * 0.15;
+
+  // Determine true opaque background RGB (pick brightest / near-white sample from border so a transparent (0,0,0,0) corner pixel never sets bg to black!)
+  let bgR = 255, bgG = 255, bgB = 255;
+  if (!useAlpha && opaqueBorderSamples.length > 0) {
+    opaqueBorderSamples.sort((a, b) => b[0] + b[1] + b[2] - (a[0] + a[1] + a[2]));
+    const topSample = opaqueBorderSamples[Math.floor(opaqueBorderSamples.length * 0.15)] || opaqueBorderSamples[0];
+    bgR = topSample[0];
+    bgG = topSample[1];
+    bgB = topSample[2];
+  }
 
   let fgMask = new Uint8Array(cw * ch);
 
@@ -1032,13 +1055,15 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     for (let x = padPx; x < padPx + workW; x++) {
       const i4 = (y * cw + x) * 4;
       const a = imgData[i4 + 3];
+      // Transparent pixels (a < alphaThreshold) are ALWAYS background (0), even when useAlpha is false!
+      if (a < alphaThreshold) continue;
       if (useAlpha) {
-        if (a >= alphaThreshold) fgMask[y * cw + x] = 1;
+        fgMask[y * cw + x] = 1;
       } else {
         const dr = Math.abs(imgData[i4] - bgR);
         const dg = Math.abs(imgData[i4 + 1] - bgG);
         const db = Math.abs(imgData[i4 + 2] - bgB);
-        if (a >= alphaThreshold && dr + dg + db > bgTolerance * 2) {
+        if (dr + dg + db > bgTolerance * 2) {
           fgMask[y * cw + x] = 1;
         }
       }
@@ -1280,18 +1305,30 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
   const contoursMm = [];
   const bleedContoursMm = [];
 
-  for (const comp of filteredComponents) {
+  for (let compIdx = 0; compIdx < filteredComponents.length; compIdx++) {
+    const comp = filteredComponents[compIdx];
+    const override = perStickerOverrides[compIdx] || {};
+    if (override.hidden) continue;
+    const itemShapeMode = override.shapeMode && override.shapeMode !== 'default' ? override.shapeMode : shapeMode;
+    const itemOffsetMm =
+      override.offsetMm !== undefined && override.offsetMm !== null && override.offsetMm !== ''
+        ? Number(override.offsetMm)
+        : offsetMm;
+    const itemOffsetPx = itemOffsetMm * pxPerMm;
+    const itemBleedPx = Math.max(0.5, (itemOffsetMm + bleedOffsetMm) * pxPerMm);
+
     const bw = comp.maxPX - comp.minPX + 1;
     const bh = comp.maxPY - comp.minPY + 1;
-    const lw = bw + compPadPx * 2;
-    const lh = bh + compPadPx * 2;
+    const itemPadPx = Math.ceil(Math.max(minSmoothBallPx, Math.abs(itemOffsetPx), itemBleedPx) + 8);
+    const lw = bw + itemPadPx * 2;
+    const lh = bh + itemPadPx * 2;
 
     let locFg = new Uint8Array(lw * lh);
     for (const gIdx of comp.pixels) {
       const gx = gIdx % cw;
       const gy = (gIdx / cw) | 0;
-      const lx = gx - comp.minPX + compPadPx;
-      const ly = gy - comp.minPY + compPadPx;
+      const lx = gx - comp.minPX + itemPadPx;
+      const ly = gy - comp.minPY + itemPadPx;
       locFg[ly * lw + lx] = 1;
     }
 
@@ -1301,12 +1338,12 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     if (comp.fillRatio >= 0.78 && bw >= 16 && bh >= 16) {
       let topCnt = 0, botCnt = 0, leftCnt = 0, rightCnt = 0;
       for (let x = 0; x < bw; x++) {
-        if (locFg[compPadPx * lw + (compPadPx + x)] || locFg[(compPadPx + 1) * lw + (compPadPx + x)]) topCnt++;
-        if (locFg[(compPadPx + bh - 1) * lw + (compPadPx + x)] || locFg[(compPadPx + bh - 2) * lw + (compPadPx + x)]) botCnt++;
+        if (locFg[itemPadPx * lw + (itemPadPx + x)] || locFg[(itemPadPx + 1) * lw + (itemPadPx + x)]) topCnt++;
+        if (locFg[(itemPadPx + bh - 1) * lw + (itemPadPx + x)] || locFg[(itemPadPx + bh - 2) * lw + (itemPadPx + x)]) botCnt++;
       }
       for (let y = 0; y < bh; y++) {
-        if (locFg[(compPadPx + y) * lw + compPadPx] || locFg[(compPadPx + y) * lw + (compPadPx + 1)]) leftCnt++;
-        if (locFg[(compPadPx + y) * lw + (compPadPx + bw - 1)] || locFg[(compPadPx + y) * lw + (compPadPx + bw - 2)]) rightCnt++;
+        if (locFg[(itemPadPx + y) * lw + itemPadPx] || locFg[(itemPadPx + y) * lw + (itemPadPx + 1)]) leftCnt++;
+        if (locFg[(itemPadPx + y) * lw + (itemPadPx + bw - 1)] || locFg[(itemPadPx + y) * lw + (itemPadPx + bw - 2)]) rightCnt++;
       }
       const straightSides =
         (topCnt / bw >= 0.68 ? 1 : 0) +
@@ -1315,7 +1352,7 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
         (rightCnt / bh >= 0.68 ? 1 : 0);
       if (straightSides >= 3 && comp.fillRatio >= 0.82) {
         for (let y = 0; y < bh; y++) {
-          const row = (compPadPx + y) * lw + compPadPx;
+          const row = (itemPadPx + y) * lw + itemPadPx;
           for (let x = 0; x < bw; x++) locFg[row + x] = 1;
         }
       }
@@ -1328,19 +1365,19 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
 
     // --- A. Build isolated CUT mask with Rolling-Ball Euclidean smoothing ---
     let locCut = locFg;
-    if (offsetPx >= minSmoothBallPx) {
+    if (itemOffsetPx >= minSmoothBallPx) {
       locCut = new Uint8Array(lw * lh);
       for (let i = 0; i < lw * lh; i++) {
-        if (distOut[i] <= offsetPx) locCut[i] = 1;
+        if (distOut[i] <= itemOffsetPx) locCut[i] = 1;
       }
       locCut = fillInteriorHoles(locCut, lw, lh);
-    } else if (offsetPx >= -0.2) {
+    } else if (itemOffsetPx >= -0.2) {
       let dilated = new Uint8Array(lw * lh);
       for (let i = 0; i < lw * lh; i++) {
         if (distOut[i] <= minSmoothBallPx) dilated[i] = 1;
       }
       dilated = fillInteriorHoles(dilated, lw, lh);
-      const erodePx = minSmoothBallPx - Math.max(0, offsetPx);
+      const erodePx = minSmoothBallPx - Math.max(0, itemOffsetPx);
       if (erodePx > 0.25) {
         const bgMask = new Uint8Array(lw * lh);
         for (let i = 0; i < lw * lh; i++) bgMask[i] = dilated[i] ? 0 : 1;
@@ -1357,7 +1394,7 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
       for (let i = 0; i < lw * lh; i++) bgMask[i] = locFg[i] ? 0 : 1;
       const distBg = computeDistanceField(bgMask, lw, lh);
       locCut = new Uint8Array(lw * lh);
-      const thr = Math.abs(offsetPx);
+      const thr = Math.abs(itemOffsetPx);
       for (let i = 0; i < lw * lh; i++) {
         if (distBg[i] > thr) locCut[i] = 1;
       }
@@ -1368,41 +1405,42 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     cutLoops.sort((a, b) => b.length - a.length);
 
     const rawCutPtsMm = cutLoops[0].map(([lx, ly]) => [
-      (lx - compPadPx + comp.minPX - padPx) / pxPerMm,
-      (ly - compPadPx + comp.minPY - padPx) / pxPerMm,
+      (lx - itemPadPx + comp.minPX - padPx) / pxPerMm,
+      (ly - itemPadPx + comp.minPY - padPx) / pxPerMm,
     ]);
 
     let cutPoly;
-    if (shapeMode !== 'auto') {
-      cutPoly = buildGeometricContourObj(rawCutPtsMm, shapeMode);
+    if (itemShapeMode !== 'auto') {
+      cutPoly = buildGeometricContourObj(rawCutPtsMm, itemShapeMode);
     } else {
       const fitted = fitCornerPreservingBezier(rawCutPtsMm, fitOpts);
       cutPoly = [...fitted.ptsMm];
       Object.assign(cutPoly, fitted);
     }
+    cutPoly.compIdx = compIdx;
     contoursMm.push(cutPoly);
 
-    // --- B. Build isolated BLEED contour from the exact same isolated Distance Field (distOut <= bleedPx) ---
+    // --- B. Build isolated BLEED contour from the exact same isolated Distance Field (distOut <= itemBleedPx) ---
     if (bleedOffsetMm > 0.05) {
-      if (shapeMode !== 'auto') {
+      if (itemShapeMode !== 'auto') {
         bleedContoursMm.push(
           buildGeometricContourObj(
             cutPoly.map(([x, y]) => [x, y]),
-            shapeMode
+            itemShapeMode
           )
         );
       } else {
         let locBleed = new Uint8Array(lw * lh);
-        const effBleedBallPx = Math.max(bleedPx, minSmoothBallPx);
+        const effBleedBallPx = Math.max(itemBleedPx, minSmoothBallPx);
         for (let i = 0; i < lw * lh; i++) {
           if (distOut[i] <= effBleedBallPx) locBleed[i] = 1;
         }
         locBleed = fillInteriorHoles(locBleed, lw, lh);
-        if (effBleedBallPx - bleedPx > 0.25) {
+        if (effBleedBallPx - itemBleedPx > 0.25) {
           const bgB = new Uint8Array(lw * lh);
           for (let i = 0; i < lw * lh; i++) bgB[i] = locBleed[i] ? 0 : 1;
           const distBgB = computeDistanceField(bgB, lw, lh);
-          const erB = effBleedBallPx - bleedPx;
+          const erB = effBleedBallPx - itemBleedPx;
           const shrunk = new Uint8Array(lw * lh);
           for (let i = 0; i < lw * lh; i++) {
             if (distBgB[i] > erB) shrunk[i] = 1;
@@ -1414,8 +1452,8 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
         if (bleedLoops.length > 0) {
           bleedLoops.sort((a, b) => b.length - a.length);
           const rawBleedPtsMm = bleedLoops[0].map(([lx, ly]) => [
-            (lx - compPadPx + comp.minPX - padPx) / pxPerMm,
-            (ly - compPadPx + comp.minPY - padPx) / pxPerMm,
+            (lx - itemPadPx + comp.minPX - padPx) / pxPerMm,
+            (ly - itemPadPx + comp.minPY - padPx) / pxPerMm,
           ]);
           const fittedB = fitCornerPreservingBezier(rawBleedPtsMm, fitOpts);
           const bPoly = [...fittedB.ptsMm];

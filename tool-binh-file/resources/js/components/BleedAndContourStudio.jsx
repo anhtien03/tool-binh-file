@@ -38,6 +38,8 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   const [inputMode, setInputMode] = useState('multi'); // 'single' (PDF/PNG đã có biên) | 'multi' (Tách nhiều tem)
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [bleedCompleted, setBleedCompleted] = useState(false);
+  const [selectedStickerIdx, setSelectedStickerIdx] = useState(null); // null = All stickers, or 0..K-1 = specific sticker
+  const [perStickerOverrides, setPerStickerOverrides] = useState({}); // { [compIdx]: { shapeMode, offsetMm, hidden } }
 
   // 4-Edge Bleed Extension Options
   const [bleedAllMm, setBleedAllMm] = useState(2.0);
@@ -146,6 +148,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
           shapeMode,
           ignoreCornerMarks,
           imagePlacementsMm,
+          perStickerOverrides,
         });
         setContoursMm(traced);
       } catch (err) {
@@ -170,6 +173,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     shapeMode,
     ignoreCornerMarks,
     imagePlacementsMm,
+    perStickerOverrides,
   ]);
 
   // Draw live preview canvas
@@ -317,11 +321,37 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
         }
       }
 
-      for (const poly of contoursMm) {
-        drawContourLoop(poly, '#db2777', 1.65, false);
+      for (let idx = 0; idx < contoursMm.length; idx++) {
+        const poly = contoursMm[idx];
+        const isSelected = selectedStickerIdx !== null && (poly.compIdx === selectedStickerIdx || idx === selectedStickerIdx);
+        drawContourLoop(poly, isSelected ? '#7c3aed' : '#db2777', isSelected ? 2.6 : 1.65, false);
+
+        // Draw sticker number badge (#1, #2, ...) at centroid of each sticker so user can click/identify each sticker
+        if (poly && poly.length >= 3) {
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const [x, y] of poly) {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+          }
+          const cxPx = (padMm + (minX + maxX) / 2) * scale;
+          const cyPx = (padMm + (minY + maxY) / 2) * scale;
+          ctx.save();
+          ctx.fillStyle = isSelected ? 'rgba(124, 58, 237, 0.92)' : 'rgba(15, 23, 42, 0.72)';
+          ctx.beginPath();
+          ctx.arc(cxPx, cyPx, isSelected ? 11 : 9, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 10px Inter, system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`#${idx + 1}`, cxPx, cyPx);
+          ctx.restore();
+        }
       }
     }
-  }, [renderedCanvas, subMode, sizeMm, offsetMm, bleedOffsetMm, showBleedContour, contoursMm, bleedAllMm, bleedEdges, fillMode, solidColorHex, zoom]);
+  }, [renderedCanvas, subMode, sizeMm, offsetMm, bleedOffsetMm, showBleedContour, contoursMm, bleedAllMm, bleedEdges, fillMode, solidColorHex, zoom, selectedStickerIdx]);
 
   // Direct Mouse Wheel Zoom (up to 1000%)
   useEffect(() => {
@@ -751,6 +781,128 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
                   </span>
                 )}
               </div>
+
+              {/* Per-Sticker Selector Chips: Chỉnh chung Tất cả vs Chỉnh riêng từng tem (#1..#N) */}
+              {contoursMm.length > 1 && (
+                <div className="flex flex-col gap-1.5 bg-slate-50 border border-slate-200 rounded-xl p-2">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="font-bold text-slate-600">CHỌN TEM ĐỂ CHỈNH RIÊNG:</span>
+                    {Object.keys(perStickerOverrides).length > 0 && (
+                      <button
+                        onClick={() => {
+                          setPerStickerOverrides({});
+                          setSelectedStickerIdx(null);
+                        }}
+                        className="text-rose-600 hover:underline font-semibold cursor-pointer"
+                      >
+                        Reset riêng
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                    <button
+                      onClick={() => setSelectedStickerIdx(null)}
+                      className={`px-2 py-0.5 rounded-lg text-[10px] font-bold cursor-pointer ${
+                        selectedStickerIdx === null
+                          ? 'bg-[#146C53] text-white'
+                          : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      Tất cả ({contoursMm.length})
+                    </button>
+                    {contoursMm.map((poly, idx) => {
+                      const cIdx = poly.compIdx !== undefined ? poly.compIdx : idx;
+                      const hasOvr = Boolean(perStickerOverrides[cIdx]);
+                      const isSel = selectedStickerIdx === cIdx;
+                      return (
+                        <button
+                          key={cIdx}
+                          onClick={() => setSelectedStickerIdx(isSel ? null : cIdx)}
+                          className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold cursor-pointer ${
+                            isSel
+                              ? 'bg-purple-600 text-white shadow-2xs'
+                              : hasOvr
+                              ? 'bg-purple-50 border border-purple-300 text-purple-700'
+                              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          #{idx + 1}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {selectedStickerIdx !== null && (
+                    <div className="mt-1 pt-1.5 border-t border-purple-200/80 bg-purple-50/60 rounded-lg p-2 flex flex-col gap-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-extrabold text-purple-800">
+                          🎯 Đang chỉnh riêng Tem #{contoursMm.findIndex((p, i) => (p.compIdx ?? i) === selectedStickerIdx) + 1}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setPerStickerOverrides((prev) => ({
+                              ...prev,
+                              [selectedStickerIdx]: { ...(prev[selectedStickerIdx] || {}), hidden: true },
+                            }));
+                            setSelectedStickerIdx(null);
+                          }}
+                          className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-[10px] font-bold cursor-pointer"
+                        >
+                          🗑️ Ẩn tem này
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <div className="flex flex-col gap-0.5">
+                          <label className="text-[10px] text-purple-700 font-semibold">Khung riêng tem này</label>
+                          <select
+                            value={perStickerOverrides[selectedStickerIdx]?.shapeMode || 'default'}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setPerStickerOverrides((prev) => ({
+                                ...prev,
+                                [selectedStickerIdx]: { ...(prev[selectedStickerIdx] || {}), shapeMode: val },
+                              }));
+                            }}
+                            className="bg-white border border-purple-300 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-800"
+                          >
+                            <option value="default">Theo mặc định chung</option>
+                            <option value="auto">Tự do (Freeform)</option>
+                            <option value="rect">Chữ nhật vuông</option>
+                            <option value="circle">Hình tròn</option>
+                            <option value="oval">Hình Oval</option>
+                          </select>
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <label className="text-[10px] text-purple-700 font-semibold">Offset riêng (mm)</label>
+                          <input
+                            type="number"
+                            min="-1.5"
+                            max="6"
+                            step="0.25"
+                            placeholder={`${offsetMm}`}
+                            value={
+                              perStickerOverrides[selectedStickerIdx]?.offsetMm !== undefined
+                                ? perStickerOverrides[selectedStickerIdx].offsetMm
+                                : ''
+                            }
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setPerStickerOverrides((prev) => ({
+                                ...prev,
+                                [selectedStickerIdx]: {
+                                  ...(prev[selectedStickerIdx] || {}),
+                                  offsetMm: val === '' ? undefined : parseFloat(val),
+                                },
+                              }));
+                            }}
+                            className="bg-white border border-purple-300 rounded-lg px-2 py-1 text-[11px] font-mono text-slate-800"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] text-slate-500">Hình dáng đường bế</label>
