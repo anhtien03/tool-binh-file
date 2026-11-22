@@ -6,6 +6,7 @@ import {
   exportBleedExtendedPdf,
   exportContourTracedPdf,
   exportSplitStickersPdf,
+  TARGET_PRINT_DPI,
 } from '../engine/bleedContourEngine.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
@@ -16,14 +17,18 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   const [sourceType, setSourceType] = useState('image');
   const [renderedCanvas, setRenderedCanvas] = useState(null);
   const [sizeMm, setSizeMm] = useState({ w: 150, h: 150 });
+  const [actualDpi, setActualDpi] = useState(TARGET_PRINT_DPI);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Contour Tracer Options
+  // Contour Tracer Options (5-Step Pipeline: Alpha Cut + Corner-Preserving Bézier + Bleed Offset + Geometry Validation)
   const [shapeMode, setShapeMode] = useState('auto'); // 'auto' | 'circle' | 'oval' | 'rect'
-  const [offsetMm, setOffsetMm] = useState(2.0);
-  const [smoothLevel, setSmoothLevel] = useState(2);
-  const [simplifyMm, setSimplifyMm] = useState(0.65);
+  const [offsetMm, setOffsetMm] = useState(0.5); // CutContour offset from artwork edge (mm)
+  const [bleedOffsetMm, setBleedOffsetMm] = useState(1.5); // Outward Bleed offset from CutContour (mm)
+  const [showBleedContour, setShowBleedContour] = useState(true);
+  const [cornerAngleDeg, setCornerAngleDeg] = useState(130); // Preserve sharp corners <= 130°
+  const [smoothLevel, setSmoothLevel] = useState(1);
+  const [simplifyMm, setSimplifyMm] = useState(0.18); // ~0.45px equivalent
   const [minAreaMm2, setMinAreaMm2] = useState(8.0);
   const [ignoreCornerMarks, setIgnoreCornerMarks] = useState(true);
   const [contoursMm, setContoursMm] = useState([]);
@@ -51,14 +56,20 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     setActivePdfPage(safePage);
     const page = await pdf.getPage(safePage);
     const vp1 = page.getViewport({ scale: 1.0 });
-    setSizeMm({
-      w: Math.round((vp1.width / MM_TO_PT) * 10) / 10,
-      h: Math.round((vp1.height / MM_TO_PT) * 10) / 10,
-    });
-    const vp = page.getViewport({ scale: Math.min(2.0, 1400 / Math.max(1, vp1.width, vp1.height)) });
+    const wMm = Math.round((vp1.width / MM_TO_PT) * 10) / 10;
+    const hMm = Math.round((vp1.height / MM_TO_PT) * 10) / 10;
+    setSizeMm({ w: wMm, h: hMm });
+
+    // Render at true 300 DPI (300 / 72 = 4.1667x scale), safely capped at 4800px max dimension
+    const scale300 = TARGET_PRINT_DPI / 72;
+    const maxSafeScale = 4800 / Math.max(1, vp1.width, vp1.height);
+    const renderScale = Math.min(scale300, maxSafeScale);
+    setActualDpi(Math.round(renderScale * 72));
+
+    const vp = page.getViewport({ scale: renderScale });
     const c = document.createElement('canvas');
-    c.width = vp.width;
-    c.height = vp.height;
+    c.width = Math.round(vp.width);
+    c.height = Math.round(vp.height);
     await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
     setRenderedCanvas(c);
   };
@@ -90,6 +101,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
         const wMm = Math.round(((img.width / 300) * 25.4) * 10) / 10;
         const hMm = Math.round(((img.height / 300) * 25.4) * 10) / 10;
         setSizeMm({ w: Math.max(10, wMm), h: Math.max(10, hMm) });
+        setActualDpi(TARGET_PRINT_DPI);
         const c = document.createElement('canvas');
         c.width = img.width;
         c.height = img.height;
@@ -115,8 +127,10 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
       try {
         const traced = extractStickerContoursFromImage(renderedCanvas, sizeMm.w, sizeMm.h, {
           offsetMm,
+          bleedOffsetMm: showBleedContour ? bleedOffsetMm : 0,
           smoothLevel,
           simplifyMm,
+          cornerAngleDeg,
           minAreaMm2,
           shapeMode,
           ignoreCornerMarks,
@@ -127,36 +141,22 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
         setError('Lỗi khi dò đường bế từ hình ảnh.');
       }
     }, 20);
-    const handleSplitExport = async (sendToImpose = false) => {
-    if (!renderedCanvas || contoursMm.length === 0) return;
-    setLoading(true);
-    try {
-      const bytes = await exportSplitStickersPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, 1.5);
-      const base = (sourceFile?.name || 'stickers').replace(/\.(pdf|png|jpg|jpeg)$/i, '');
-      const outName = `Tach_${contoursMm.length}Tem_${base}.pdf`;
-
-      if (sendToImpose && onSendSplitStickersToImpose) {
-        const fileObj = new File([bytes], outName, { type: 'application/pdf' });
-        onSendSplitStickersToImpose(fileObj);
-        return;
-      }
-
-      const blob = new Blob([bytes], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = outName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return () => clearTimeout(timer);
-  }, [renderedCanvas, subMode, sizeMm.w, sizeMm.h, offsetMm, smoothLevel, simplifyMm, minAreaMm2, shapeMode, ignoreCornerMarks]);
+    return () => clearTimeout(timer);
+  }, [
+    renderedCanvas,
+    subMode,
+    sizeMm.w,
+    sizeMm.h,
+    offsetMm,
+    bleedOffsetMm,
+    showBleedContour,
+    cornerAngleDeg,
+    smoothLevel,
+    simplifyMm,
+    minAreaMm2,
+    shapeMode,
+    ignoreCornerMarks,
+  ]);
 
   // Draw live preview canvas
   useEffect(() => {
@@ -256,24 +256,58 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
       ctx.strokeRect(x0 - bL, y0 - bT, w0 + bL + bR, h0 + bT + bB);
       ctx.setLineDash([]);
     } else {
-      // Contour mode: draw image + traced magenta CutContour loops
+      // Contour mode: draw image + traced Cyan BleedContour + Magenta CutContour closed Cubic Bézier paths
       ctx.drawImage(renderedCanvas, x0, y0, w0, h0);
-      ctx.strokeStyle = '#db2777';
-      ctx.lineWidth = 1.6;
-      for (const poly of contoursMm) {
-        if (poly.length < 2) continue;
+
+      const drawContourLoop = (poly, strokeColor, lineW, dashed = false) => {
+        if (!poly || poly.length < 2) return;
+        ctx.save();
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = lineW;
+        if (dashed) ctx.setLineDash([4, 2.5]);
         ctx.beginPath();
-        poly.forEach(([px, py], i) => {
-          const vx = (padMm + px) * scale;
-          const vy = (padMm + py) * scale;
-          if (i === 0) ctx.moveTo(vx, vy);
-          else ctx.lineTo(vx, vy);
-        });
+        if (poly.beziersMm && poly.beziersMm.length >= 2) {
+          for (const cmd of poly.beziersMm) {
+            if (cmd.type === 'M') {
+              ctx.moveTo((padMm + cmd.to[0]) * scale, (padMm + cmd.to[1]) * scale);
+            } else if (cmd.type === 'L') {
+              ctx.lineTo((padMm + cmd.to[0]) * scale, (padMm + cmd.to[1]) * scale);
+            } else if (cmd.type === 'C') {
+              ctx.bezierCurveTo(
+                (padMm + cmd.c1[0]) * scale,
+                (padMm + cmd.c1[1]) * scale,
+                (padMm + cmd.c2[0]) * scale,
+                (padMm + cmd.c2[1]) * scale,
+                (padMm + cmd.to[0]) * scale,
+                (padMm + cmd.to[1]) * scale
+              );
+            }
+          }
+        } else {
+          poly.forEach(([px, py], i) => {
+            const vx = (padMm + px) * scale;
+            const vy = (padMm + py) * scale;
+            if (i === 0) ctx.moveTo(vx, vy);
+            else ctx.lineTo(vx, vy);
+          });
+        }
         ctx.closePath();
         ctx.stroke();
+        ctx.restore();
+      };
+
+      const bleedList = contoursMm?.bleedContoursMm || [];
+      if (showBleedContour && bleedList.length > 0) {
+        for (const bPoly of bleedList) {
+          drawContourLoop(bPoly, '#0284c7', 1.35, true);
+        }
+      }
+
+      for (const poly of contoursMm) {
+        drawContourLoop(poly, '#db2777', 1.65, false);
       }
     }
-  }, [renderedCanvas, subMode, sizeMm, offsetMm, contoursMm, bleedAllMm, bleedEdges, fillMode, solidColorHex, zoom]);
+  }, [renderedCanvas, subMode, sizeMm, offsetMm, bleedOffsetMm, showBleedContour, contoursMm, bleedAllMm, bleedEdges, fillMode, solidColorHex, zoom]);
 
   // Direct Mouse Wheel Zoom
   useEffect(() => {
@@ -319,7 +353,13 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     try {
       let bytes;
       if (subMode === 'contour') {
-        bytes = await exportContourTracedPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, Math.max(5, offsetMm + 3));
+        const padExport = Math.max(5, Math.max(0, offsetMm) + (showBleedContour ? Math.max(0, bleedOffsetMm) : 0) + 3);
+        bytes = await exportContourTracedPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, padExport, {
+          sourceType,
+          sourceFile,
+          activePdfPage,
+          includeBleedContour: showBleedContour && bleedOffsetMm > 0,
+        });
       } else {
         bytes = await exportBleedExtendedPdf({
           sourceType,
@@ -356,7 +396,8 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     if (!renderedCanvas || contoursMm.length === 0) return;
     setLoading(true);
     try {
-      const bytes = await exportSplitStickersPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, 1.5);
+      const padMm = showBleedContour ? Math.max(0.5, bleedOffsetMm) : 1.5;
+      const bytes = await exportSplitStickersPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, padMm);
       const base = (sourceFile?.name || 'stickers').replace(/\.(pdf|png|jpg|jpeg)$/i, '');
       const outName = `Tach_${contoursMm.length}Tem_${base}.pdf`;
 
@@ -452,9 +493,17 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
         </div>
         <div className="flex gap-4 mt-2.5 text-[11px] text-slate-500">
           {subMode === 'contour' ? (
-            <span className="flex items-center gap-1.5">
-              <span className="w-4 border-t-2 border-pink-600 inline-block" /> Đường bế tự động (CutContour)
-            </span>
+            <>
+              <span className="flex items-center gap-1.5">
+                <span className="w-4 border-t-2 border-pink-600 inline-block" /> Đường cắt Bézier (CUT — Magenta)
+              </span>
+              {showBleedContour && bleedOffsetMm > 0 && (
+                <span className="flex items-center gap-1.5">
+                  <span className="w-4 border-t-2 border-dashed border-sky-600 inline-block" /> Đường bù xén Bézier (BLEED — Cyan)
+                </span>
+              )}
+              <span className="text-slate-400">· Ảnh nguồn: {actualDpi} DPI</span>
+            </>
           ) : (
             <>
               <span className="flex items-center gap-1.5">
@@ -574,46 +623,85 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
 
               <div className="flex flex-col gap-1">
                 <div className="flex justify-between text-[11px]">
-                  <span className="text-slate-600">Độ nở / thu viền (Offset)</span>
-                  <span className="font-mono font-bold text-[#146C53]">{offsetMm > 0 ? `+${offsetMm}` : offsetMm} mm</span>
+                  <span className="text-slate-600">Offset đường CẮT (CutContour)</span>
+                  <span className="font-mono font-bold text-pink-600">{offsetMm > 0 ? `+${offsetMm}` : offsetMm} mm</span>
                 </div>
                 <input
                   type="range"
-                  min="-2"
-                  max="6"
-                  step="0.5"
+                  min="-1.5"
+                  max="5"
+                  step="0.25"
                   value={offsetMm}
                   onChange={(e) => setOffsetMm(parseFloat(e.target.value))}
-                  className="w-full accent-[#146C53]"
+                  className="w-full accent-pink-600"
                 />
               </div>
 
               <div className="flex flex-col gap-1">
-                <div className="flex justify-between text-[11px]">
-                  <span className="text-slate-600">Làm mượt góc (Smoothing)</span>
-                  <span className="font-mono font-bold text-slate-700">{smoothLevel}x</span>
+                <div className="flex items-center justify-between text-[11px]">
+                  <label className="flex items-center gap-1.5 text-slate-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showBleedContour}
+                      onChange={(e) => setShowBleedContour(e.target.checked)}
+                      className="accent-sky-600"
+                    />
+                    <span>Offset đường BÙ XÉN (Bleed)</span>
+                  </label>
+                  <span className="font-mono font-bold text-sky-600">
+                    {showBleedContour ? `+${bleedOffsetMm} mm` : 'Tắt (0 mm)'}
+                  </span>
                 </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="3"
-                  step="1"
-                  value={smoothLevel}
-                  onChange={(e) => setSmoothLevel(parseInt(e.target.value, 10))}
-                  className="w-full accent-[#146C53]"
-                />
+                {showBleedContour && (
+                  <input
+                    type="range"
+                    min="0"
+                    max="5"
+                    step="0.25"
+                    value={bleedOffsetMm}
+                    onChange={(e) => setBleedOffsetMm(parseFloat(e.target.value))}
+                    className="w-full accent-sky-600"
+                  />
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-500">Độ bám sát (mm)</label>
+                  <label className="text-[10px] text-slate-500">Bảo toàn góc nhọn (&le; °)</label>
                   <input
                     type="number"
-                    min="0.1"
+                    min="60"
+                    max="165"
+                    step="5"
+                    value={cornerAngleDeg}
+                    onChange={(e) => setCornerAngleDeg(Math.max(60, Math.min(165, parseInt(e.target.value, 10) || 130)))}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-500">Khử răng cưa (0-3)</label>
+                  <input
+                    type="number"
+                    min="0"
                     max="3"
-                    step="0.1"
+                    step="1"
+                    value={smoothLevel}
+                    onChange={(e) => setSmoothLevel(Math.max(0, Math.min(3, parseInt(e.target.value, 10) || 0)))}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-500">Độ bám sát (~0.18mm)</label>
+                  <input
+                    type="number"
+                    min="0.05"
+                    max="2"
+                    step="0.05"
                     value={simplifyMm}
-                    onChange={(e) => setSimplifyMm(Math.max(0.1, parseFloat(e.target.value) || 0.4))}
+                    onChange={(e) => setSimplifyMm(Math.max(0.05, parseFloat(e.target.value) || 0.18))}
                     className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
                   />
                 </div>
@@ -629,6 +717,36 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
                   />
                 </div>
               </div>
+
+              {contoursMm.validation && contoursMm.length > 0 && (
+                <div
+                  className={`rounded-xl p-2.5 border text-[11px] flex flex-col gap-1 ${
+                    contoursMm.validation.valid
+                      ? 'bg-[#E6F4EF]/70 border-emerald-300 text-[#112A24]'
+                      : 'bg-amber-50 border-amber-300 text-amber-900'
+                  }`}
+                >
+                  <div className="font-bold flex items-center justify-between">
+                    <span>
+                      {contoursMm.validation.valid ? '✓ Kiểm tra hình học đạt chuẩn' : '⚠️ Cảnh báo hình học'}
+                    </span>
+                    <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/80 font-bold">
+                      {actualDpi} DPI
+                    </span>
+                  </div>
+                  <div className="font-mono text-[10px] text-slate-600 leading-relaxed">
+                    • {contoursMm.validation.closedCount}/{contoursMm.validation.stickerCount} Path Bézier CUT khép kín
+                    {showBleedContour && contoursMm.validation.bleedPathCount > 0
+                      ? ` + ${contoursMm.validation.bleedPathCount} Path BLEED`
+                      : ''}
+                    <br />• {contoursMm.validation.totalBezierSegments} đoạn Cubic Bézier · {contoursMm.validation.totalSharpCorners} góc nhọn (&le;{cornerAngleDeg}°)
+                    <br />• Tự giao: {contoursMm.validation.selfIntersections} · Va chạm giữa các tem:{' '}
+                    {contoursMm.validation.collisions.length === 0
+                      ? '0'
+                      : `${contoursMm.validation.collisions.length} cặp`}
+                  </div>
+                </div>
+              )}
 
               <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
                 <input

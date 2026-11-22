@@ -10,6 +10,7 @@ import {
   endPath,
 } from 'pdf-lib';
 import { MM_TO_PT } from './impositionEngine.js';
+import { drawClosedBezierContourOnPdfPage } from './bleedContourEngine.js';
 
 /**
  * Inspect MediaBox and TrimBox of each source page WITHOUT destroying Bleed.
@@ -331,16 +332,23 @@ export async function exportStickerPdf(sourceFilesInput, plan, config, exportRol
             color: cutMagenta,
           });
         } else if (cp.kind === 'poly' && cp.pts && cp.pts.length >= 2) {
-          const count = cp.closed ? cp.pts.length : cp.pts.length - 1;
-          for (let i = 0; i < count; i++) {
-            const a = cp.pts[i];
-            const b = cp.pts[(i + 1) % cp.pts.length];
-            destPage.drawLine({
-              start: { x: a[0] * MM_TO_PT, y: sheetHPt - a[1] * MM_TO_PT },
-              end: { x: b[0] * MM_TO_PT, y: sheetHPt - b[1] * MM_TO_PT },
-              thickness: 0.25,
+          if (cp.closed && cp.pts.length >= 3) {
+            drawClosedBezierContourOnPdfPage(destPage, cp.pts, (xMm, yMm) => [xMm * MM_TO_PT, sheetHPt - yMm * MM_TO_PT], {
               color: cutMagenta,
+              thicknessPt: 0.3,
             });
+          } else {
+            const count = cp.closed ? cp.pts.length : cp.pts.length - 1;
+            for (let i = 0; i < count; i++) {
+              const a = cp.pts[i];
+              const b = cp.pts[(i + 1) % cp.pts.length];
+              destPage.drawLine({
+                start: { x: a[0] * MM_TO_PT, y: sheetHPt - a[1] * MM_TO_PT },
+                end: { x: b[0] * MM_TO_PT, y: sheetHPt - b[1] * MM_TO_PT },
+                thickness: 0.25,
+                color: cutMagenta,
+              });
+            }
           }
         } else if (cp.kind === 'ellipse') {
           destPage.drawEllipse({
