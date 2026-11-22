@@ -9,8 +9,8 @@ import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
 import { exportImposedPdf, exportStickerPdf, exportStickerCutSvg } from '../engine/pdfExporter';
 
 export default function PdfEditor() {
-  // --- Top-Level Navigation ('library' | 'dieline' | 'namecard' | 'sticker' | 'booklet' | 'bleed') ---
-  const [activeStudio, setActiveStudio] = useState('namecard');
+  // --- Top-Level Navigation ('viewer' | 'library' | 'dieline' | 'namecard' | 'sticker' | 'booklet' | 'bleed' | 'resize' | 'organizer' | 'crop' | 'trimShift') ---
+  const [activeStudio, setActiveStudio] = useState('viewer');
   const [selectedTemplateId, setSelectedTemplateId] = useState('ste');
   const [toolSearch, setToolSearch] = useState('');
   const [showSettingsPanel, setShowSettingsPanel] = useState(true);
@@ -601,7 +601,9 @@ export default function PdfEditor() {
           </button>
 
           <span className="hidden sm:inline-flex px-2.5 py-0.5 rounded-full bg-white/10 text-emerald-200 text-[11px] font-semibold">
-            {activeStudio === 'namecard'
+            {activeStudio === 'viewer'
+              ? 'Xem & Kiểm tra File gốc'
+              : activeStudio === 'namecard'
               ? 'Bình Cắt Xén / Namecard'
               : activeStudio === 'sticker'
               ? 'Bình Tem Bế (Decal)'
@@ -609,6 +611,14 @@ export default function PdfEditor() {
               ? 'Bình Sách & Tạp chí'
               : activeStudio === 'bleed'
               ? 'Bù xén & Tạo đường cắt'
+              : activeStudio === 'resize'
+              ? 'Co giãn trang (Resize)'
+              : activeStudio === 'organizer'
+              ? 'Xáo trộn & Sắp xếp trang'
+              : activeStudio === 'crop'
+              ? 'Cắt khổ trang (Crop)'
+              : activeStudio === 'trimShift'
+              ? 'Trim & Shift (Dịch lề)'
               : activeStudio === 'dieline'
               ? 'Khuôn Bế 2D & 3D'
               : 'Thư viện Khuôn Bế'}
@@ -617,6 +627,21 @@ export default function PdfEditor() {
 
         {/* Right Quick Actions */}
         <div className="flex items-center gap-2 shrink-0">
+          <label className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold text-emerald-100 cursor-pointer flex items-center gap-1.5">
+            <span>📂 {sourceFiles[0]?.file?.name ? `File: ${sourceFiles[0].file.name.slice(0, 22)}` : 'Mở File PDF'}</span>
+            <input
+              type="file"
+              accept=".pdf,application/pdf"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files?.length) {
+                  setSourceFiles([]);
+                  handleAddFiles(e.target.files);
+                }
+              }}
+            />
+          </label>
           {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
             <>
               <button
@@ -682,8 +707,15 @@ export default function PdfEditor() {
 
         {activeStudio === 'bleed' && (
           <BleedAndContourStudio
+            initialFile={sourceFiles[0]?.file || null}
+            onSharedFileChange={(newFile) => {
+              if (newFile && (newFile.type === 'application/pdf' || newFile.name?.toLowerCase().endsWith('.pdf'))) {
+                setSourceFiles([{ id: `bleed-${Date.now()}`, file: newFile }]);
+              }
+            }}
             onOpenStickerImpose={() => {
               setActiveStudio('sticker');
+              setShowSettingsPanel(true);
               setCurrentSheetIndex(0);
             }}
             onSendSplitStickersToImpose={(splitPdfFile, preferredLayout = 'nesting') => {
@@ -701,6 +733,7 @@ export default function PdfEditor() {
               setStickerLayout(preferredLayout);
               setCollation('sequential');
               setActiveStudio('sticker');
+              setShowSettingsPanel(true);
               setInspectedPageIndex(null);
               setCurrentSheetIndex(0);
             }}
@@ -713,16 +746,31 @@ export default function PdfEditor() {
           activeStudio === 'trimShift') && (
           <FilePrepStudio
             activeTool={activeStudio}
+            initialFile={sourceFiles[0]?.file || null}
+            onSharedFileChange={(newFile) => {
+              if (newFile) {
+                setSourceFiles([{ id: `prep-src-${Date.now()}`, file: newFile }]);
+              }
+            }}
+            onApplyToWorkspace={(processedFile) => {
+              setSourceFiles([{ id: `prep-apply-${Date.now()}`, file: processedFile }]);
+              setInspectedPageIndex(0);
+              setCurrentSheetIndex(0);
+            }}
             onSendToImpose={(processedFile) => {
               setSourceFiles([{ id: `prep-${Date.now()}`, file: processedFile }]);
               setActiveStudio('namecard');
+              setShowSettingsPanel(true);
               setInspectedPageIndex(null);
               setCurrentSheetIndex(0);
             }}
           />
         )}
 
-        {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
+        {(activeStudio === 'viewer' ||
+          activeStudio === 'namecard' ||
+          activeStudio === 'sticker' ||
+          activeStudio === 'booklet') && (
           <>
             {/* 0. FAR-LEFT: IMPOSIO-STYLE PAGES THUMBNAIL & PAGE RANGE SIDEBAR */}
             {showPagesSidebar && (
@@ -885,17 +933,25 @@ export default function PdfEditor() {
                       📑 Mở cột Pages ({gangItems.length})
                     </button>
                   )}
-                  <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
-                    {plan.summary.itemsPerSheet} con/tờ
-                    {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount} ngang + ${plan.summary.secondaryCount} dọc)`}
-                  </span>
-                  <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-semibold">
-                    {plan.sheetDim.width}×{plan.sheetDim.height}mm · {plan.summary.utilizationPct}%
-                  </span>
-                  {plan.summary.ratioSheetsNeeded > 0 && (
-                    <span className="px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 font-bold">
-                      Cần in: {plan.summary.ratioSheetsNeeded} tờ
+                  {activeStudio === 'viewer' ? (
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-[#146C53] font-sans font-bold">
+                      👁️ Chế độ Xem &amp; Kiểm tra File gốc ({pdfPages.length} trang) — Chọn công cụ ở cột phải để bắt đầu xử lý
                     </span>
+                  ) : (
+                    <>
+                      <span className="px-2.5 py-1 rounded-lg bg-[#E6F4EF] text-[#146C53] font-bold">
+                        {plan.summary.itemsPerSheet} con/tờ
+                        {plan.summary.secondaryCount > 0 && ` (${plan.summary.primaryCount} ngang + ${plan.summary.secondaryCount} dọc)`}
+                      </span>
+                      <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-semibold">
+                        {plan.sheetDim.width}×{plan.sheetDim.height}mm · {plan.summary.utilizationPct}%
+                      </span>
+                      {plan.summary.ratioSheetsNeeded > 0 && (
+                        <span className="px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 font-bold">
+                          Cần in: {plan.summary.ratioSheetsNeeded} tờ
+                        </span>
+                      )}
+                    </>
                   )}
                   {mode === 'booklet' && (
                     <button
@@ -946,7 +1002,30 @@ export default function PdfEditor() {
                 </div>
               )}
 
-              <div className="flex-1 min-w-0 w-full flex items-center justify-center">
+              <div className="flex-1 min-w-0 w-full flex items-center justify-center relative">
+                {sourceFiles.length === 0 && activeStudio === 'viewer' && (
+                  <div className="absolute inset-0 z-10 flex items-center justify-center p-6 pointer-events-none">
+                    <label className="pointer-events-auto cursor-pointer bg-white/95 hover:bg-emerald-50/90 border-2 border-dashed border-[#146C53]/60 rounded-2xl p-8 max-w-md flex flex-col items-center gap-2.5 text-center shadow-lg transition-all">
+                      <span className="text-4xl">📂</span>
+                      <span className="text-sm font-extrabold text-slate-800">
+                        Tải file PDF lên bàn làm việc chung
+                      </span>
+                      <span className="text-xs text-slate-500 leading-relaxed">
+                        Mở file 1 lần duy nhất để xem kích thước từng trang ở cột <strong>Pages</strong> bên trái, sau đó chọn bất kỳ công cụ nào ở cột phải (<strong>Bù xén, Cắt khổ, Co giãn, Bình Tem, Bình Cắt Xén, Bình Sách</strong>) mà không cần tải lại file.
+                      </span>
+                      <span className="mt-1 px-4 py-2 rounded-xl bg-[#146C53] text-white text-xs font-bold shadow-xs">
+                        + Chọn file PDF từ máy tính
+                      </span>
+                      <input
+                        type="file"
+                        accept=".pdf,application/pdf"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => handleAddFiles(e.target.files)}
+                      />
+                    </label>
+                  </div>
+                )}
                 <PdfCanvasPreview
                   sourceFiles={sourceFiles}
                   plan={plan}
@@ -957,8 +1036,16 @@ export default function PdfEditor() {
                   safeInsetMm={safeInsetMm}
                   splitStickerPreview={mode === 'sticker' && splitStickerPreview}
                   autoCropInk={autoCropInk}
-                  inspectedPageIndex={inspectedPageIndex}
-                  onExitInspectPage={() => setInspectedPageIndex(null)}
+                  inspectedPageIndex={
+                    activeStudio === 'viewer' ? (inspectedPageIndex !== null ? inspectedPageIndex : 0) : inspectedPageIndex
+                  }
+                  onExitInspectPage={() => {
+                    if (activeStudio === 'viewer') {
+                      setActiveStudio('namecard');
+                      setShowSettingsPanel(true);
+                    }
+                    setInspectedPageIndex(null);
+                  }}
                   currentSheetIndex={currentSheetIndex}
                   setCurrentSheetIndex={setCurrentSheetIndex}
                   onPagesSynced={handlePagesSynced}
@@ -977,8 +1064,8 @@ export default function PdfEditor() {
               )}
             </main>
 
-            {/* 2. MIDDLE-RIGHT: ACTIVE TOOL SETTINGS + JOB CHECKS + EXPORT */}
-            {showSettingsPanel && (
+            {/* 2. MIDDLE-RIGHT: ACTIVE TOOL SETTINGS + JOB CHECKS + EXPORT (Hidden in 'viewer' mode until a tool is picked) */}
+            {showSettingsPanel && activeStudio !== 'viewer' && (
               <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col gap-3.5 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                   <div>
@@ -994,8 +1081,11 @@ export default function PdfEditor() {
                     </div>
                   </div>
                   <button
-                    onClick={() => setShowSettingsPanel(false)}
-                    title="Thu gọn bảng thông số"
+                    onClick={() => {
+                      setShowSettingsPanel(false);
+                      setActiveStudio('viewer');
+                    }}
+                    title="Đóng công cụ này để quay về Xem trang PDF gốc"
                     className="w-6 h-6 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 text-sm cursor-pointer"
                   >
                     ×
@@ -2373,6 +2463,10 @@ export default function PdfEditor() {
           />
 
           {[
+            {
+              group: 'BÀN LÀM VIỆC',
+              items: [{ id: 'viewer', label: 'Xem trang PDF gốc', icon: '👁️', badge: 'Gốc' }],
+            },
             {
               group: 'BÌNH BÀI IN',
               items: [

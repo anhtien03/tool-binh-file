@@ -12,7 +12,12 @@ import {
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
 
-export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplitStickersToImpose }) {
+export default function BleedAndContourStudio({
+  initialFile,
+  onSharedFileChange,
+  onOpenStickerImpose,
+  onSendSplitStickersToImpose,
+}) {
   const [subMode, setSubMode] = useState('contour'); // 'contour' | 'bleed'
   const [sourceFile, setSourceFile] = useState(null);
   const [sourceType, setSourceType] = useState('image');
@@ -86,9 +91,12 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     setRenderedCanvas(c);
   };
 
-  const handleUpload = async (file) => {
+  const handleUpload = async (file, notifyParent = true) => {
     if (!file) return;
     setSourceFile(file);
+    if (notifyParent && onSharedFileChange) {
+      onSharedFileChange(file);
+    }
     setError(null);
     setLoading(true);
     try {
@@ -129,6 +137,13 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
       setLoading(false);
     }
   };
+
+  // Auto-load workspace shared file if user switches to Bleed studio without having to re-upload
+  useEffect(() => {
+    if (initialFile && initialFile !== sourceFile) {
+      handleUpload(initialFile, false);
+    }
+  }, [initialFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-trace contours asynchronously so UI never freezes on complex PDFs
   useEffect(() => {

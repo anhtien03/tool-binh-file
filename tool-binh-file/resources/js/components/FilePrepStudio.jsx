@@ -18,7 +18,13 @@ const RESIZE_PRESETS = [
   { key: 'Custom', label: 'Tùy chỉnh (W × H mm)...', w: 210, h: 297 },
 ];
 
-export default function FilePrepStudio({ activeTool = 'organizer', onSendToImpose }) {
+export default function FilePrepStudio({
+  activeTool = 'organizer',
+  initialFile,
+  onSharedFileChange,
+  onApplyToWorkspace,
+  onSendToImpose,
+}) {
   const [sourceFile, setSourceFile] = useState(null);
   const [pdfBytes, setPdfBytes] = useState(null);
   const [rawPages, setRawPages] = useState([]); // [{ origIndex, widthMm, heightMm, dataUrl, inkCropMm }]
@@ -109,11 +115,14 @@ export default function FilePrepStudio({ activeTool = 'organizer', onSendToImpos
     };
   };
 
-  const handleUpload = async (file) => {
+  const handleUpload = async (file, notifyParent = true) => {
     if (!file) return;
     setLoading(true);
     setError(null);
     setSourceFile(file);
+    if (notifyParent && onSharedFileChange) {
+      onSharedFileChange(file);
+    }
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       setPdfBytes(bytes);
@@ -162,6 +171,13 @@ export default function FilePrepStudio({ activeTool = 'organizer', onSendToImpos
       setLoading(false);
     }
   };
+
+  // Auto-load workspace shared file when switching between tools
+  useEffect(() => {
+    if (initialFile && initialFile !== sourceFile) {
+      handleUpload(initialFile, false);
+    }
+  }, [initialFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build output PDF according to activeTool ('organizer' | 'resize' | 'crop' | 'trimShift')
   const buildProcessedPdfBytes = async () => {
@@ -300,7 +316,7 @@ export default function FilePrepStudio({ activeTool = 'organizer', onSendToImpos
     return await outDoc.save();
   };
 
-  const handleExportOrImpose = async (sendToImpose = false) => {
+  const handleExportOrImpose = async (action = 'download') => {
     if (!pdfBytes) return;
     setLoading(true);
     try {
@@ -316,9 +332,12 @@ export default function FilePrepStudio({ activeTool = 'organizer', onSendToImpos
           ? 'Crop'
           : 'TrimShift';
       const outName = `${prefix}_${base}.pdf`;
+      const f = new File([outBytes], outName, { type: 'application/pdf' });
 
-      if (sendToImpose && onSendToImpose) {
-        const f = new File([outBytes], outName, { type: 'application/pdf' });
+      if (action === 'apply' && onApplyToWorkspace) {
+        await handleUpload(f, false);
+        onApplyToWorkspace(f);
+      } else if ((action === 'impose' || action === true) && onSendToImpose) {
         onSendToImpose(f);
       } else {
         const blob = new Blob([outBytes], { type: 'application/pdf' });
@@ -1104,16 +1123,23 @@ export default function FilePrepStudio({ activeTool = 'organizer', onSendToImpos
         {/* ACTION BUTTONS */}
         <div className="mt-auto pt-3 border-t border-slate-100 flex flex-col gap-2">
           <button
-            onClick={() => handleExportOrImpose(true)}
+            onClick={() => handleExportOrImpose('apply')}
+            disabled={loading || !pdfBytes}
+            className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer disabled:opacity-40 shadow-xs"
+          >
+            ✅ Áp dụng lên File đang mở (Làm tiếp công cụ khác)
+          </button>
+          <button
+            onClick={() => handleExportOrImpose('impose')}
             disabled={loading || !pdfBytes}
             className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold cursor-pointer disabled:opacity-40 shadow-xs"
           >
             🚀 Áp dụng &amp; Đưa sang Bình Bài In
           </button>
           <button
-            onClick={() => handleExportOrImpose(false)}
+            onClick={() => handleExportOrImpose('download')}
             disabled={loading || !pdfBytes}
-            className="w-full py-2.5 rounded-xl bg-[#146C53] hover:bg-[#0f5440] text-white text-xs font-bold cursor-pointer disabled:opacity-40 shadow-xs"
+            className="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold cursor-pointer disabled:opacity-40 shadow-xs"
           >
             {loading ? '⏳ Đang xử lý PDF...' : '💾 Tải File PDF Đã Xử Lý'}
           </button>
