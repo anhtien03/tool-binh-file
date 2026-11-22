@@ -866,11 +866,14 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
     return arr;
   });
 
-  // Post-filter residual corner registration marks near 4 sheet corners
+  // Post-filter residual corner & edge registration marks (e.g. L-marks at 4 corners or tiny ▲ feed triangle along sheet edge)
   if (ignoreCornerMarks && contoursMm.length > 1) {
     const cornerZoneX = Math.max(26, totalWidthMm * 0.095);
     const cornerZoneY = Math.max(26, totalHeightMm * 0.095);
     const maxMarkSize = Math.max(28, Math.min(totalWidthMm, totalHeightMm) * 0.085);
+    const edgeMarginMm = Math.max(16, Math.min(totalWidthMm, totalHeightMm) * 0.05);
+    const maxEdgeTickSize = Math.max(16, Math.min(totalWidthMm, totalHeightMm) * 0.045);
+
     contoursMm = contoursMm.filter((poly) => {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const [x, y] of poly) {
@@ -887,25 +890,79 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
       const nearRight = cx > totalWidthMm - cornerZoneX;
       const nearTop = cy < cornerZoneY;
       const nearBottom = cy > totalHeightMm - cornerZoneY;
+      // 1. Corner registration marks (L-marks / circle marks)
       if ((nearLeft || nearRight) && (nearTop || nearBottom) && w < maxMarkSize && h < maxMarkSize) {
+        return false;
+      }
+      // 2. Small sheet-edge directional marks (like the ▲ triangle at the bottom edge of 330x390mm sheet)
+      const onSheetBorder =
+        minX < edgeMarginMm ||
+        maxX > totalWidthMm - edgeMarginMm ||
+        minY < edgeMarginMm ||
+        maxY > totalHeightMm - edgeMarginMm;
+      if (onSheetBorder && w < maxEdgeTickSize && h < maxEdgeTickSize) {
         return false;
       }
       return true;
     });
   }
 
-  // STEP 3: Create outward BLEED Cubic Bézier contours from CUT contours when bleedOffsetMm > 0
-  const bleedContoursMm =
-    bleedOffsetMm > 0.05
-      ? contoursMm.map((cutPoly) =>
-          shapeMode !== 'auto'
-            ? buildGeometricContourObj(
-                cutPoly.map(([x, y]) => [x, y]),
-                shapeMode
-              )
-            : offsetPolygonAndFitBezierMm(cutPoly, bleedOffsetMm, fitOpts)
-        )
-      : [];
+  // STEP 3: Create outward BLEED Cubic Bézier contours using exact Euclidean Distance Field (zero concave swallowtail loops!)
+  let bleedContoursMm = [];
+  if (bleedOffsetMm > 0.05 && contoursMm.length > 0) {
+    const totalBleedPx = Math.max(0.25, (offsetMm + bleedOffsetMm) * pxPerMm);
+    const distForBleed = computeDistanceField(fgMask, cw, ch);
+    let bleedMask = new Uint8Array(cw * ch);
+    for (let i = 0; i < cw * ch; i++) {
+      if (distForBleed[i] <= totalBleedPx) bleedMask[i] = 1;
+    }
+    bleedMask = fillInteriorHoles(bleedMask, cw, ch);
+    const rawBleedLoops = traceConnectedContoursChainNone(bleedMask, cw, ch, minAreaPx);
+
+    const candidateBleeds = rawBleedLoops.map((loop) => {
+      const rawPtsMm = loop.map(([px, py]) => [(px - padPx) / pxPerMm, (py - padPx) / pxPerMm]);
+      if (shapeMode !== 'auto') {
+        return buildGeometricContourObj(rawPtsMm, shapeMode);
+      }
+      const fitted = fitCornerPreservingBezier(rawPtsMm, fitOpts);
+      const arr = [...fitted.ptsMm];
+      Object.assign(arr, fitted);
+      return arr;
+    });
+
+    // Match each CUT contour to its enclosing/nearest BLEED contour (1:1 correspondence, fallback to clean offset if needed)
+    bleedContoursMm = contoursMm.map((cutPoly) => {
+      let cMinX = Infinity, cMinY = Infinity, cMaxX = -Infinity, cMaxY = -Infinity;
+      for (const [x, y] of cutPoly) {
+        if (x < cMinX) cMinX = x;
+        if (y < cMinY) cMinY = y;
+        if (x > cMaxX) cMaxX = x;
+        if (y > cMaxY) cMaxY = y;
+      }
+      const ccx = (cMinX + cMaxX) / 2;
+      const ccy = (cMinY + cMaxY) / 2;
+
+      let bestBleed = null;
+      let bestDist = Infinity;
+      for (const bPoly of candidateBleeds) {
+        let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+        for (const [x, y] of bPoly) {
+          if (x < bMinX) bMinX = x;
+          if (y < bMinY) bMinY = y;
+          if (x > bMaxX) bMaxX = x;
+          if (y > bMaxY) bMaxY = y;
+        }
+        const bcx = (bMinX + bMaxX) / 2;
+        const bcy = (bMinY + bMaxY) / 2;
+        const d = Math.hypot(bcx - ccx, bcy - ccy);
+        if (d < bestDist && d < Math.max(cMaxX - cMinX, cMaxY - cMinY) * 0.45) {
+          bestDist = d;
+          bestBleed = bPoly;
+        }
+      }
+      return bestBleed || offsetPolygonAndFitBezierMm(cutPoly, bleedOffsetMm, fitOpts);
+    });
+  }
 
   // STEP 4: Geometric Validation
   const validation = validateContoursGeometry(contoursMm, bleedContoursMm, totalWidthMm, totalHeightMm);

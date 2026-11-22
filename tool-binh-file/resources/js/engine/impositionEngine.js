@@ -5,6 +5,8 @@ export const PAPER_SIZES = {
   A3: { name: 'A3 (297 × 420 mm)', width: 297, height: 420, group: 'Digital' },
   SRA3: { name: 'SRA3 (320 × 450 mm)', width: 320, height: 450, group: 'Digital' },
   D325x430: { name: '325 × 430 mm (In nhanh)', width: 325, height: 430, group: 'Digital' },
+  D330x390: { name: '330 × 390 mm (Decal 33×39cm)', width: 330, height: 390, group: 'Digital' },
+  D340x400: { name: '340 × 400 mm (Decal 34×40cm)', width: 340, height: 400, group: 'Digital' },
   D330x480: { name: '330 × 480 mm (In nhanh)', width: 330, height: 480, group: 'Digital' },
   A2: { name: 'A2 (420 × 594 mm)', width: 420, height: 594, group: 'Offset' },
   K65x86: { name: 'Offset K65 × 86 cm', width: 650, height: 860, group: 'Offset' },
@@ -641,12 +643,16 @@ export function runJobChecks(pagesMeta, sheets, sheetDim, config, summary) {
     });
   }
 
-  // 2. Source Bleed check
-  const first = pagesMeta[0];
+  // 2. Source Bleed check (evaluate on active gangItems pages, not stale file #0)
+  const activePages =
+    Array.isArray(config.gangItems) && config.gangItems.length > 0
+      ? config.gangItems.map((it) => pagesMeta[it.frontIndex]).filter(Boolean)
+      : pagesMeta;
+  const first = activePages[0] || pagesMeta[0];
   const rawW = first.mediaWmm ?? first.width / MM_TO_PT;
   const rawH = first.mediaHmm ?? first.height / MM_TO_PT;
   const hasForcedTrim = Number(config.targetTrimW) > 0 && Number(config.targetTrimH) > 0;
-  if (bleedMm > 0 && !first.hasExplicitTrimBox && !hasForcedTrim) {
+  if (bleedMm > 0 && !first.hasExplicitTrimBox && !hasForcedTrim && !config.autoCropInk) {
     checks.push({
       id: 'bleed',
       level: 'warn',
@@ -663,23 +669,35 @@ export function runJobChecks(pagesMeta, sheets, sheetDim, config, summary) {
   }
 
   // 3. Mixed page dimensions check
-  if (pagesMeta.length > 1) {
+  if (activePages.length > 1) {
     let mismatch = false;
-    for (let i = 1; i < pagesMeta.length; i++) {
-      const pw = pagesMeta[i].mediaWmm ?? pagesMeta[i].width / MM_TO_PT;
-      const ph = pagesMeta[i].mediaHmm ?? pagesMeta[i].height / MM_TO_PT;
+    for (let i = 1; i < activePages.length; i++) {
+      const pw = activePages[i].mediaWmm ?? activePages[i].width / MM_TO_PT;
+      const ph = activePages[i].mediaHmm ?? activePages[i].height / MM_TO_PT;
       if (Math.abs(pw - rawW) > 1.0 || Math.abs(ph - rawH) > 1.0) {
         mismatch = true;
         break;
       }
     }
     if (mismatch) {
-      checks.push({
-        id: 'size-mismatch',
-        level: 'warn',
-        title: 'Kích thước các trang/file không đồng nhất',
-        detail: 'Các trang nguồn lệch nhau > 1 mm; có thể bật "Ép Trim Size" (VD: 90×54 mm) để đồng bộ.',
-      });
+      if (config.mode === 'sticker' && config.stickerLayout === 'nesting') {
+        checks.push({
+          id: 'size-mismatch',
+          level: 'ok',
+          title: `Nesting 1:1 đa kích thước (${activePages.length} mẫu)`,
+          detail: 'Mỗi tem giữ nguyên kích thước thật 1:1 và tự động xoay lồng khít trên tờ in.',
+        });
+      } else {
+        checks.push({
+          id: 'size-mismatch',
+          level: 'warn',
+          title: 'Kích thước các trang/file không đồng nhất',
+          detail:
+            config.mode === 'sticker'
+              ? 'Các tem có kích thước khác nhau; hãy chọn Kiểu xếp tem: "Xếp lồng 1:1 (Nesting đa cỡ)" để giữ đúng kích thước từng tem.'
+              : 'Các trang nguồn lệch nhau > 1 mm; có thể bật "Ép Trim Size" (VD: 90×54 mm) để đồng bộ.',
+        });
+      }
     }
   }
 
@@ -1150,12 +1168,14 @@ export function computeImpositionPlan(pagesMeta, config) {
             }
           }
           if (sheetPlacements.length === 0) {
-            // Item larger than sheet: place 1 centered on its own sheet so we never infinite-loop
+            // Item larger than sheet: clamp clipBleed to sheet boundaries so it doesn't overflow sheet
             const fallbackItem = remaining.shift();
             const m = getRotatedItemMask(fallbackItem.pageIndex, 0);
+            const fx = Math.max(0, (sheetDim.width - m.drawW) / 2);
+            const fy = Math.max(0, (sheetDim.height - m.drawH) / 2);
             sheetPlacements.push({
-              x: Math.max(effMargins.left, (sheetDim.width - m.drawW) / 2),
-              y: Math.max(effMargins.top, (sheetDim.height - m.drawH) / 2),
+              x: Math.round(fx * 100) / 100,
+              y: Math.round(fy * 100) / 100,
               trimW: Math.round(m.drawW * 100) / 100,
               trimH: Math.round(m.drawH * 100) / 100,
               rotate: 0,
@@ -1163,8 +1183,23 @@ export function computeImpositionPlan(pagesMeta, config) {
               block: 'primary',
               pageIndex: fallbackItem.pageIndex,
               srcTrimBoxMm: m.box.isCustom ? m.box : undefined,
-              clipBleed: { top: bleedMm, bottom: bleedMm, left: bleedMm, right: bleedMm },
+              clipBleed: {
+                top: Math.max(0, Math.min(bleedMm, fy)),
+                bottom: Math.max(0, Math.min(bleedMm, sheetDim.height - (fy + m.drawH))),
+                left: Math.max(0, Math.min(bleedMm, fx)),
+                right: Math.max(0, Math.min(bleedMm, sheetDim.width - (fx + m.drawW))),
+              },
             });
+          } else {
+            // Ensure clipBleed on every nested sticker never protrudes outside physical sheet
+            for (const sp of sheetPlacements) {
+              sp.clipBleed = {
+                top: Math.max(0, Math.min(bleedMm, sp.y)),
+                bottom: Math.max(0, Math.min(bleedMm, sheetDim.height - (sp.y + sp.trimH))),
+                left: Math.max(0, Math.min(bleedMm, sp.x)),
+                right: Math.max(0, Math.min(bleedMm, sheetDim.width - (sp.x + sp.trimW))),
+              };
+            }
           }
           sheetLists.push(sheetPlacements);
         }

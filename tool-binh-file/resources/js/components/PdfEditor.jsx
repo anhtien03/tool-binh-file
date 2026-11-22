@@ -656,10 +656,19 @@ export default function PdfEditor() {
             }}
             onSendSplitStickersToImpose={(splitPdfFile) => {
               setSourceFiles([{ id: `split-${Date.now()}`, file: splitPdfFile }]);
+              setPaperSizeKey('D330x390');
+              setOrientation('portrait');
+              setMarginTop(5);
+              setMarginBottom(5);
+              setMarginLeft(5);
+              setMarginRight(5);
+              setGutterX(2);
+              setGutterY(2);
               setStickerShape('pdfContour');
               setStickerLayout('nesting');
               setCollation('sequential');
               setActiveStudio('sticker');
+              setInspectedPageIndex(null);
               setCurrentSheetIndex(0);
             }}
           />
