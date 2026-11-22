@@ -29,6 +29,8 @@ export default function FilePrepStudio({
   const [pdfBytes, setPdfBytes] = useState(null);
   const [rawPages, setRawPages] = useState([]); // [{ origIndex, widthMm, heightMm, dataUrl, inkCropMm }]
   const [loading, setLoading] = useState(false);
+  const [loadPct, setLoadPct] = useState(0);
+  const [loadText, setLoadText] = useState('');
   const [error, setError] = useState(null);
   const [activePageIdx, setActivePageIdx] = useState(0);
   const [zoom, setZoom] = useState(1.0);
@@ -129,6 +131,9 @@ export default function FilePrepStudio({
       const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
       const loaded = [];
       for (let p = 1; p <= pdf.numPages; p++) {
+        setLoadPct(Math.round((p / pdf.numPages) * 100));
+        setLoadText(`Đang đọc trang ${p} / ${pdf.numPages}...`);
+        await new Promise((r) => setTimeout(r, 0));
         const page = await pdf.getPage(p);
         const vp1 = page.getViewport({ scale: 1.0 });
         const wMm = Math.round((vp1.width / MM_TO_PT) * 10) / 10;
@@ -451,8 +456,28 @@ export default function FilePrepStudio({
 
         <div
           ref={viewportRef}
-          className="flex-1 min-h-[540px] rounded-xl bg-[#e5e7eb] border border-slate-300 overflow-auto p-6 flex items-center justify-center"
+          className="relative flex-1 min-h-[540px] rounded-xl bg-[#e5e7eb] border border-slate-300 overflow-auto p-6 flex items-center justify-center"
         >
+          {loading && (
+            <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-2xs flex items-center justify-center p-4">
+              <div className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-2xl p-5 flex flex-col items-center gap-3 text-center">
+                <div className="relative w-12 h-12 flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border-4 border-emerald-100" />
+                  <div className="absolute inset-0 rounded-full border-4 border-[#146C53] border-t-transparent animate-spin" />
+                  <span className="text-[11px] font-extrabold font-mono text-[#146C53]">{Math.max(8, loadPct)}%</span>
+                </div>
+                <div className="text-xs font-extrabold text-slate-800">
+                  {loadText || 'Đang xử lý file PDF...'}
+                </div>
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-[#146C53] to-emerald-400 transition-all duration-150 rounded-full"
+                    style={{ width: `${Math.max(10, loadPct)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
           {rawPages.length === 0 ? (
             <label className="cursor-pointer bg-white hover:bg-emerald-50/60 border-2 border-dashed border-[#146C53]/50 rounded-2xl p-10 flex flex-col items-center gap-2 text-center shadow-xs transition-all">
               <span className="text-3xl">📄</span>

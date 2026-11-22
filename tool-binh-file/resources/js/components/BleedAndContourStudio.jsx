@@ -25,6 +25,8 @@ export default function BleedAndContourStudio({
   const [sizeMm, setSizeMm] = useState({ w: 150, h: 150 });
   const [actualDpi, setActualDpi] = useState(TARGET_PRINT_DPI);
   const [loading, setLoading] = useState(false);
+  const [loadPct, setLoadPct] = useState(0);
+  const [loadStage, setLoadStage] = useState('');
   const [isTracing, setIsTracing] = useState(false);
   const [error, setError] = useState(null);
 
@@ -64,6 +66,9 @@ export default function BleedAndContourStudio({
   const previewCanvasRef = useRef(null);
 
   const renderPdfPageAt = async (bytes, pageNum) => {
+    setLoadPct(18);
+    setLoadStage('Đang giải mã cấu trúc trang PDF...');
+    await new Promise((r) => setTimeout(r, 0));
     const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
     setTotalPdfPages(pdf.numPages);
     const safePage = Math.max(1, Math.min(pdf.numPages, pageNum));
@@ -80,14 +85,22 @@ export default function BleedAndContourStudio({
     const renderScale = Math.min(scale300, maxSafeScale);
     setActualDpi(Math.round(renderScale * 72));
 
+    setLoadPct(52);
+    setLoadStage(`Đang kết xuất trang ${safePage}/${pdf.numPages} ở độ phân giải ${Math.round(renderScale * 72)} DPI...`);
+    await new Promise((r) => setTimeout(r, 0));
+
     const vp = page.getViewport({ scale: renderScale });
     const c = document.createElement('canvas');
     c.width = Math.round(vp.width);
     c.height = Math.round(vp.height);
     // Pass transparent background so PDFs without a full-page white rect preserve their native vector/SMask Alpha channel!
     await page.render({ canvasContext: c.getContext('2d'), viewport: vp, background: 'rgba(0,0,0,0)' }).promise;
+    setLoadPct(85);
+    setLoadStage('Đang trích xuất tọa độ đối tượng & dò đường bế...');
+    await new Promise((r) => setTimeout(r, 0));
     const placements = await extractPdfImagePlacementsMm(bytes, safePage);
     setImagePlacementsMm(placements);
+    setLoadPct(100);
     setRenderedCanvas(c);
   };
 
@@ -591,7 +604,7 @@ export default function BleedAndContourStudio({
           onMouseUp={stopPanning}
           onMouseLeave={stopPanning}
           title="Cuộn chuột để Phóng to / Thu nhỏ (tối đa 1000%) · Kéo chuột trái để di chuyển"
-          className={`w-full h-[calc(100vh-190px)] min-h-[600px] rounded-2xl border border-slate-200 flex overflow-auto p-3 select-none ${
+          className={`relative w-full h-[calc(100vh-190px)] min-h-[600px] rounded-2xl border border-slate-200 flex overflow-auto p-3 select-none ${
             isPanning ? 'cursor-grabbing' : 'cursor-grab'
           }`}
           style={{
@@ -601,6 +614,28 @@ export default function BleedAndContourStudio({
             backgroundSize: '24px 24px',
           }}
         >
+          {(loading || isTracing) && (
+            <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-2xs flex items-center justify-center p-4 pointer-events-none">
+              <div className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-2xl p-5 flex flex-col items-center gap-3 text-center">
+                <div className="relative w-12 h-12 flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border-4 border-emerald-100" />
+                  <div className="absolute inset-0 rounded-full border-4 border-[#146C53] border-t-transparent animate-spin" />
+                  <span className="text-[11px] font-extrabold font-mono text-[#146C53]">
+                    {loading ? `${Math.max(10, loadPct)}%` : '300'}
+                  </span>
+                </div>
+                <div className="text-xs font-extrabold text-slate-800">
+                  {loading ? loadStage || 'Đang tải & kết xuất file ở 300 DPI...' : 'Đang dò đường bế Bézier & bù xén...'}
+                </div>
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-[#146C53] to-emerald-400 transition-all duration-150 rounded-full"
+                    style={{ width: `${loading ? Math.max(12, loadPct) : 92}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
           <div className="m-auto shrink-0">
             <canvas ref={previewCanvasRef} className="bg-white shadow-md rounded border border-slate-200 block" />
           </div>

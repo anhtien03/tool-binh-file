@@ -28,6 +28,7 @@ export default function PdfCanvasPreview({
 }) {
   const [pages, setPages] = useState([]);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [loadProgress, setLoadProgress] = useState({ pct: 0, page: 0, total: 0, fileName: '', stage: '' });
   const [isPanning, setIsPanning] = useState(false);
   const canvasRef = useRef(null);
   const cutCanvasRef = useRef(null);
@@ -44,7 +45,16 @@ export default function PdfCanvasPreview({
     }
 
     let cancelled = false;
-    const parseSingleFile = async (entry) => {
+    const parseSingleFile = async (entry, fileIdx, totalFiles) => {
+      const fName = entry.file?.name || 'file.pdf';
+      setLoadProgress({
+        pct: 8,
+        page: 0,
+        total: 0,
+        fileName: fName,
+        stage: `Đang đọc cấu trúc MediaBox / TrimBox & đường bế (${fileIdx}/${totalFiles})...`,
+      });
+      await new Promise((r) => setTimeout(r, 0));
       const buffer = await entry.file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
 
@@ -91,6 +101,15 @@ export default function PdfCanvasPreview({
 
       for (let i = 1; i <= pdf.numPages; i++) {
         if (cancelled) return [];
+        const pct = Math.min(99, Math.max(12, Math.round((i / pdf.numPages) * 100)));
+        setLoadProgress({
+          pct,
+          page: i,
+          total: pdf.numPages,
+          fileName: fName,
+          stage: `Đang kết xuất trang ${i} / ${pdf.numPages} & nhận diện vùng mực...`,
+        });
+        await new Promise((r) => setTimeout(r, 0));
         const page = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 1.25 });
         const offscreen = document.createElement('canvas');
@@ -182,9 +201,10 @@ export default function PdfCanvasPreview({
       const missing = sourceFiles.filter((f) => !fileCacheRef.current.has(f.id));
       if (missing.length > 0) setPdfLoading(true);
       try {
-        for (const entry of missing) {
+        for (let idx = 0; idx < missing.length; idx++) {
           if (cancelled) return;
-          const parsed = await parseSingleFile(entry);
+          const entry = missing[idx];
+          const parsed = await parseSingleFile(entry, idx + 1, missing.length);
           if (!cancelled) fileCacheRef.current.set(entry.id, parsed);
         }
 
@@ -709,8 +729,33 @@ export default function PdfCanvasPreview({
   return (
     <div className="flex flex-col items-center w-full relative">
       {pdfLoading && (
-        <div className="flex items-center gap-2 text-[#146C53] mb-3 animate-pulse">
-          <span className="text-xs font-semibold">Đang phân tích TrimBox/Bleed &amp; trích xuất trang PDF...</span>
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-2xs flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 flex flex-col items-center gap-3.5 text-center">
+            <div className="relative w-14 h-14 flex items-center justify-center">
+              <div className="absolute inset-0 rounded-full border-4 border-emerald-100" />
+              <div className="absolute inset-0 rounded-full border-4 border-[#146C53] border-t-transparent animate-spin" />
+              <span className="text-xs font-extrabold font-mono text-[#146C53]">{loadProgress.pct}%</span>
+            </div>
+            <div className="flex flex-col gap-1 w-full">
+              <div className="text-sm font-extrabold text-slate-900 truncate px-2">
+                📂 Đang tải: {loadProgress.fileName || 'File PDF'}
+              </div>
+              <div className="text-xs font-medium text-slate-500">
+                {loadProgress.stage || 'Đang phân tích TrimBox/Bleed & trích xuất trang PDF...'}
+              </div>
+            </div>
+            <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+              <div
+                className="h-full bg-gradient-to-r from-[#146C53] to-emerald-400 transition-all duration-150 rounded-full"
+                style={{ width: `${Math.max(6, loadProgress.pct)}%` }}
+              />
+            </div>
+            {loadProgress.total > 0 && (
+              <div className="text-[11px] font-mono font-bold text-[#146C53]">
+                Tiến độ: {loadProgress.page} / {loadProgress.total} trang ({loadProgress.pct}%)
+              </div>
+            )}
+          </div>
         </div>
       )}
 
