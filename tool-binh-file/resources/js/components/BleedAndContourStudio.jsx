@@ -20,6 +20,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   const [sizeMm, setSizeMm] = useState({ w: 150, h: 150 });
   const [actualDpi, setActualDpi] = useState(TARGET_PRINT_DPI);
   const [loading, setLoading] = useState(false);
+  const [isTracing, setIsTracing] = useState(false);
   const [error, setError] = useState(null);
 
   // Contour Tracer Options (5-Step Pipeline: Alpha Cut + Corner-Preserving Bézier + Bleed Offset + Geometry Validation)
@@ -133,8 +134,11 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   useEffect(() => {
     if (!renderedCanvas || subMode !== 'contour') {
       setContoursMm([]);
+      setIsTracing(false);
       return;
     }
+    // Debounce: while user drags a slider, only re-trace after they pause (~250ms) instead of on every tick
+    setIsTracing(true);
     const timer = setTimeout(() => {
       try {
         const traced = extractStickerContoursFromImage(renderedCanvas, sizeMm.w, sizeMm.h, {
@@ -154,8 +158,10 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
       } catch (err) {
         console.error(err);
         setError('Lỗi khi dò đường bế từ hình ảnh.');
+      } finally {
+        setIsTracing(false);
       }
-    }, 20);
+    }, 250);
     return () => clearTimeout(timer);
   }, [
     renderedCanvas,
@@ -181,7 +187,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
     const maxBox = Math.round(720 * zoom);
-    const ratio = window.devicePixelRatio || 2;
+    let ratio = window.devicePixelRatio || 2;
     const padMm = subMode === 'contour' ? Math.max(4, offsetMm + 3) : bleedAllMm + 2;
     const totalW = sizeMm.w + padMm * 2;
     const totalH = sizeMm.h + padMm * 2;
@@ -189,8 +195,12 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
 
     const viewW = Math.round(totalW * scale);
     const viewH = Math.round(totalH * scale);
-    canvas.width = viewW * ratio;
-    canvas.height = viewH * ratio;
+    // Cap backing-store size: at 1000% zoom x DPR 2 the canvas would be ~14000px (500MB+ RAM) and freeze the browser
+    const MAX_SIDE = 8192;
+    const MAX_AREA = 16_000_000;
+    ratio = Math.min(ratio, MAX_SIDE / Math.max(1, viewW), MAX_SIDE / Math.max(1, viewH), Math.sqrt(MAX_AREA / Math.max(1, viewW * viewH)));
+    canvas.width = Math.max(1, Math.floor(viewW * ratio));
+    canvas.height = Math.max(1, Math.floor(viewH * ratio));
     canvas.style.width = `${viewW}px`;
     canvas.style.height = `${viewH}px`;
 
@@ -357,16 +367,33 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
+    // Coalesce wheel ticks into 1 zoom update per animation frame (touchpads fire 60-120 wheel events/sec)
+    let pendingTicks = 0;
+    let rafId = 0;
     const handleWheel = (e) => {
       e.preventDefault();
-      setZoom((prev) => {
-        const step = prev >= 2.5 ? 0.35 : prev >= 1.5 ? 0.22 : 0.15;
-        const delta = e.deltaY < 0 ? step : -step;
-        return Math.round(Math.min(10.0, Math.max(0.35, prev + delta)) * 100) / 100;
+      pendingTicks += e.deltaY < 0 ? 1 : -1;
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        const ticks = Math.max(-3, Math.min(3, pendingTicks));
+        pendingTicks = 0;
+        rafId = 0;
+        if (!ticks) return;
+        setZoom((prev) => {
+          let z = prev;
+          for (let i = 0; i < Math.abs(ticks); i++) {
+            const step = z >= 2.5 ? 0.35 : z >= 1.5 ? 0.22 : 0.15;
+            z += ticks > 0 ? step : -step;
+          }
+          return Math.round(Math.min(10.0, Math.max(0.35, z)) * 100) / 100;
+        });
       });
     };
     el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
+    return () => {
+      el.removeEventListener('wheel', handleWheel);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, []);
 
   const handleMouseDown = (e) => {
@@ -575,6 +602,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
                 </span>
               )}
               <span className="text-slate-400">· Ảnh nguồn: {actualDpi} DPI</span>
+              {isTracing && <span className="text-violet-600 font-semibold animate-pulse">⏳ Đang dò lại đường bế...</span>}
             </>
           ) : (
             <>

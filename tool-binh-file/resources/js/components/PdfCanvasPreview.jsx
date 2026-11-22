@@ -264,9 +264,15 @@ export default function PdfCanvasPreview({
     const drawSheetToCanvas = (canvas, layerFilter) => {
       if (!canvas) return;
 
-      const ratio = window.devicePixelRatio || 2;
-      canvas.width = canvasWidth * ratio;
-      canvas.height = canvasHeight * ratio;
+      // Cap backing-store size so 1000% zoom doesn't allocate a 500MB+ canvas and freeze the browser
+      const ratio = Math.min(
+        window.devicePixelRatio || 2,
+        8192 / Math.max(1, canvasWidth),
+        8192 / Math.max(1, canvasHeight),
+        Math.sqrt(16_000_000 / Math.max(1, canvasWidth * canvasHeight))
+      );
+      canvas.width = Math.max(1, Math.floor(canvasWidth * ratio));
+      canvas.height = Math.max(1, Math.floor(canvasHeight * ratio));
 
       const ctx = canvas.getContext('2d');
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -642,17 +648,34 @@ export default function PdfCanvasPreview({
     const el = viewportRef.current;
     if (!el || !onZoomChange) return;
 
+    // Coalesce wheel ticks into 1 zoom update per animation frame
+    let pendingTicks = 0;
+    let rafId = 0;
     const handleWheel = (e) => {
       e.preventDefault();
-      onZoomChange((prev) => {
-        const step = prev >= 2.5 ? 0.35 : prev >= 1.5 ? 0.22 : 0.15;
-        const delta = e.deltaY < 0 ? step : -step;
-        return Math.round(Math.min(10.0, Math.max(0.35, prev + delta)) * 100) / 100;
+      pendingTicks += e.deltaY < 0 ? 1 : -1;
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        const ticks = Math.max(-3, Math.min(3, pendingTicks));
+        pendingTicks = 0;
+        rafId = 0;
+        if (!ticks) return;
+        onZoomChange((prev) => {
+          let z = prev;
+          for (let i = 0; i < Math.abs(ticks); i++) {
+            const step = z >= 2.5 ? 0.35 : z >= 1.5 ? 0.22 : 0.15;
+            z += ticks > 0 ? step : -step;
+          }
+          return Math.round(Math.min(10.0, Math.max(0.35, z)) * 100) / 100;
+        });
       });
     };
 
     el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
+    return () => {
+      el.removeEventListener('wheel', handleWheel);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, [onZoomChange]);
 
   // 4. Left-click Drag to Pan
