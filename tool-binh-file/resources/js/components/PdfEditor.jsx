@@ -392,7 +392,7 @@ export default function PdfEditor() {
     setSuccess(false);
   };
 
-  const config = useMemo(
+  const liveConfig = useMemo(
     () => ({
       mode,
       paperSizeKey,
@@ -503,6 +503,16 @@ export default function PdfEditor() {
       gangItems,
     ]
   );
+
+  // Debounce: while the user is typing/changing numbers, wait ~300ms after the last change before re-imposing
+  // (imposition nesting is heavy; recomputing on every keystroke froze the panel)
+  const [config, setConfig] = useState(liveConfig);
+  useEffect(() => {
+    if (liveConfig === config) return;
+    const t = setTimeout(() => setConfig(liveConfig), 300);
+    return () => clearTimeout(t);
+  }, [liveConfig]); // eslint-disable-line react-hooks/exhaustive-deps
+  const isRecomputingPlan = liveConfig !== config;
 
   const plan = useMemo(() => computeImpositionPlan(pdfPages, config), [pdfPages, config]);
 
@@ -1902,6 +1912,7 @@ export default function PdfEditor() {
                             plan.summary.itemsPerSheet}
                         </strong>{' '}
                         tem/tờ
+                        {isRecomputingPlan && <span className="ml-1.5 text-violet-600 animate-pulse">⏳ đang tính lại...</span>}
                       </div>
                     )}
 

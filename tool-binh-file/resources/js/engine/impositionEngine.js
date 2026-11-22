@@ -1011,6 +1011,15 @@ export function computeImpositionPlan(pagesMeta, config) {
             }
           }
         }
+        // Per-row free-cell counter, kept in sync by stampMask (used to skip full rows fast)
+        const rowFree = new Int32Array(gridH);
+        for (let gy = 0; gy < gridH; gy++) {
+          let c = 0;
+          const row = gy * gridW;
+          for (let gx = 0; gx < gridW; gx++) if (!g[row + gx]) c++;
+          rowFree[gy] = c;
+        }
+        g.rowFree = rowFree;
         return g;
       };
 
@@ -1123,33 +1132,114 @@ export function computeImpositionPlan(pagesMeta, config) {
         return true;
       };
 
+      // Fast check for masks whose rows are each ONE contiguous run [rowL..rowR] (rect, circle, oval, most contours).
+      // Returns 0 if placeable, otherwise how far gx can jump: no position overlapping a blocked cell within a row's
+      // run can succeed, so we skip straight past the rightmost conflict.
+      const conflictJumpSpans = (grid, gx0, gy0, mh, rowL, rowR) => {
+        let jump = 0;
+        for (let my = 0; my < mh; my++) {
+          const l = rowL[my];
+          if (l < 0) continue;
+          const rowG = (gy0 + my) * gridW + gx0;
+          const stop = l + jump; // cells left of this can't increase the jump
+          for (let mx = rowR[my]; mx >= stop; mx--) {
+            if (grid[rowG + mx]) {
+              jump = mx - l + 1;
+              break;
+            }
+          }
+        }
+        return jump;
+      };
+
       const stampMask = (grid, gx0, gy0, mw, mh, mask) => {
+        const rowFree = grid.rowFree;
         for (let my = 0; my < mh; my++) {
           const rowG = (gy0 + my) * gridW + gx0;
           const rowM = my * mw;
           for (let mx = 0; mx < mw; mx++) {
-            if (mask[rowM + mx]) grid[rowG + mx] = 1;
+            if (mask[rowM + mx] && !grid[rowG + mx]) {
+              grid[rowG + mx] = 1;
+              if (rowFree) rowFree[gy0 + my]--;
+            }
           }
         }
       };
 
+      const maskMetaCache = new WeakMap();
+      const getMaskMeta = (m) => {
+        let meta = maskMetaCache.get(m);
+        if (meta) return meta;
+        const rowNeed = new Int32Array(m.mh);
+        const rowL = new Int32Array(m.mh).fill(-1);
+        const rowR = new Int32Array(m.mh).fill(-1);
+        let contiguous = true;
+        for (let my = 0; my < m.mh; my++) {
+          let c = 0;
+          for (let mx = 0; mx < m.mw; mx++) {
+            if (m.mask[my * m.mw + mx]) {
+              c++;
+              if (rowL[my] < 0) rowL[my] = mx;
+              rowR[my] = mx;
+            }
+          }
+          rowNeed[my] = c;
+          if (c > 0 && rowR[my] - rowL[my] + 1 !== c) contiguous = false;
+        }
+        meta = { rowNeed, rowL, rowR, contiguous };
+        maskMetaCache.set(m, meta);
+        return meta;
+      };
+
+      // rect / circle / oval masks are symmetric under 180° -> 0°≡180°, 90°≡270° (and 0°≡90° when square).
+      // Skipping duplicate rotations gives identical placements (strict '<' keeps the earlier rotation anyway).
+      const getRotationsFor = (pageIndex) => {
+        if (stickerShape === 'pdfContour' && (pagesMeta[pageIndex]?.extractedContours || []).length > 0) return [0, 90, 180, 270];
+        const m0 = getRotatedItemMask(pageIndex, 0);
+        return m0.mw === m0.mh ? [0] : [0, 90];
+      };
+
       const findBestPlacement = (grid, pageIndex) => {
         let best = null;
-        const rots = [0, 90, 180, 270];
-        for (const rot of rots) {
+        const rowFree = grid.rowFree;
+        for (const rot of getRotationsFor(pageIndex)) {
           const m = getRotatedItemMask(pageIndex, rot);
           if (m.mw > gridW || m.mh > gridH) continue;
+          const { rowNeed, rowL, rowR, contiguous } = getMaskMeta(m);
           for (let gy = 0; gy <= gridH - m.mh; gy++) {
-            for (let gx = 0; gx <= gridW - m.mw; gx++) {
-              if (canPlaceMask(grid, gx, gy, m.mw, m.mh, m.mask)) {
+            if (best && gy * 1.25 > best.score) break;
+            // Cheap necessary condition: every grid row under the mask must have enough free cells
+            if (rowFree) {
+              let feasible = true;
+              for (let my = 0; my < m.mh; my++) {
+                if (rowFree[gy + my] < rowNeed[my]) {
+                  feasible = false;
+                  break;
+                }
+              }
+              if (!feasible) continue;
+            }
+            for (let gx = 0; gx <= gridW - m.mw; ) {
+              let ok;
+              if (contiguous) {
+                const jump = conflictJumpSpans(grid, gx, gy, m.mh, rowL, rowR);
+                ok = jump === 0;
+                if (!ok) {
+                  gx += jump;
+                  continue;
+                }
+              } else {
+                ok = canPlaceMask(grid, gx, gy, m.mw, m.mh, m.mask);
+              }
+              if (ok) {
                 const score = gy * 1.25 + gx * 0.35;
                 if (!best || score < best.score) {
                   best = { gx, gy, rot, m, score };
                 }
                 break; // First valid gx in this row is optimal for this gy
               }
+              gx++;
             }
-            if (best && gy * 1.25 > best.score) break;
           }
         }
         return best;
