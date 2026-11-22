@@ -304,11 +304,24 @@ export function fitCornerPreservingBezier(rawPtsMm, options = {}) {
   const n = pts.length;
   if (n < 3) return { ptsMm: pts, beziersMm: [], svgPathMm: '', cornerCount: 0 };
 
-  // 4. Identify TRUE sharp corners (only genuinely sharp tips, e.g. <= 85°..100°, with both arms >= 1.2mm)
-  // Shallow concave bends (105°..175°) are ALWAYS kept C1 smooth so neither Magenta nor Cyan ever kinks!
+  // 4. Identify TRUE sharp corners AND endpoints of long straight horizontal/vertical edges
   const strictCornerLimit = Math.min(95, Math.max(60, cornerAngleDeg - 35));
   const isCorner = new Uint8Array(n);
+  const isStraightSpan = new Uint8Array(n);
   let cornerCount = 0;
+
+  for (let i = 0; i < n; i++) {
+    const curr = pts[i];
+    const next = pts[(i + 1) % n];
+    const dx = Math.abs(next[0] - curr[0]);
+    const dy = Math.abs(next[1] - curr[1]);
+    const len = Math.hypot(dx, dy);
+    // Long axis-aligned edge (e.g. rectangular photo border >= 10mm within ~2.3 deg of horizontal/vertical)
+    if (len >= 10 && (dy / Math.max(1e-4, dx) < 0.04 || dx / Math.max(1e-4, dy) < 0.04)) {
+      isStraightSpan[i] = 1;
+    }
+  }
+
   for (let i = 0; i < n; i++) {
     const prev = pts[(i - 1 + n) % n];
     const curr = pts[i];
@@ -316,9 +329,9 @@ export function fitCornerPreservingBezier(rawPtsMm, options = {}) {
     const arm1 = Math.hypot(curr[0] - prev[0], curr[1] - prev[1]);
     const arm2 = Math.hypot(next[0] - curr[0], next[1] - curr[1]);
     const deg = computeVertexAngleDeg(prev, curr, next);
-    if (deg <= strictCornerLimit && arm1 >= 1.1 && arm2 >= 1.1) {
+    if ((deg <= strictCornerLimit && arm1 >= 1.1 && arm2 >= 1.1) || isStraightSpan[i] || isStraightSpan[(i - 1 + n) % n]) {
       isCorner[i] = 1;
-      cornerCount++;
+      if (deg <= strictCornerLimit) cornerCount++;
     }
   }
 
@@ -850,22 +863,11 @@ export function extractStickerContoursFromImage(imgElement, totalWidthMm, totalH
   const bgB = imgData[(padPx * cw + padPx) * 4 + 2];
 
   let fgMask = new Uint8Array(cw * ch);
-  const effCornerMm = ignoreCornerMarks
-    ? Math.max(cornerIgnoreMm, Math.min(totalWidthMm, totalHeightMm) * 0.08)
-    : 0;
-  const cornerIgnorePx = ignoreCornerMarks ? Math.round(effCornerMm * pxPerMm) : 0;
 
+  // Build foreground mask WITHOUT blind corner-pixel blanking (so large stickers near sheet corners never get their corner chopped off;
+  // actual small corner registration marks are filtered out as whole connected components in the post-filter step below).
   for (let y = padPx; y < padPx + workH; y++) {
     for (let x = padPx; x < padPx + workW; x++) {
-      if (cornerIgnorePx > 0) {
-        const lx = x - padPx;
-        const ly = y - padPx;
-        const inLeft = lx < cornerIgnorePx;
-        const inRight = lx >= workW - cornerIgnorePx;
-        const inTop = ly < cornerIgnorePx;
-        const inBottom = ly >= workH - cornerIgnorePx;
-        if ((inLeft || inRight) && (inTop || inBottom)) continue;
-      }
       const i4 = (y * cw + x) * 4;
       const a = imgData[i4 + 3];
       if (useAlpha) {
