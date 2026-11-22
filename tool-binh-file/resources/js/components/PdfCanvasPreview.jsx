@@ -241,8 +241,8 @@ export default function PdfCanvasPreview({
   const safeIndex = Math.min(currentSheetIndex, Math.max(0, sheets.length - 1));
   const activeSheet = sheets[safeIndex] || null;
 
-  const BASE_WIDTH = !inspectedPage && splitStickerPreview ? 460 : 760;
-  const BASE_HEIGHT = !inspectedPage && splitStickerPreview ? 500 : 540;
+  const BASE_WIDTH = !inspectedPage && splitStickerPreview ? 580 : 980;
+  const BASE_HEIGHT = !inspectedPage && splitStickerPreview ? 640 : 680;
   const previewAspect = sheetDim.width / Math.max(1, sheetDim.height);
   const containerAspect = BASE_WIDTH / BASE_HEIGHT;
 
@@ -637,15 +637,18 @@ export default function PdfCanvasPreview({
     }
   }, [activeSheet, pages, sheetDim, margins, bleedMm, showBleedOverlay, showSafeArea, safeInsetMm, splitStickerPreview, autoCropInk, inspectedPage, canvasWidth, canvasHeight]);
 
-  // 3. Direct Mouse Wheel Zoom (no Ctrl required — smooth zoom on wheel over canvas)
+  // 3. Direct Mouse Wheel Zoom (no Ctrl required — smooth zoom up to 1000% on wheel over canvas)
   useEffect(() => {
     const el = viewportRef.current;
     if (!el || !onZoomChange) return;
 
     const handleWheel = (e) => {
       e.preventDefault();
-      const delta = e.deltaY < 0 ? 0.15 : -0.15;
-      onZoomChange((prev) => Math.round(Math.min(5.0, Math.max(0.35, prev + delta)) * 100) / 100);
+      onZoomChange((prev) => {
+        const step = prev >= 2.5 ? 0.35 : prev >= 1.5 ? 0.22 : 0.15;
+        const delta = e.deltaY < 0 ? step : -step;
+        return Math.round(Math.min(10.0, Math.max(0.35, prev + delta)) * 100) / 100;
+      });
     };
 
     el.addEventListener('wheel', handleWheel, { passive: false });
@@ -721,8 +724,8 @@ export default function PdfCanvasPreview({
         onMouseMove={handleMouseMove}
         onMouseUp={stopPanning}
         onMouseLeave={stopPanning}
-        title="Cuộn chuột để Phóng to / Thu nhỏ · Kéo chuột trái để di chuyển"
-        className={`p-6 rounded-2xl border border-slate-200 w-full overflow-auto h-[540px] select-none flex ${
+        title="Cuộn chuột để Phóng to / Thu nhỏ (tối đa 1000%) · Kéo chuột trái để di chuyển"
+        className={`p-3 rounded-2xl border border-slate-200 w-full overflow-auto h-[calc(100vh-195px)] min-h-[600px] select-none flex ${
           isPanning ? 'cursor-grabbing' : 'cursor-grab'
         }`}
         style={{

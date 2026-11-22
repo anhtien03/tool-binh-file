@@ -855,11 +855,27 @@ export default function PdfEditor() {
                   <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
                     Fit
                   </button>
-                  <button onClick={() => setZoom((z) => Math.max(0.4, Math.round((z - 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                  <button onClick={() => setZoom(2.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
+                    200%
+                  </button>
+                  <button onClick={() => setZoom(4.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
+                    400%
+                  </button>
+                  <button
+                    onClick={() =>
+                      setZoom((z) => Math.max(0.35, Math.round((z - (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))
+                    }
+                    className="px-1.5 hover:text-slate-900 cursor-pointer"
+                  >
                     −
                   </button>
-                  <span className="min-w-[40px] text-center font-bold">{Math.round(zoom * 100)}%</span>
-                  <button onClick={() => setZoom((z) => Math.min(4.0, Math.round((z + 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+                  <span className="min-w-[46px] text-center font-bold text-[#146C53]">{Math.round(zoom * 100)}%</span>
+                  <button
+                    onClick={() =>
+                      setZoom((z) => Math.min(10.0, Math.round((z + (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))
+                    }
+                    className="px-1.5 hover:text-slate-900 cursor-pointer"
+                  >
                     +
                   </button>
                 </div>

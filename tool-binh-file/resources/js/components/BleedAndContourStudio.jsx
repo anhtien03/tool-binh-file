@@ -162,7 +162,7 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
   useEffect(() => {
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
-    const maxBox = Math.round(520 * zoom);
+    const maxBox = Math.round(720 * zoom);
     const ratio = window.devicePixelRatio || 2;
     const padMm = subMode === 'contour' ? Math.max(4, offsetMm + 3) : bleedAllMm + 2;
     const totalW = sizeMm.w + padMm * 2;
@@ -309,14 +309,17 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
     }
   }, [renderedCanvas, subMode, sizeMm, offsetMm, bleedOffsetMm, showBleedContour, contoursMm, bleedAllMm, bleedEdges, fillMode, solidColorHex, zoom]);
 
-  // Direct Mouse Wheel Zoom
+  // Direct Mouse Wheel Zoom (up to 1000%)
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
     const handleWheel = (e) => {
       e.preventDefault();
-      const delta = e.deltaY < 0 ? 0.15 : -0.15;
-      setZoom((prev) => Math.round(Math.min(5.0, Math.max(0.35, prev + delta)) * 100) / 100);
+      setZoom((prev) => {
+        const step = prev >= 2.5 ? 0.35 : prev >= 1.5 ? 0.22 : 0.15;
+        const delta = e.deltaY < 0 ? step : -step;
+        return Math.round(Math.min(10.0, Math.max(0.35, prev + delta)) * 100) / 100;
+      });
     };
     el.addEventListener('wheel', handleWheel, { passive: false });
     return () => el.removeEventListener('wheel', handleWheel);
@@ -460,11 +463,23 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
             <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
               Fit
             </button>
-            <button onClick={() => setZoom((z) => Math.max(0.35, Math.round((z - 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+            <button onClick={() => setZoom(2.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
+              200%
+            </button>
+            <button onClick={() => setZoom(4.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
+              400%
+            </button>
+            <button
+              onClick={() => setZoom((z) => Math.max(0.35, Math.round((z - (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))}
+              className="px-1.5 hover:text-slate-900 cursor-pointer"
+            >
               −
             </button>
-            <span className="min-w-[42px] text-center font-bold">{Math.round(zoom * 100)}%</span>
-            <button onClick={() => setZoom((z) => Math.min(5.0, Math.round((z + 0.15) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+            <span className="min-w-[46px] text-center font-bold text-[#146C53]">{Math.round(zoom * 100)}%</span>
+            <button
+              onClick={() => setZoom((z) => Math.min(10.0, Math.round((z + (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))}
+              className="px-1.5 hover:text-slate-900 cursor-pointer"
+            >
               +
             </button>
           </div>
@@ -476,8 +491,8 @@ export default function BleedAndContourStudio({ onOpenStickerImpose, onSendSplit
           onMouseMove={handleMouseMove}
           onMouseUp={stopPanning}
           onMouseLeave={stopPanning}
-          title="Cuộn chuột để Phóng to / Thu nhỏ · Kéo chuột trái để di chuyển"
-          className={`w-full h-[530px] rounded-2xl border border-slate-200 flex overflow-auto p-6 select-none ${
+          title="Cuộn chuột để Phóng to / Thu nhỏ (tối đa 1000%) · Kéo chuột trái để di chuyển"
+          className={`w-full h-[calc(100vh-190px)] min-h-[600px] rounded-2xl border border-slate-200 flex overflow-auto p-3 select-none ${
             isPanning ? 'cursor-grabbing' : 'cursor-grab'
           }`}
           style={{

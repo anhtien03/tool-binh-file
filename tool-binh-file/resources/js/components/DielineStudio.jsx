@@ -225,11 +225,14 @@ export default function DielineStudio({
               <button onClick={() => setZoom2D(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
                 Fit
               </button>
-              <button onClick={() => setZoom2D((z) => Math.max(0.5, z - 0.15))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+              <button onClick={() => setZoom2D(2.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
+                200%
+              </button>
+              <button onClick={() => setZoom2D((z) => Math.max(0.4, Math.round((z - 0.2) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
                 −
               </button>
-              <span className="min-w-[40px] text-center font-bold">{Math.round(zoom2D * 100)}%</span>
-              <button onClick={() => setZoom2D((z) => Math.min(2.5, z + 0.15))} className="px-1.5 hover:text-slate-900 cursor-pointer">
+              <span className="min-w-[44px] text-center font-bold text-[#146C53]">{Math.round(zoom2D * 100)}%</span>
+              <button onClick={() => setZoom2D((z) => Math.min(8.0, Math.round((z + 0.2) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
                 +
               </button>
             </div>
@@ -242,11 +245,11 @@ export default function DielineStudio({
             <div
               onWheel={(e) => {
                 e.preventDefault();
-                const delta = e.deltaY < 0 ? 0.15 : -0.15;
-                setZoom2D((z) => Math.round(Math.min(4.0, Math.max(0.4, z + delta)) * 100) / 100);
+                const delta = e.deltaY < 0 ? 0.2 : -0.2;
+                setZoom2D((z) => Math.round(Math.min(8.0, Math.max(0.4, z + delta)) * 100) / 100);
               }}
               title="Cuộn chuột để Phóng to / Thu nhỏ khuôn 2D"
-              className="relative flex p-6 overflow-auto min-h-[500px]"
+              className="relative flex p-4 overflow-auto min-h-[580px]"
               style={{
                 backgroundColor: '#fcfdfc',
                 backgroundImage:
@@ -262,7 +265,7 @@ export default function DielineStudio({
               <div className="m-auto shrink-0">
                 <svg
                   viewBox={`-18 -18 ${dieline.bounds.width + 36} ${dieline.bounds.height + 36}`}
-                  style={{ width: `${Math.round(520 * zoom2D)}px`, height: 'auto' }}
+                  style={{ width: `${Math.round(680 * zoom2D)}px`, height: 'auto' }}
                   className="block"
                 >
                   {/* Overall bounding Bleed indicator */}
