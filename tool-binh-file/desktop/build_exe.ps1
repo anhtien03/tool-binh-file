@@ -26,7 +26,7 @@ Write-Host "[3/4] Generating Adobe-style splash.png and app.ico..." -ForegroundC
 python (Join-Path $DesktopDir "make_assets.py")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "[4/4] Packaging standalone Toolbinhfile.exe via PyInstaller..." -ForegroundColor Cyan
+Write-Host "[4/4] Packaging standalone PrintKit.exe via PyInstaller..." -ForegroundColor Cyan
 if (-not (Test-Path $ReleaseDir)) { New-Item -ItemType Directory -Path $ReleaseDir | Out-Null }
 
 Set-Location $DesktopDir
@@ -35,7 +35,7 @@ pyinstaller `
   --clean `
   --onefile `
   --windowed `
-  --name "Toolbinhfile" `
+  --name "PrintKit" `
   --icon (Join-Path $DesktopDir "app.ico") `
   --splash (Join-Path $DesktopDir "splash.png") `
   --exclude-module PyQt5 `
@@ -53,7 +53,7 @@ pyinstaller `
 
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$ExePath = Join-Path $ReleaseDir "Toolbinhfile.exe"
+$ExePath = Join-Path $ReleaseDir "PrintKit.exe"
 $SizeMB = [Math]::Round((Get-Item $ExePath).Length / 1MB, 2)
 Write-Host ""
 Write-Host "DONE! Standalone EXE built successfully:" -ForegroundColor Green

@@ -1,8 +1,10 @@
-"""Generate Adobe-style splash screen (splash.png) and multi-size app icon (app.ico) for Toolbinhfile."""
+"""Generate PrintKit Splash Screen (splash.png), Windows Icon (app.ico), and Web Header Icon (public/printkit_icon.png)."""
 import os
 from PIL import Image, ImageDraw, ImageFont
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+LOGO_PATH = os.path.join(BASE_DIR, "printkit_logo.png")
 
 
 def load_font(size, bold=False):
@@ -19,92 +21,132 @@ def load_font(size, bold=False):
     return ImageFont.load_default()
 
 
-def build_icon():
+def trim_whitespace(img: Image.Image, threshold=245) -> Image.Image:
+    rgba = img.convert("RGBA")
+    w, h = rgba.size
+    pix = rgba.load()
+    min_x, min_y, max_x, max_y = w, h, 0, 0
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = pix[x, y]
+            if a > 20 and (r < threshold or g < threshold or b < threshold):
+                if x < min_x:
+                    min_x = x
+                if y < min_y:
+                    min_y = y
+                if x > max_x:
+                    max_x = x
+                if y > max_y:
+                    max_y = y
+    if max_x <= min_x or max_y <= min_y:
+        return rgba
+    return rgba.crop((min_x, min_y, max_x + 1, max_y + 1))
+
+
+def extract_emblem(logo_trimmed: Image.Image) -> Image.Image:
+    """Split off the top PrintKit P-mark emblem (above the blank gap separating it from 'PrintKit' text)."""
+    w, h = logo_trimmed.size
+    pix = logo_trimmed.load()
+    # Scan rows from top to find the first completely white/empty band after row 30% of height
+    split_y = int(h * 0.65)
+    seen_ink = False
+    for y in range(int(h * 0.15), int(h * 0.85)):
+        has_ink = False
+        for x in range(0, w, 2):
+            r, g, b, a = pix[x, y]
+            if a > 20 and (r < 245 or g < 245 or b < 245):
+                has_ink = True
+                break
+        if has_ink:
+            seen_ink = True
+        elif seen_ink and y > int(h * 0.45):
+            split_y = y
+            break
+    return trim_whitespace(logo_trimmed.crop((0, 0, w, split_y)))
+
+
+def build_icons(emblem: Image.Image):
     size = 256
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    tile = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(tile)
+    draw.rounded_rectangle([8, 8, size - 8, size - 8], radius=48, fill=(255, 255, 255, 255), outline=(22, 36, 64, 255), width=6)
 
-    # Deep forest green rounded tile (#112A24) with emerald border (#146C53)
-    draw.rounded_rectangle([12, 12, size - 12, size - 12], radius=52, fill=(17, 42, 36, 255), outline=(20, 108, 83, 255), width=8)
-    # Inner emerald accent badge
-    draw.rounded_rectangle([32, 32, size - 32, size - 32], radius=38, fill=(20, 108, 83, 255))
-
-    font = load_font(112, bold=True)
-    bbox = draw.textbbox((0, 0), "TB", font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text(((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1] - 4), "TB", fill=(255, 255, 255, 255), font=font)
+    # Fit emblem cleanly inside tile with generous padding
+    ew, eh = emblem.size
+    max_inner = 186
+    scale = min(max_inner / max(1, ew), max_inner / max(1, eh))
+    nw, nh = max(1, int(ew * scale)), max(1, int(eh * scale))
+    emblem_resized = emblem.resize((nw, nh), Image.Resampling.LANCZOS)
+    tile.alpha_composite(emblem_resized, ((size - nw) // 2, (size - nh) // 2))
 
     ico_path = os.path.join(BASE_DIR, "app.ico")
-    img.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    tile.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     print(f"Generated {ico_path}")
 
+    web_icon_path = os.path.join(PROJECT_ROOT, "public", "printkit_icon.png")
+    tile.resize((128, 128), Image.Resampling.LANCZOS).save(web_icon_path, format="PNG")
+    print(f"Generated {web_icon_path}")
 
-def build_splash():
+
+def build_splash(logo_trimmed: Image.Image):
     w, h = 640, 360
-    img = Image.new("RGB", (w, h), (17, 42, 36))
+    img = Image.new("RGBA", (w, h), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # Subtle gradient background (deep forest green -> rich emerald dark)
-    for y in range(h):
-        t = y / max(1, h - 1)
-        r = int(13 + 12 * t)
-        g = int(34 + 36 * t)
-        b = int(29 + 26 * t)
-        draw.line([(0, y), (w, y)], fill=(r, g, b))
+    # Subtle light prepress grid background
+    for x in range(20, w - 20, 28):
+        draw.line([(x, 20), (x, h - 20)], fill=(241, 245, 249, 255), width=1)
+    for y in range(20, h - 20, 28):
+        draw.line([(20, y), (w - 20, y)], fill=(241, 245, 249, 255), width=1)
 
-    # Decorative geometric print-grid / crop-mark accents on right side
-    accent_col = (34, 139, 108)
-    for x in range(380, w - 20, 28):
-        draw.line([(x, 24), (x, h - 24)], fill=(23, 62, 52), width=1)
-    for y in range(24, h - 24, 28):
-        draw.line([(380, y), (w - 20, y)], fill=(23, 62, 52), width=1)
+    # Outer sleek navy border
+    navy = (22, 36, 64, 255)
+    orange = (249, 99, 40, 255)
+    draw.rectangle([1, 1, w - 2, h - 2], outline=navy, width=2)
 
-    # Registration crop marks in 4 corners (Adobe / Prepress aesthetic)
-    cm = (74, 222, 168)
+    # 4 corner registration crop marks
     for cx, cy, dx, dy in [(22, 22, 1, 1), (w - 22, 22, -1, 1), (22, h - 22, 1, -1), (w - 22, h - 22, -1, -1)]:
-        draw.line([(cx, cy), (cx + dx * 16, cy)], fill=cm, width=2)
-        draw.line([(cx, cy), (cx, cy + dy * 16)], fill=cm, width=2)
+        draw.line([(cx, cy), (cx + dx * 16, cy)], fill=navy, width=2)
+        draw.line([(cx, cy), (cx, cy + dy * 16)], fill=navy, width=2)
 
-    # Outer sleek border
-    draw.rectangle([1, 1, w - 2, h - 2], outline=(26, 122, 94), width=2)
+    # Place PrintKit full logo centered in the upper-middle area
+    lw, lh = logo_trimmed.size
+    scale = min(290 / max(1, lw), 155 / max(1, lh))
+    nw, nh = max(1, int(lw * scale)), max(1, int(lh * scale))
+    logo_resized = logo_trimmed.resize((nw, nh), Image.Resampling.LANCZOS)
+    img.alpha_composite(logo_resized, ((w - nw) // 2, 36))
 
-    # TB Logo Badge
-    draw.rounded_rectangle([48, 66, 128, 146], radius=18, fill=(20, 108, 83), outline=(74, 222, 168), width=2)
-    f_logo = load_font(42, bold=True)
-    lb = draw.textbbox((0, 0), "TB", font=f_logo)
-    draw.text((88 - (lb[2] - lb[0]) / 2 - lb[0], 106 - (lb[3] - lb[1]) / 2 - lb[1] - 2), "TB", fill=(255, 255, 255), font=f_logo)
-
-    # Title & Subtitle
-    f_title = load_font(34, bold=True)
-    f_sub = load_font(15, bold=False)
+    # Feature pills row
     f_badge = load_font(12, bold=True)
     f_foot = load_font(13, bold=False)
-
-    draw.text((148, 72), "Toolbinhfile Pro", fill=(255, 255, 255), font=f_title)
-    draw.text((150, 118), "Prepress Imposition · CutContour 300 DPI · Dieline 3D", fill=(167, 243, 208), font=f_sub)
-
-    # Feature pills
     pills = ["Bình Cắt Xén", "Bình Tem Bế", "Bình Sách 3D", "Bù Xén & Đường Cắt", "File Prep"]
-    px, py = 48, 182
+    pill_widths = []
     for label in pills:
         tb = draw.textbbox((0, 0), label, font=f_badge)
-        pw = (tb[2] - tb[0]) + 22
-        draw.rounded_rectangle([px, py, px + pw, py + 26], radius=13, fill=(22, 66, 54), outline=(45, 150, 118), width=1)
-        draw.text((px + 11, py + 5), label, fill=(209, 250, 229), font=f_badge)
+        pill_widths.append((tb[2] - tb[0]) + 20)
+    total_pw = sum(pill_widths) + 8 * (len(pills) - 1)
+    px = (w - total_pw) // 2
+    py = 216
+    for label, pw in zip(pills, pill_widths):
+        draw.rounded_rectangle([px, py, px + pw, py + 26], radius=13, fill=(248, 250, 252, 255), outline=(203, 213, 225, 255), width=1)
+        draw.text((px + 10, py + 5), label, fill=navy, font=f_badge)
         px += pw + 8
 
-    # Progress bar track at bottom
-    draw.rounded_rectangle([48, 286, w - 48, 294], radius=4, fill=(14, 48, 39))
-    draw.rounded_rectangle([48, 286, 260, 294], radius=4, fill=(52, 211, 153))
+    # Progress bar track (Navy + PrintKit Orange fill)
+    draw.rounded_rectangle([48, 282, w - 48, 290], radius=4, fill=(226, 232, 240, 255))
+    draw.rounded_rectangle([48, 282, 280, 290], radius=4, fill=orange)
 
-    draw.text((48, 308), "Đang khởi tạo lõi xử lý PDF & giao diện làm việc Offline...", fill=(180, 228, 210), font=f_foot)
-    draw.text((w - 150, 308), "Desktop Edition", fill=(110, 180, 155), font=f_foot)
+    draw.text((48, 304), "Đang khởi tạo lõi xử lý PDF & giao diện PrintKit Offline...", fill=(71, 85, 105, 255), font=f_foot)
+    draw.text((w - 148, 304), "Desktop Edition", fill=navy, font=f_foot)
 
     splash_path = os.path.join(BASE_DIR, "splash.png")
-    img.save(splash_path, format="PNG")
+    img.convert("RGB").save(splash_path, format="PNG")
     print(f"Generated {splash_path}")
 
 
 if __name__ == "__main__":
-    build_icon()
-    build_splash()
+    raw = Image.open(LOGO_PATH)
+    trimmed = trim_whitespace(raw)
+    emblem = extract_emblem(trimmed)
+    build_icons(emblem)
+    build_splash(trimmed)

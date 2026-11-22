@@ -77,9 +77,9 @@ def main():
     # Enable native Windows Save-As downloads for exported PDF/SVG files
     webview.settings["ALLOW_DOWNLOADS"] = True
 
-    update_splash("Đang khởi chạy cửa sổ Toolbinhfile Pro...")
+    update_splash("Đang khởi chạy cửa sổ PrintKit...")
     window = webview.create_window(
-        title="Toolbinhfile Pro — Bình Bài In, Tem Bế & Khuôn Bế 3D",
+        title="PrintKit — Bình Bài In, Tem Bế & Khuôn Bế 3D",
         url=url,
         width=1400,
         height=880,

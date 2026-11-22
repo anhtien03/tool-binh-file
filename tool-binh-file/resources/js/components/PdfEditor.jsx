@@ -589,14 +589,16 @@ export default function PdfEditor() {
       <header className="h-12 bg-[#112A24] text-white px-4 sm:px-5 flex items-center justify-between gap-4 shrink-0 shadow-sm sticky top-0 z-30">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => setActiveStudio('library')}
+            onClick={() => setActiveStudio('viewer')}
             className="flex items-center gap-2 cursor-pointer group"
           >
-            <div className="w-7 h-7 rounded-lg bg-[#146C53] border border-emerald-400/30 flex items-center justify-center font-black text-xs text-white">
-              TB
-            </div>
-            <span className="font-bold tracking-wide text-sm text-white group-hover:text-emerald-200 transition-colors">
-              Toolbinhfile
+            <img
+              src="/printkit_icon.png"
+              alt="PrintKit"
+              className="w-7 h-7 rounded-lg bg-white p-0.5 object-contain shadow-xs"
+            />
+            <span className="font-extrabold tracking-wide text-sm text-white group-hover:text-emerald-200 transition-colors">
+              Print<span className="text-[#F96328]">Kit</span>
             </span>
           </button>
 
