@@ -692,29 +692,7 @@ export default function PdfEditor() {
             />
           </label>
 
-          {(activeStudio === 'numbering' ||
-          activeStudio === 'vdp' ||
-          activeStudio === 'preflight' ||
-          activeStudio === 'quote') && (
-          <PrepressToolsStudio
-            activeTool={activeStudio}
-            initialFile={sourceFiles[0]?.file || null}
-            onSharedFileChange={(newFile) => {
-              if (newFile) setSourceFiles([{ id: `pp-${Date.now()}`, file: newFile }]);
-            }}
-            onSendToImpose={(processedFile) => {
-              setSourceFiles([{ id: `pp-out-${Date.now()}`, file: processedFile }]);
-              setActiveStudio('namecard');
-              setShowSettingsPanel(true);
-              setInspectedPageIndex(null);
-              setCurrentSheetIndex(0);
-            }}
-            imposeSummary={plan?.summary}
-            imposeSheetDim={plan?.sheetDim}
-          />
-        )}
-
-        {(activeStudio === 'viewer' ||
+          {(activeStudio === 'viewer' ||
             activeStudio === 'namecard' ||
             activeStudio === 'sticker' ||
             activeStudio === 'booklet') && (
