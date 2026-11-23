@@ -101,6 +101,7 @@ export default function DielineStudio({
   const [cameraPreset, setCameraPreset] = useState('iso');
   const [autoRotate, setAutoRotate] = useState(false);
   const [showEdges3D, setShowEdges3D] = useState(true);
+  const [showLabels3D, setShowLabels3D] = useState(true);
   const [finishMode, setFinishMode] = useState('standard');
   const [hoveredPanelId, setHoveredPanelId] = useState(null);
   const [showPanelLabels2D, setShowPanelLabels2D] = useState(true);
@@ -592,6 +593,11 @@ export default function DielineStudio({
               <div className="absolute top-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
                 <div className="pointer-events-auto bg-white/92 backdrop-blur border border-slate-200 rounded-full px-3 py-1 text-[10px] font-mono text-slate-700 shadow-xs">
                   Cal {dieline.params.thickness} · Lọt lòng {dieline.params.inner.L}×{dieline.params.inner.W}×{dieline.params.inner.H} · Phủ bì {dieline.params.outer.L}×{dieline.params.outer.W}×{dieline.params.outer.H}
+                  {hoveredPanel && (
+                    <span className="ml-2 text-[#087F5B] font-bold">
+                      · [{hoveredPanel.label}: {hoveredPanel.w}×{hoveredPanel.h} mm]
+                    </span>
+                  )}
                 </div>
                 <div className="pointer-events-auto bg-white/92 backdrop-blur border border-slate-200 rounded-full p-1 flex flex-wrap items-center gap-0.5 text-[10px] font-semibold shadow-xs">
                   {[
@@ -630,6 +636,14 @@ export default function DielineStudio({
                   >
                     Nét bế
                   </button>
+                  <button
+                    onClick={() => setShowLabels3D((v) => !v)}
+                    className={`px-2 py-0.5 rounded-full cursor-pointer ${
+                      showLabels3D ? 'bg-[#DDF5EC] text-[#064E3B]' : 'text-slate-500'
+                    }`}
+                  >
+                    Nhãn 3D
+                  </button>
                   <span className="w-px h-3 bg-slate-200 mx-1" />
                   <button
                     onClick={handleCapturePng3D}
@@ -659,7 +673,9 @@ export default function DielineStudio({
                 cameraPreset={cameraPreset}
                 autoRotate={autoRotate}
                 showEdges={showEdges3D}
+                showLabels3D={showLabels3D}
                 hoveredPanelId={hoveredPanelId}
+                onHoverPanel={setHoveredPanelId}
               />
 
               {/* Floating Bottom Pill (Fold Playback) */}

@@ -19,8 +19,38 @@ export const FINISH_MODES = {
   foilSilver: { name: 'Ép kim Bạc (Foil)', roughnessMul: 0.2, metalness: 0.78, tint: 0xe2e8f0 },
 };
 
+function createLabelSprite(text) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+  ctx.strokeStyle = 'rgba(8, 127, 91, 0.55)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(6, 8, 244, 48, 20);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#17212F';
+  ctx.font = 'bold 22px Inter, Segoe UI, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 33);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(28, 7, 1);
+  sprite.renderOrder = 10;
+  return sprite;
+}
+
 function buildSolidPanelMesh(
   nodeId,
+  panelLabel,
+  panelDims,
   localPoly,
   rawWorldPoly,
   bounds,
@@ -29,6 +59,7 @@ function buildSolidPanelMesh(
   edgeMat,
   thicknessMm,
   showEdges,
+  showLabels3D,
   panelMeshMap
 ) {
   const group = new THREE.Group();
@@ -99,10 +130,24 @@ function buildSolidPanelMesh(
   const mesh = new THREE.Mesh(geo, [pInner, pOuter, pEdge]);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
+  mesh.userData = { panelId: nodeId, panelLabel, panelDims };
   group.add(mesh);
 
   if (nodeId) {
-    panelMeshMap.set(nodeId, { mats: [pInner, pOuter, pEdge] });
+    panelMeshMap.set(nodeId, { mats: [pInner, pOuter, pEdge], label: panelLabel, dims: panelDims });
+  }
+
+  if (showLabels3D && panelLabel && panelDims && panelDims.w >= 20 && panelDims.h >= 16) {
+    let lcx = 0, lcy = 0;
+    for (const [px, py] of localPoly) {
+      lcx += px;
+      lcy += py;
+    }
+    lcx /= localPoly.length;
+    lcy /= localPoly.length;
+    const sprite = createLabelSprite(panelLabel);
+    sprite.position.set(lcx, -t / 2 - 4, lcy);
+    group.add(sprite);
   }
 
   if (showEdges) {
@@ -116,6 +161,47 @@ function buildSolidPanelMesh(
   return group;
 }
 
+function getFriendlyPanelLabel(node) {
+  if (node.label) return node.label;
+  if (node.name) return node.name;
+  const id = String(node.id || '').toLowerCase();
+  const map = {
+    back: 'Mặt sau',
+    front: 'Mặt trước',
+    left: 'Mặt trái',
+    right: 'Mặt phải',
+    glue: 'Tai dán',
+    top_tuck: 'Lưỡi gài trên',
+    top: 'Nắp trên',
+    bot_tuck: 'Lưỡi gài đáy',
+    bottom: 'Nắp đáy',
+    dust: 'Tai bụi',
+    base: 'Đáy hộp',
+    wall_top: 'Vách trên',
+    wall_bot: 'Vách dưới',
+    wall_left: 'Vách trái',
+    wall_right: 'Vách phải',
+  };
+  for (const [k, v] of Object.entries(map)) {
+    if (id === k || id.includes(k)) return v;
+  }
+  return id || 'Mặt hộp';
+}
+
+function getPolyDims(poly) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of poly || []) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return {
+    w: Math.round((maxX - minX) * 10) / 10,
+    h: Math.round((maxY - minY) * 10) / 10,
+  };
+}
+
 function buildFoldHierarchy(
   node,
   bounds,
@@ -124,6 +210,7 @@ function buildFoldHierarchy(
   edgeMat,
   thicknessMm,
   showEdges,
+  showLabels3D,
   animNodes,
   panelMeshMap,
   parentOrigin = [0, 0]
@@ -162,6 +249,8 @@ function buildFoldHierarchy(
     pivot.add(
       buildSolidPanelMesh(
         node.id,
+        getFriendlyPanelLabel(node),
+        getPolyDims(node.polygon),
         localPoly,
         node.polygon,
         bounds,
@@ -170,6 +259,7 @@ function buildFoldHierarchy(
         edgeMat,
         thicknessMm,
         showEdges,
+        showLabels3D,
         panelMeshMap
       )
     );
@@ -184,6 +274,7 @@ function buildFoldHierarchy(
           edgeMat,
           thicknessMm,
           showEdges,
+          showLabels3D,
           animNodes,
           panelMeshMap,
           [x1, y1]
@@ -204,6 +295,8 @@ function buildFoldHierarchy(
     pivot.add(
       buildSolidPanelMesh(
         node.id,
+        getFriendlyPanelLabel(node),
+        getPolyDims(node.polygon),
         localPoly,
         node.polygon,
         bounds,
@@ -212,6 +305,7 @@ function buildFoldHierarchy(
         edgeMat,
         thicknessMm,
         showEdges,
+        showLabels3D,
         panelMeshMap
       )
     );
@@ -226,6 +320,7 @@ function buildFoldHierarchy(
           edgeMat,
           thicknessMm,
           showEdges,
+          showLabels3D,
           animNodes,
           panelMeshMap,
           [cx, cy]
@@ -248,7 +343,9 @@ const Box3DViewer = forwardRef(function Box3DViewer(
     cameraPreset = 'iso',
     autoRotate = false,
     showEdges = true,
+    showLabels3D = true,
     hoveredPanelId = null,
+    onHoverPanel = null,
   },
   ref
 ) {
@@ -422,6 +519,7 @@ const Box3DViewer = forwardRef(function Box3DViewer(
       edgeMat,
       dieline.params.thickness || 0.4,
       showEdges,
+      showLabels3D,
       animNodes,
       panelMeshMap
     );
@@ -451,7 +549,7 @@ const Box3DViewer = forwardRef(function Box3DViewer(
     stateRef.current.panelMeshMap = panelMeshMap;
 
     applyFoldToNodes(animNodes, wrapper, dieline.uprightRotateX || 0, foldProgress);
-  }, [dieline, materialKey, finishMode, artworkDataUrl, innerArtworkDataUrl, showEdges]);
+  }, [dieline, materialKey, finishMode, artworkDataUrl, innerArtworkDataUrl, showEdges, showLabels3D]);
 
   // Sync 2D -> 3D hovered panel highlight
   useEffect(() => {
@@ -487,9 +585,27 @@ const Box3DViewer = forwardRef(function Box3DViewer(
     controls.update();
   }, [cameraPreset]);
 
+  const handlePointerMove3D = (e) => {
+    if (!onHoverPanel) return;
+    const { camera, rootWrapper, renderer } = stateRef.current;
+    if (!camera || !rootWrapper || !renderer) return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+      -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(rootWrapper.children, true);
+    const hitMesh = hits.find((h) => h.object?.userData?.panelId);
+    onHoverPanel(hitMesh ? hitMesh.object.userData.panelId : null);
+  };
+
   return (
     <div
       ref={mountRef}
+      onPointerMove={handlePointerMove3D}
+      onPointerLeave={() => onHoverPanel?.(null)}
       className="w-full h-full min-h-[480px] cursor-grab active:cursor-grabbing"
     />
   );
