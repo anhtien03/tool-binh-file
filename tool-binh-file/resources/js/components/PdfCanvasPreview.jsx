@@ -33,6 +33,7 @@ export default function PdfCanvasPreview({
   const [loadProgress, setLoadProgress] = useState({ pct: 0, page: 0, total: 0, fileName: '', stage: '' });
   const [isPanning, setIsPanning] = useState(false);
   const [cursorMm, setCursorMm] = useState(null);
+  const [vpBox, setVpBox] = useState({ w: 680, h: 540 });
   const canvasRef = useRef(null);
   const cutCanvasRef = useRef(null);
   const viewportRef = useRef(null);
@@ -310,8 +311,29 @@ export default function PdfCanvasPreview({
   const safeIndex = Math.min(currentSheetIndex, Math.max(0, sheets.length - 1));
   const activeSheet = sheets[safeIndex] || null;
 
-  const BASE_WIDTH = !inspectedPage && splitStickerPreview ? 580 : 980;
-  const BASE_HEIGHT = !inspectedPage && splitStickerPreview ? 640 : 680;
+  // Measure actual pasteboard container so Fit (100%) always fits inside the visible viewport without clipping
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const update = () => {
+      if (el.clientWidth > 100 && el.clientHeight > 100) {
+        setVpBox({ w: el.clientWidth, h: el.clientHeight });
+      }
+    };
+    update();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
+    if (ro) ro.observe(el);
+    window.addEventListener('resize', update);
+    return () => {
+      if (ro) ro.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, []);
+
+  const availW = Math.max(260, vpBox.w - (showRulers ? 76 : 52));
+  const availH = Math.max(240, vpBox.h - (showRulers ? 76 : 52));
+  const BASE_WIDTH = !inspectedPage && splitStickerPreview ? Math.max(240, Math.floor((availW - 28) / 2)) : availW;
+  const BASE_HEIGHT = availH;
   const previewAspect = sheetDim.width / Math.max(1, sheetDim.height);
   const containerAspect = BASE_WIDTH / BASE_HEIGHT;
 

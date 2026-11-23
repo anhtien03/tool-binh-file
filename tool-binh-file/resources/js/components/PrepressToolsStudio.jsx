@@ -498,7 +498,7 @@ export default function PrepressToolsStudio({
     <div className="flex flex-1 min-w-0 h-full overflow-hidden">
       {/* LEFT: WORKSPACE VIEW */}
       <main className="flex-1 min-w-0 bg-[#52565E] flex flex-col overflow-hidden">
-        <div className="h-10 px-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between gap-2 shrink-0 select-none">
+        <div className="min-h-[40px] px-3 py-1 bg-[#F8FAFC] border-b border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2 shrink-0 select-none">
           <div className="flex items-center gap-2 text-xs">
             <span className="px-2 py-0.5 rounded bg-[#DDF5EC] text-[#064E3B] font-bold">
               {activeTool === 'numbering'
@@ -540,7 +540,7 @@ export default function PrepressToolsStudio({
 
         {error && <div className="px-3 py-1.5 bg-rose-50 border-b border-rose-200 text-[#DC4545] text-xs">{error}</div>}
 
-        <div className="relative flex-1 overflow-auto p-6 flex items-center justify-center bg-[#52565E]">
+        <div className="relative flex-1 overflow-auto p-6 flex bg-[#52565E]">
           {loading && (
             <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-2xs flex items-center justify-center p-4">
               <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-2xl px-6 py-5 flex items-center gap-3">
@@ -552,7 +552,7 @@ export default function PrepressToolsStudio({
 
           {activeTool === 'quote' ? (
             /* PRINT QUOTE DASHBOARD CARD ON PASTEBOARD */
-            <div className="w-full max-w-2xl bg-white rounded-xl border border-[#E2E8F0] shadow-2xl p-6 flex flex-col gap-5">
+            <div className="m-auto w-full max-w-2xl bg-white rounded-xl border border-[#E2E8F0] shadow-2xl p-6 flex flex-col gap-5 shrink-0">
               <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3">
                 <div>
                   <h2 className="text-base font-bold text-[#17212F]">Bảng Dự Toán Giá Thành &amp; Báo Giá In</h2>
@@ -621,7 +621,7 @@ export default function PrepressToolsStudio({
               </div>
             </div>
           ) : !pageInfo ? (
-            <label className="cursor-pointer bg-white rounded-xl border-2 border-dashed border-[#CBD5E1] hover:border-[#087F5B] p-9 max-w-md w-full flex flex-col items-center gap-2.5 text-center shadow-2xl">
+            <label className="m-auto cursor-pointer bg-white rounded-xl border-2 border-dashed border-[#CBD5E1] hover:border-[#087F5B] p-9 max-w-md w-full flex flex-col items-center gap-2.5 text-center shadow-2xl">
               <span className="text-sm font-bold text-[#17212F]">Mở file PDF để chạy {activeTool === 'preflight' ? 'Preflight' : activeTool === 'vdp' ? 'VDP' : 'Số nhảy'}</span>
               <span className="text-xs text-[#64748B]">Chọn file PDF mẫu từ máy tính hoặc quay lại bàn chính để mở file dùng chung.</span>
               <span className="mt-1 px-4 py-2 rounded-lg bg-[#087F5B] text-white text-xs font-semibold">Mở file PDF</span>
@@ -629,7 +629,7 @@ export default function PrepressToolsStudio({
             </label>
           ) : activeTool === 'preflight' ? (
             /* PREFLIGHT REPORT CARDS */
-            <div className="w-full max-w-3xl bg-white rounded-xl border border-[#E2E8F0] shadow-2xl p-5 flex flex-col gap-4 self-start">
+            <div className="m-auto w-full max-w-3xl bg-white rounded-xl border border-[#E2E8F0] shadow-2xl p-5 flex flex-col gap-4 shrink-0">
               <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3">
                 <div>
                   <h2 className="text-sm font-bold text-[#17212F]">Báo cáo Kiểm tra File In (Preflight)</h2>
@@ -695,7 +695,7 @@ export default function PrepressToolsStudio({
                 <div
                   ref={canvasPreviewRef}
                   onClick={handleCanvasClickPlace}
-                  className="relative bg-white cursor-crosshair select-none shrink-0"
+                  className="m-auto relative bg-white cursor-crosshair select-none shrink-0"
                   style={{ width: wPx, height: hPx, boxShadow: '0 14px 36px rgba(0,0,0,0.4)' }}
                 >
                   <img src={pageInfo.dataUrl} alt="Mẫu PDF" className="w-full h-full block pointer-events-none" />
@@ -774,7 +774,7 @@ export default function PrepressToolsStudio({
       </main>
 
       {/* RIGHT: SETTINGS PANEL */}
-      <aside className="w-[330px] bg-white border-l border-[#E2E8F0] p-4 flex flex-col gap-3 overflow-y-auto h-full shrink-0">
+      <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col gap-3 overflow-y-auto h-full shrink-0">
         <div className="border-b border-[#E2E8F0] pb-2">
           <div className="text-xs font-bold text-[#17212F] uppercase">
             {activeTool === 'numbering'

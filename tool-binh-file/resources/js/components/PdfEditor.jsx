@@ -899,9 +899,9 @@ export default function PdfEditor() {
           activeStudio === 'sticker' ||
           activeStudio === 'booklet') && (
           <>
-            {/* 2. LEFT SIDEBAR: PAGES MANAGER (204px flush) */}
+            {/* 2. LEFT SIDEBAR: PAGES MANAGER (responsive 172-196px flush) */}
             {showPagesSidebar && (
-              <aside className="w-[204px] bg-white border-r border-[#E2E8F0] p-2.5 flex flex-col gap-2 overflow-hidden h-full shrink-0">
+              <aside className="w-[172px] xl:w-[196px] bg-white border-r border-[#E2E8F0] p-2 flex flex-col gap-2 overflow-hidden h-full shrink-0">
                 <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-2">
                   <span className="text-[11px] font-bold text-[#17212F] tracking-wider uppercase">
                     Trang ({gangItems.length}/{pdfPages.length})
@@ -1050,8 +1050,8 @@ export default function PdfEditor() {
 
             {/* 3. CENTER WORKSPACE: RIBBON TOOLBAR + DARK GRAY PASTEBOARD CANVAS */}
             <main className="flex-1 min-w-0 h-full flex flex-col overflow-hidden bg-[#52565E]">
-              {/* WORKSPACE RIBBON TOOLBAR (40px) */}
-              <div className="h-10 px-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between gap-2 shrink-0 select-none">
+              {/* WORKSPACE RIBBON TOOLBAR */}
+              <div className="min-h-[40px] px-3 py-1 bg-[#F8FAFC] border-b border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2 shrink-0 select-none">
                 {/* Left: Zoom & View Guides Controls */}
                 <div className="flex items-center gap-1.5">
                   <div className="flex items-center bg-white border border-[#E2E8F0] rounded-md px-1 py-0.5 text-xs font-mono text-[#64748B]">
@@ -1285,9 +1285,9 @@ export default function PdfEditor() {
               )}
             </main>
 
-            {/* 4A. ACTIVE TOOL SETTINGS DRAWER (330px flush white panel) */}
+            {/* 4A. ACTIVE TOOL SETTINGS DRAWER (responsive 288-320px flush white panel) */}
             {showSettingsPanel && activeStudio !== 'viewer' && (
-              <aside className="w-[330px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col gap-3 overflow-y-auto h-full shrink-0">
+              <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col gap-3 overflow-y-auto h-full shrink-0">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                   <div>
                     <div className="text-xs font-bold text-slate-800 uppercase">
@@ -2673,8 +2673,8 @@ export default function PdfEditor() {
           </>
         )}
 
-        {/* 4B. FAR-RIGHT MODULE TOOLS DOCK (242px flush white panel — PrintKit 2.0 Vector Icons) */}
-        <aside className="w-[242px] bg-white border-l border-[#E2E8F0] p-2.5 flex flex-col gap-3 shrink-0 h-full overflow-y-auto select-none">
+        {/* 4B. FAR-RIGHT MODULE TOOLS DOCK (responsive 208-232px flush white panel) */}
+        <aside className="w-[208px] xl:w-[232px] bg-white border-l border-[#E2E8F0] p-2 flex flex-col gap-2.5 shrink-0 h-full overflow-y-auto select-none">
           <div className="relative">
             <PkIcon name="search" className="w-3.5 h-3.5 text-[#94A3B8] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input

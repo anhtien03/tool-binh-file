@@ -413,7 +413,7 @@ export default function FilePrepStudio({
     <div className="flex flex-1 min-w-0 h-full overflow-hidden">
       {/* 1. LEFT: VISUAL WORKSPACE / DARK PASTEBOARD PREVIEW */}
       <main className="flex-1 min-w-0 bg-[#52565E] flex flex-col overflow-hidden">
-        <div className="h-10 px-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between gap-2 shrink-0">
+        <div className="min-h-[40px] px-3 py-1 bg-[#F8FAFC] border-b border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="px-2 py-0.5 rounded bg-[#DDF5EC] text-[#064E3B] font-bold">
               {activeTool === 'organizer'
@@ -464,7 +464,7 @@ export default function FilePrepStudio({
 
         <div
           ref={viewportRef}
-          className="relative flex-1 overflow-auto p-6 flex items-center justify-center bg-[#52565E]"
+          className="relative flex-1 overflow-auto p-6 flex bg-[#52565E]"
         >
           {loading && (
             <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-2xs flex items-center justify-center p-4">
@@ -487,7 +487,7 @@ export default function FilePrepStudio({
             </div>
           )}
           {rawPages.length === 0 ? (
-            <label className="cursor-pointer bg-white hover:bg-emerald-50/60 border-2 border-dashed border-[#146C53]/50 rounded-2xl p-10 flex flex-col items-center gap-2 text-center shadow-xs transition-all">
+            <label className="m-auto cursor-pointer bg-white hover:bg-emerald-50/60 border-2 border-dashed border-[#087F5B]/50 rounded-xl p-10 flex flex-col items-center gap-2 text-center shadow-2xl transition-all">
               <span className="text-3xl">📄</span>
               <span className="text-sm font-bold text-slate-800">
                 {loading ? '⏳ Đang đọc file PDF...' : 'Bấm để chọn file PDF cần xử lý'}
@@ -631,7 +631,7 @@ export default function FilePrepStudio({
 
                 return (
                   <div
-                    className="relative bg-white shadow-xl overflow-hidden border border-slate-400"
+                    className="m-auto relative bg-white shadow-xl overflow-hidden border border-slate-400 shrink-0"
                     style={{ width: Math.round(totalW * scale), height: Math.round(totalH * scale) }}
                   >
                     <img
@@ -670,7 +670,7 @@ export default function FilePrepStudio({
                 const croppedH = Math.max(1, curPage.heightMm - (Number(cropTopMm) || 0) - (Number(cropBottomMm) || 0));
 
                 return (
-                  <div className="relative bg-white shadow-xl border border-slate-400" style={{ width: wPx, height: hPx }}>
+                  <div className="m-auto relative bg-white shadow-xl border border-slate-400 shrink-0" style={{ width: wPx, height: hPx }}>
                     <img src={curPage.dataUrl} alt="Crop preview" className="w-full h-full block" />
                     {/* Dark shaded mask outside crop region */}
                     <div className="absolute top-0 left-0 right-0 bg-slate-900/45 pointer-events-none" style={{ height: cT }} />
@@ -710,7 +710,7 @@ export default function FilePrepStudio({
 
               return (
                 <div
-                  className="relative bg-white shadow-xl overflow-hidden border-2 border-blue-600"
+                  className="m-auto relative bg-white shadow-xl overflow-hidden border-2 border-blue-600 shrink-0"
                   style={{ width: Math.round(outW * scale), height: Math.round(outH * scale) }}
                 >
                   <img
@@ -732,7 +732,7 @@ export default function FilePrepStudio({
       </main>
 
       {/* 2. MIDDLE-RIGHT: SETTINGS PANEL FOR CURRENT FILE PREP TOOL */}
-      <aside className="w-[330px] bg-white border-l border-[#E2E8F0] p-4 flex flex-col gap-3.5 overflow-y-auto h-full shrink-0">
+      <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col gap-3 overflow-y-auto h-full shrink-0">
         <div className="border-b border-slate-100 pb-2">
           <div className="text-xs font-bold text-slate-800 uppercase">
             {activeTool === 'organizer'

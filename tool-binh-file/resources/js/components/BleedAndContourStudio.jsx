@@ -548,7 +548,7 @@ export default function BleedAndContourStudio({
     <div className="flex flex-1 min-w-0 h-full overflow-hidden">
       {/* LEFT: CENTER DARK PASTEBOARD CANVAS */}
       <main className="flex-1 min-w-0 bg-[#52565E] flex flex-col justify-between overflow-hidden">
-        <div className="w-full h-10 px-3 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between gap-2 shrink-0">
+        <div className="w-full min-h-[40px] px-3 py-1 bg-[#F8FAFC] border-b border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 text-xs font-mono">
             <span className="px-2 py-0.5 rounded bg-[#DDF5EC] text-[#064E3B] font-bold">
               {subMode === 'contour' ? `${contoursMm.length} tem nhận diện` : `Bleed +${bleedAllMm}mm`}
@@ -677,7 +677,7 @@ export default function BleedAndContourStudio({
       </main>
 
       {/* MIDDLE-RIGHT: SETTINGS & EXPORT PANEL */}
-      <aside className="w-[330px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col justify-between gap-3 overflow-y-auto h-full shrink-0">
+      <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col justify-between gap-3 overflow-y-auto h-full shrink-0">
         <div className="flex flex-col gap-3">
           {/* Top Utility Header Bar: File Size MB Badge + Save / Undo / Close */}
           <div className="flex items-center justify-between border-b border-slate-100 pb-2">
