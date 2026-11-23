@@ -202,6 +202,44 @@ export function PkIcon({ name, className = 'w-4 h-4' }) {
           <line x1="6" y1="6" x2="18" y2="18" />
         </svg>
       );
+    case 'hash':
+      return (
+        <svg {...props}>
+          <line x1="4" y1="9" x2="20" y2="9" />
+          <line x1="4" y1="15" x2="20" y2="15" />
+          <line x1="10" y1="3" x2="8" y2="21" />
+          <line x1="16" y1="3" x2="14" y2="21" />
+        </svg>
+      );
+    case 'database':
+      return (
+        <svg {...props}>
+          <ellipse cx="12" cy="5" rx="9" ry="3" />
+          <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+          <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+        </svg>
+      );
+    case 'preflight':
+      return (
+        <svg {...props}>
+          <path d="M9 11l3 3L22 4" />
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+        </svg>
+      );
+    case 'calculator':
+      return (
+        <svg {...props}>
+          <rect x="4" y="2" width="16" height="20" rx="2" />
+          <line x1="8" y1="6" x2="16" y2="6" />
+          <line x1="8" y1="10" x2="8" y2="10.01" />
+          <line x1="12" y1="10" x2="12" y2="10.01" />
+          <line x1="16" y1="10" x2="16" y2="10.01" />
+          <line x1="8" y1="14" x2="8" y2="14.01" />
+          <line x1="12" y1="14" x2="12" y2="14.01" />
+          <line x1="16" y1="14" x2="16" y2="14.01" />
+          <line x1="8" y1="18" x2="16" y2="18" />
+        </svg>
+      );
     default:
       return (
         <svg {...props}>

@@ -3,6 +3,7 @@ import PdfCanvasPreview from './PdfCanvasPreview';
 import DielineStudio from './DielineStudio';
 import Book3DViewer from './Book3DViewer';
 import FilePrepStudio from './FilePrepStudio';
+import PrepressToolsStudio from './PrepressToolsStudio';
 import TemplateLibrary from './TemplateLibrary';
 import BleedAndContourStudio from './BleedAndContourStudio';
 import { PkIcon } from './PrintKitUI';
@@ -691,7 +692,29 @@ export default function PdfEditor() {
             />
           </label>
 
-          {(activeStudio === 'viewer' ||
+          {(activeStudio === 'numbering' ||
+          activeStudio === 'vdp' ||
+          activeStudio === 'preflight' ||
+          activeStudio === 'quote') && (
+          <PrepressToolsStudio
+            activeTool={activeStudio}
+            initialFile={sourceFiles[0]?.file || null}
+            onSharedFileChange={(newFile) => {
+              if (newFile) setSourceFiles([{ id: `pp-${Date.now()}`, file: newFile }]);
+            }}
+            onSendToImpose={(processedFile) => {
+              setSourceFiles([{ id: `pp-out-${Date.now()}`, file: processedFile }]);
+              setActiveStudio('namecard');
+              setShowSettingsPanel(true);
+              setInspectedPageIndex(null);
+              setCurrentSheetIndex(0);
+            }}
+            imposeSummary={plan?.summary}
+            imposeSheetDim={plan?.sheetDim}
+          />
+        )}
+
+        {(activeStudio === 'viewer' ||
             activeStudio === 'namecard' ||
             activeStudio === 'sticker' ||
             activeStudio === 'booklet') && (
@@ -846,6 +869,28 @@ export default function PdfEditor() {
               setInspectedPageIndex(null);
               setCurrentSheetIndex(0);
             }}
+          />
+        )}
+
+        {(activeStudio === 'numbering' ||
+          activeStudio === 'vdp' ||
+          activeStudio === 'preflight' ||
+          activeStudio === 'quote') && (
+          <PrepressToolsStudio
+            activeTool={activeStudio}
+            initialFile={sourceFiles[0]?.file || null}
+            onSharedFileChange={(newFile) => {
+              if (newFile) setSourceFiles([{ id: `pp-${Date.now()}`, file: newFile }]);
+            }}
+            onSendToImpose={(processedFile) => {
+              setSourceFiles([{ id: `pp-out-${Date.now()}`, file: processedFile }]);
+              setActiveStudio('namecard');
+              setShowSettingsPanel(true);
+              setInspectedPageIndex(null);
+              setCurrentSheetIndex(0);
+            }}
+            imposeSummary={plan?.summary}
+            imposeSheetDim={plan?.sheetDim}
           />
         )}
 
@@ -2722,6 +2767,39 @@ export default function PdfEditor() {
                   icon: 'shift',
                   badge: 'PRO',
                   tip: 'Dịch chuyển nội dung trang Chẵn / Lẻ để chừa lề gáy',
+                },
+              ],
+            },
+            {
+              group: 'DỮ LIỆU & KIỂM TRA',
+              items: [
+                {
+                  id: 'numbering',
+                  label: 'Chạy số nhảy',
+                  icon: 'hash',
+                  badge: 'PRO',
+                  tip: 'Đánh số vé, phiếu bảo hành, hóa đơn & xếp Cut & Stack',
+                },
+                {
+                  id: 'vdp',
+                  label: 'Trộn dữ liệu (VDP)',
+                  icon: 'database',
+                  badge: 'PRO',
+                  tip: 'Đổ danh sách Excel/CSV & mã QR Code vector lên mẫu PDF',
+                },
+                {
+                  id: 'preflight',
+                  label: 'Preflight chuẩn in',
+                  icon: 'preflight',
+                  badge: 'PRO',
+                  tip: 'Kiểm tra kích thước, TrimBox, RGB và vùng an toàn mép cắt',
+                },
+                {
+                  id: 'quote',
+                  label: 'Báo giá & Giá thành',
+                  icon: 'calculator',
+                  badge: 'PRO',
+                  tip: 'Tính nhanh giá vốn & báo giá in dựa trên số tờ bình',
                 },
               ],
             },
