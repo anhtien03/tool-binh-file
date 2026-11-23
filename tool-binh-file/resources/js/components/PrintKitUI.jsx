@@ -250,46 +250,58 @@ export function PkIcon({ name, className = 'w-4 h-4' }) {
 }
 
 /**
- * Sticky Millimeter Rulers (Top + Left) for Prepress Canvas Pasteboard
+ * Pinned Viewport Millimeter Rulers (Top + Left) like PryntX / Photoshop.
+ * Spans the full pasteboard edge with negative & positive mm ticks anchored to `originPx` (0 mm = sheet top-left).
  */
-export function PrepressRulerBar({ orientation = 'horizontal', lengthMm = 330, pxPerMm = 2, cursorMm = null }) {
+export function PrepressRulerBar({
+  orientation = 'horizontal',
+  viewportPx = 800,
+  originPx = 40,
+  pxPerMm = 2,
+  cursorMm = null,
+}) {
   const safePxPerMm = Math.max(0.2, pxPerMm || 2);
-  // Choose smart major tick interval based on zoom density so labels never collide
+  const safeVp = Math.max(100, viewportPx || 800);
   const majorStep =
     safePxPerMm >= 6 ? 10 : safePxPerMm >= 2.5 ? 20 : safePxPerMm >= 1.1 ? 50 : 100;
   const minorStep = majorStep / 5;
-  const totalPx = Math.max(200, Math.round(lengthMm * safePxPerMm));
+
+  const minMm = Math.floor((-originPx / safePxPerMm) / minorStep) * minorStep;
+  const maxMm = Math.ceil(((safeVp - originPx) / safePxPerMm) / minorStep) * minorStep;
 
   const ticks = [];
-  for (let mm = 0; mm <= lengthMm + 0.01; mm += minorStep) {
-    const pos = Math.round(mm * safePxPerMm);
-    const isMajor = Math.abs(mm % majorStep) < 0.01;
-    ticks.push({ mm: Math.round(mm), pos, isMajor });
+  for (let mm = minMm; mm <= maxMm + 0.01 && ticks.length < 400; mm += minorStep) {
+    const pos = Math.round(originPx + mm * safePxPerMm);
+    if (pos < -20 || pos > safeVp + 20) continue;
+    const roundedMm = Math.round(mm);
+    const isMajor = Math.abs(roundedMm % majorStep) === 0;
+    ticks.push({ mm: roundedMm, pos, isMajor });
   }
 
   if (orientation === 'horizontal') {
     return (
-      <div
-        className="relative h-5 bg-[#F8FAFC] border-b border-[#CBD5E1] select-none shrink-0 overflow-hidden"
-        style={{ width: `${totalPx}px` }}
-      >
+      <div className="relative h-5 flex-1 bg-[#F8FAFC] border-b border-[#CBD5E1] select-none overflow-hidden">
         {ticks.map((t) => (
           <div
             key={t.mm}
-            className="absolute bottom-0 border-l border-[#94A3B8]"
-            style={{ left: `${t.pos}px`, height: t.isMajor ? '11px' : '5px' }}
+            className={`absolute bottom-0 border-l ${t.mm === 0 ? 'border-[#087F5B]' : 'border-[#94A3B8]'}`}
+            style={{ left: `${t.pos}px`, height: t.isMajor ? '12px' : '5px' }}
           >
             {t.isMajor && (
-              <span className="absolute -top-2 left-1 text-[9px] font-mono text-[#475569] leading-none">
+              <span
+                className={`absolute -top-2 left-1 text-[9px] font-mono leading-none ${
+                  t.mm === 0 ? 'text-[#087F5B] font-bold' : 'text-[#475569]'
+                }`}
+              >
                 {t.mm}
               </span>
             )}
           </div>
         ))}
-        {cursorMm !== null && cursorMm >= 0 && cursorMm <= lengthMm && (
+        {cursorMm !== null && (
           <div
             className="absolute top-0 bottom-0 w-[1.5px] bg-[#087F5B] pointer-events-none"
-            style={{ left: `${Math.round(cursorMm * safePxPerMm)}px` }}
+            style={{ left: `${Math.round(originPx + cursorMm * safePxPerMm)}px` }}
           />
         )}
       </div>
@@ -297,29 +309,28 @@ export function PrepressRulerBar({ orientation = 'horizontal', lengthMm = 330, p
   }
 
   return (
-    <div
-      className="relative w-5 bg-[#F8FAFC] border-r border-[#CBD5E1] select-none shrink-0 overflow-hidden"
-      style={{ height: `${totalPx}px` }}
-    >
+    <div className="relative w-5 flex-1 bg-[#F8FAFC] border-r border-[#CBD5E1] select-none overflow-hidden">
       {ticks.map((t) => (
         <div
           key={t.mm}
-          className="absolute right-0 border-t border-[#94A3B8]"
-          style={{ top: `${t.pos}px`, width: t.isMajor ? '11px' : '5px' }}
+          className={`absolute right-0 border-t ${t.mm === 0 ? 'border-[#087F5B]' : 'border-[#94A3B8]'}`}
+          style={{ top: `${t.pos}px`, width: t.isMajor ? '12px' : '5px' }}
         >
-          {t.isMajor && t.mm > 0 && (
+          {t.isMajor && (
             <span
-              className="absolute right-2.5 top-0.5 text-[9px] font-mono text-[#475569] leading-none origin-top-right -rotate-90 whitespace-nowrap"
+              className={`absolute right-2.5 top-0.5 text-[9px] font-mono leading-none origin-top-right -rotate-90 whitespace-nowrap ${
+                t.mm === 0 ? 'text-[#087F5B] font-bold' : 'text-[#475569]'
+              }`}
             >
               {t.mm}
             </span>
           )}
         </div>
       ))}
-      {cursorMm !== null && cursorMm >= 0 && cursorMm <= lengthMm && (
+      {cursorMm !== null && (
         <div
           className="absolute left-0 right-0 h-[1.5px] bg-[#087F5B] pointer-events-none"
-          style={{ top: `${Math.round(cursorMm * safePxPerMm)}px` }}
+          style={{ top: `${Math.round(originPx + cursorMm * safePxPerMm)}px` }}
         />
       )}
     </div>

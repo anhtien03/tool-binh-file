@@ -34,7 +34,9 @@ export default function PdfCanvasPreview({
   const [isPanning, setIsPanning] = useState(false);
   const [cursorMm, setCursorMm] = useState(null);
   const [vpBox, setVpBox] = useState({ w: 680, h: 540 });
+  const [rulerOrigin, setRulerOrigin] = useState({ x: 40, y: 40 });
   const canvasRef = useRef(null);
+  const paperBoxRef = useRef(null);
   const cutCanvasRef = useRef(null);
   const viewportRef = useRef(null);
   const panStateRef = useRef({ active: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 });
@@ -330,10 +332,24 @@ export default function PdfCanvasPreview({
     };
   }, []);
 
-  const availW = Math.max(260, vpBox.w - (showRulers ? 76 : 52));
-  const availH = Math.max(240, vpBox.h - (showRulers ? 76 : 52));
+  const availW = Math.max(260, vpBox.w - 52);
+  const availH = Math.max(240, vpBox.h - 52);
   const BASE_WIDTH = !inspectedPage && splitStickerPreview ? Math.max(240, Math.floor((availW - 28) / 2)) : availW;
   const BASE_HEIGHT = availH;
+
+  // Keep pinned rulers' 0mm origin locked to the paper sheet's top-left corner across zoom/resize
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      const vp = viewportRef.current;
+      const pb = paperBoxRef.current;
+      if (vp && pb) {
+        const vr = vp.getBoundingClientRect();
+        const pr = pb.getBoundingClientRect();
+        setRulerOrigin({ x: pr.left - vr.left, y: pr.top - vr.top });
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [vpBox, zoom, sheetDim.width, sheetDim.height, pages.length, showRulers, inspectedPageIndex]);
   const previewAspect = sheetDim.width / Math.max(1, sheetDim.height);
   const containerAspect = BASE_WIDTH / BASE_HEIGHT;
 
@@ -857,77 +873,92 @@ export default function PdfCanvasPreview({
         </div>
       )}
 
-      {/* DARK GRAY DESKTOP PASTEBOARD WITH OPTIONAL STICKY MM RULERS */}
-      <div
-        ref={viewportRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={stopPanning}
-        onMouseLeave={() => {
-          stopPanning();
-          setCursorMm(null);
-        }}
-        title="Cuộn chuột để Zoom (tối đa 1000%) · Kéo chuột trái để di chuyển bàn vẽ"
-        className={`flex-1 w-full overflow-auto p-6 select-none flex bg-[#52565E] ${
-          isPanning ? 'cursor-grabbing' : 'cursor-grab'
-        }`}
-      >
-        {!inspectedPage && splitStickerPreview ? (
-          <div className="flex flex-wrap xl:flex-nowrap items-start justify-center gap-6 m-auto w-fit">
-            <div className="flex flex-col items-center gap-2 shrink-0">
-              <span className="px-2.5 py-0.5 rounded bg-[#087F5B] text-white text-[11px] font-semibold shadow-sm">
-                BÀI IN (PRINT)
-              </span>
-              <canvas
-                ref={canvasRef}
-                className="bg-white block"
-                style={{
-                  width: `${canvasWidth}px`,
-                  height: `${canvasHeight}px`,
-                  boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
-                }}
-              />
+      {/* PINNED TOP & LEFT MM RULERS + DARK GRAY DESKTOP PASTEBOARD */}
+      <div className="flex-1 min-h-0 w-full flex flex-col overflow-hidden">
+        {showRulers && (
+          <div className="flex h-5 shrink-0 bg-[#F8FAFC]">
+            <div className="w-5 h-5 bg-[#E2E8F0] border-r border-b border-[#CBD5E1] text-[8px] font-mono font-bold text-[#475569] flex items-center justify-center shrink-0">
+              mm
             </div>
-            <div className="flex flex-col items-center gap-2 shrink-0">
-              <span className="px-2.5 py-0.5 rounded bg-[#DC4545] text-white text-[11px] font-semibold shadow-sm">
-                KHUÔN BẾ (CUT)
-              </span>
-              <canvas
-                ref={cutCanvasRef}
-                className="bg-white block"
-                style={{
-                  width: `${canvasWidth}px`,
-                  height: `${canvasHeight}px`,
-                  boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
-                }}
-              />
-            </div>
+            <PrepressRulerBar
+              orientation="horizontal"
+              viewportPx={vpBox.w}
+              originPx={rulerOrigin.x}
+              pxPerMm={canvasWidth / Math.max(1, sheetDim.width)}
+              cursorMm={cursorMm?.x ?? null}
+            />
           </div>
-        ) : (
-          <div className="m-auto shrink-0 flex flex-col">
-            {showRulers && pages.length > 0 && (
-              <div className="flex items-end">
-                <div className="w-5 h-5 bg-[#E2E8F0] border-r border-b border-[#CBD5E1] text-[8px] font-mono font-bold text-[#475569] flex items-center justify-center shrink-0">
-                  mm
+        )}
+        <div className="flex-1 min-h-0 flex overflow-hidden">
+          {showRulers && (
+            <div className="w-5 shrink-0 flex flex-col bg-[#F8FAFC]">
+              <PrepressRulerBar
+                orientation="vertical"
+                viewportPx={vpBox.h}
+                originPx={rulerOrigin.y}
+                pxPerMm={canvasHeight / Math.max(1, sheetDim.height)}
+                cursorMm={cursorMm?.y ?? null}
+              />
+            </div>
+          )}
+          <div
+            ref={viewportRef}
+            onScroll={() => {
+              const vp = viewportRef.current;
+              const pb = paperBoxRef.current;
+              if (vp && pb) {
+                const vr = vp.getBoundingClientRect();
+                const pr = pb.getBoundingClientRect();
+                setRulerOrigin({ x: pr.left - vr.left, y: pr.top - vr.top });
+              }
+            }}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={stopPanning}
+            onMouseLeave={() => {
+              stopPanning();
+              setCursorMm(null);
+            }}
+            title="Cuộn chuột để Zoom (tối đa 1000%) · Kéo chuột trái để di chuyển bàn vẽ"
+            className={`flex-1 h-full overflow-auto p-6 select-none flex bg-[#52565E] ${
+              isPanning ? 'cursor-grabbing' : 'cursor-grab'
+            }`}
+          >
+            {!inspectedPage && splitStickerPreview ? (
+              <div className="flex flex-wrap xl:flex-nowrap items-start justify-center gap-6 m-auto w-fit">
+                <div className="flex flex-col items-center gap-2 shrink-0">
+                  <span className="px-2.5 py-0.5 rounded bg-[#087F5B] text-white text-[11px] font-semibold shadow-sm">
+                    BÀI IN (PRINT)
+                  </span>
+                  <canvas
+                    ref={canvasRef}
+                    className="bg-white block"
+                    style={{
+                      width: `${canvasWidth}px`,
+                      height: `${canvasHeight}px`,
+                      boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
+                    }}
+                  />
                 </div>
-                <PrepressRulerBar
-                  orientation="horizontal"
-                  lengthMm={sheetDim.width}
-                  pxPerMm={canvasWidth / Math.max(1, sheetDim.width)}
-                  cursorMm={cursorMm?.x ?? null}
-                />
+                <div className="flex flex-col items-center gap-2 shrink-0">
+                  <span className="px-2.5 py-0.5 rounded bg-[#DC4545] text-white text-[11px] font-semibold shadow-sm">
+                    KHUÔN BẾ (CUT)
+                  </span>
+                  <canvas
+                    ref={cutCanvasRef}
+                    className="bg-white block"
+                    style={{
+                      width: `${canvasWidth}px`,
+                      height: `${canvasHeight}px`,
+                      boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
+                    }}
+                  />
+                </div>
               </div>
-            )}
-            <div className="flex items-start">
-              {showRulers && pages.length > 0 && (
-                <PrepressRulerBar
-                  orientation="vertical"
-                  lengthMm={sheetDim.height}
-                  pxPerMm={canvasHeight / Math.max(1, sheetDim.height)}
-                  cursorMm={cursorMm?.y ?? null}
-                />
-              )}
+            ) : (
               <div
+                ref={paperBoxRef}
+                className="m-auto shrink-0"
                 style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
                 onMouseMove={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
@@ -950,9 +981,9 @@ export default function PdfCanvasPreview({
                   }}
                 />
               </div>
-            </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
 
       {/* BOTTOM NATIVE DESKTOP STATUS BAR & PRINT GUIDES LEGEND */}
