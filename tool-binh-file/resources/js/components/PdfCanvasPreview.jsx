@@ -448,40 +448,6 @@ export default function PdfCanvasPreview({
           ctx.restore();
         }
 
-        // Draw mm ruler ticks along top and left borders
-        ctx.save();
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-        ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
-        ctx.lineWidth = 0.8;
-        ctx.font = '9px monospace';
-        const stepMm = sheetDim.width <= 160 ? 10 : 20;
-        for (let mm = 0; mm <= sheetDim.width; mm += stepMm / 2) {
-          const px = mm * scale;
-          const isMajor = mm % stepMm === 0;
-          ctx.beginPath();
-          ctx.moveTo(px, 0);
-          ctx.lineTo(px, isMajor ? 7 : 4);
-          ctx.stroke();
-          if (isMajor && mm > 0 && px < canvasWidth - 16) {
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'top';
-            ctx.fillText(`${mm}`, px, 7.5);
-          }
-        }
-        for (let mm = 0; mm <= sheetDim.height; mm += stepMm / 2) {
-          const py = mm * scale;
-          const isMajor = mm % stepMm === 0;
-          ctx.beginPath();
-          ctx.moveTo(0, py);
-          ctx.lineTo(isMajor ? 7 : 4, py);
-          ctx.stroke();
-          if (isMajor && mm > 0 && py < canvasHeight - 12) {
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(`${mm}`, 8, py);
-          }
-        }
-        ctx.restore();
         return;
       }
 
@@ -706,40 +672,6 @@ export default function PdfCanvasPreview({
         ctx.textBaseline = 'bottom';
         ctx.fillText(activeSheet.slugText, 6 * scale, canvasHeight - 2 * scale);
       }
-
-      // Draw mm ruler ticks along top and left borders (0, 20, 40, 60, 80, 100... mm)
-      ctx.save();
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
-      ctx.strokeStyle = 'rgba(15, 23, 42, 0.35)';
-      ctx.lineWidth = 0.75;
-      ctx.font = '9px monospace';
-      for (let mm = 0; mm <= sheetDim.width; mm += 10) {
-        const px = mm * scale;
-        const isMajor = mm % 20 === 0;
-        ctx.beginPath();
-        ctx.moveTo(px, 0);
-        ctx.lineTo(px, isMajor ? 6 : 3.5);
-        ctx.stroke();
-        if (isMajor && mm > 0 && px < canvasWidth - 18) {
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'top';
-          ctx.fillText(`${mm}`, px, 6.5);
-        }
-      }
-      for (let mm = 0; mm <= sheetDim.height; mm += 10) {
-        const py = mm * scale;
-        const isMajor = mm % 20 === 0;
-        ctx.beginPath();
-        ctx.moveTo(0, py);
-        ctx.lineTo(isMajor ? 6 : 3.5, py);
-        ctx.stroke();
-        if (isMajor && mm > 0 && py < canvasHeight - 12) {
-          ctx.textAlign = 'left';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(`${mm}`, 7.5, py);
-        }
-      }
-      ctx.restore();
     };
 
     if (!inspectedPage && splitStickerPreview) {
