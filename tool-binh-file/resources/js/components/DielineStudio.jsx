@@ -1,9 +1,77 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { DIELINE_TEMPLATES, generateDieline, exportDielineSvg } from '../engine/dielineEngine';
 import { exportDielinePdf, exportImposedDielinePdf } from '../engine/dielinePdfExporter';
 import { PAPER_SIZES, solveDutchCut, solveSimpleGrid } from '../engine/impositionEngine';
-import Box3DViewer, { PAPER_MATERIALS } from './Box3DViewer';
+import Box3DViewer, { PAPER_MATERIALS, FINISH_MODES } from './Box3DViewer';
+
+const PANEL_VI_LABELS = {
+  back: 'Mặt sau',
+  front: 'Mặt trước',
+  left: 'Mặt trái',
+  right: 'Mặt phải',
+  glue: 'Tai dán',
+  top: 'Nắp trên',
+  top_tuck: 'Lưỡi gài trên',
+  top_lid: 'Nắp trên',
+  bottom: 'Nắp đáy',
+  bot_tuck: 'Lưỡi gài đáy',
+  bottom_lid: 'Nắp đáy',
+  dust_tl: 'Tai bụi trên',
+  dust_tr: 'Tai bụi trên',
+  dust_bl: 'Tai bụi dưới',
+  dust_br: 'Tai bụi dưới',
+  base: 'Đáy hộp',
+  wall_top: 'Vách trên',
+  wall_bot: 'Vách dưới',
+  wall_left: 'Vách trái',
+  wall_right: 'Vách phải',
+  bot_main: 'Đáy gập',
+};
+
+function friendlyPanelName(node) {
+  if (node.label) return node.label;
+  if (node.name) return node.name;
+  const id = String(node.id || '').toLowerCase();
+  for (const [k, v] of Object.entries(PANEL_VI_LABELS)) {
+    if (id === k || id.includes(k)) return v;
+  }
+  return id.replace(/[_-]+/g, ' ').trim() || 'Mặt hộp';
+}
+
+function flattenPanels(node, out = []) {
+  if (!node) return out;
+  if (Array.isArray(node.polygon) && node.polygon.length >= 3) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of node.polygon) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    const w = Math.round((maxX - minX) * 10) / 10;
+    const h = Math.round((maxY - minY) * 10) / 10;
+    out.push({
+      id: node.id || `p-${out.length}`,
+      label: friendlyPanelName(node),
+      polygon: node.polygon,
+      pointsStr: node.polygon.map(([x, y]) => `${x},${y}`).join(' '),
+      cx: (minX + maxX) / 2,
+      cy: (minY + maxY) / 2,
+      minX,
+      minY,
+      maxX,
+      maxY,
+      w,
+      h,
+      area: w * h,
+    });
+  }
+  for (const ch of node.children || []) {
+    flattenPanels(ch, out);
+  }
+  return out;
+}
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
 
@@ -33,10 +101,16 @@ export default function DielineStudio({
   const [cameraPreset, setCameraPreset] = useState('iso');
   const [autoRotate, setAutoRotate] = useState(false);
   const [showEdges3D, setShowEdges3D] = useState(true);
+  const [finishMode, setFinishMode] = useState('standard');
+  const [hoveredPanelId, setHoveredPanelId] = useState(null);
+  const [showPanelLabels2D, setShowPanelLabels2D] = useState(true);
+  const box3DRef = useRef(null);
 
-  // Artwork & Export
+  // Artwork & Export (Outer + Inner)
   const [artworkDataUrl, setArtworkDataUrl] = useState(null);
   const [artworkName, setArtworkName] = useState('');
+  const [innerArtworkDataUrl, setInnerArtworkDataUrl] = useState(null);
+  const [innerArtworkName, setInnerArtworkName] = useState('');
   const [exporting, setExporting] = useState(false);
 
   // Sync defaults when user switches template from Library
@@ -45,6 +119,11 @@ export default function DielineStudio({
   }, [templateId]);
 
   const dieline = useMemo(() => generateDieline(templateId, params, dimensionMode), [templateId, params, dimensionMode]);
+  const flatPanels = useMemo(() => flattenPanels(dieline.rootPanel), [dieline]);
+  const hoveredPanel = useMemo(
+    () => flatPanels.find((p) => p.id === hoveredPanelId) || null,
+    [flatPanels, hoveredPanelId]
+  );
 
   // Compute full imposed sheet plan for THIS dieline on the selected press sheet
   const dielineSheetPlan = useMemo(() => {
@@ -136,23 +215,68 @@ export default function DielineStudio({
     setParams((prev) => ({ ...prev, [key]: Math.max(0, parseFloat(value) || 0) }));
   };
 
-  const handleArtworkUpload = async (file) => {
-    if (!file) return;
-    setArtworkName(file.name);
+  const renderUploadToDataUrl = async (file) => {
     if (file.type === 'application/pdf') {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+      const isLocal = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+      const pdf = await pdfjsLib.getDocument({
+        data: bytes,
+        cMapUrl: isLocal ? '/cmaps/' : 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/cmaps/',
+        cMapPacked: true,
+      }).promise;
       const page = await pdf.getPage(1);
-      const vp = page.getViewport({ scale: 2.0 });
+      const vp = page.getViewport({ scale: 2.5 });
       const canvas = document.createElement('canvas');
       canvas.width = vp.width;
       canvas.height = vp.height;
       await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-      setArtworkDataUrl(canvas.toDataURL('image/png'));
-    } else {
+      return canvas.toDataURL('image/png');
+    }
+    return await new Promise((resolve) => {
       const reader = new FileReader();
-      reader.onload = () => setArtworkDataUrl(reader.result);
+      reader.onload = () => resolve(reader.result);
       reader.readAsDataURL(file);
+    });
+  };
+
+  const handleArtworkUpload = async (file, side = 'outer') => {
+    if (!file) return;
+    const url = await renderUploadToDataUrl(file);
+    if (side === 'inner') {
+      setInnerArtworkName(file.name);
+      setInnerArtworkDataUrl(url);
+    } else {
+      setArtworkName(file.name);
+      setArtworkDataUrl(url);
+    }
+  };
+
+  const handleCapturePng3D = () => {
+    const dataUrl = box3DRef.current?.capturePng?.(true);
+    if (!dataUrl) return;
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `Mockup3D_${tpl.code}_${params.L}x${params.W}x${params.H}mm.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const handleExportGlb = async () => {
+    try {
+      const buffer = await box3DRef.current?.exportGlb?.();
+      if (!buffer) return;
+      const blob = new Blob([buffer], { type: 'model/gltf-binary' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${tpl.code}_${params.L}x${params.W}x${params.H}mm.glb`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export GLB error:', err);
     }
   };
 
@@ -196,12 +320,12 @@ export default function DielineStudio({
   const matInfo = PAPER_MATERIALS[materialKey] || PAPER_MATERIALS.ivory;
 
   return (
-    <div className="flex flex-col lg:flex-row gap-3 flex-1 min-w-0">
+    <div className="flex flex-1 min-w-0 h-full overflow-hidden">
       {/* 1. LEFT: CENTER MAIN CANVAS */}
-      <main className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-200 flex flex-col overflow-hidden shadow-xs min-h-[580px]">
+      <main className="flex-1 min-w-0 bg-[#1e232a] flex flex-col overflow-hidden">
         {/* Canvas Top Bar */}
-        <div className="px-4 py-2.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-white">
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+        <div className="min-h-[40px] px-3 py-1 bg-[#F8FAFC] border-b border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-1 bg-[#E2E8F0]/70 p-0.5 rounded-lg">
             {[
               ['2d', 'Khuôn 2D'],
               ['3d', 'Mô phỏng 3D'],
@@ -211,8 +335,8 @@ export default function DielineStudio({
               <button
                 key={k}
                 onClick={() => setCanvasMode(k)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  canvasMode === k ? 'bg-white text-[#146C53] shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                  canvasMode === k ? 'bg-white text-[#087F5B] shadow-2xs' : 'text-[#64748B] hover:text-[#17212F]'
                 }`}
               >
                 {label}
@@ -220,27 +344,41 @@ export default function DielineStudio({
             ))}
           </div>
 
-          {canvasMode !== '3d' && (
-            <div className="flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs font-mono text-slate-600">
-              <button onClick={() => setZoom2D(1.0)} className="px-1.5 hover:text-[#146C53] font-sans font-semibold cursor-pointer">
-                Fit
+          <div className="flex items-center gap-2">
+            {(canvasMode === '2d' || canvasMode === 'split') && (
+              <button
+                onClick={() => setShowPanelLabels2D((v) => !v)}
+                className={`px-2 py-1 rounded-md border text-[11px] font-semibold cursor-pointer ${
+                  showPanelLabels2D
+                    ? 'bg-[#DDF5EC] border-[#087F5B]/30 text-[#064E3B]'
+                    : 'bg-white border-[#E2E8F0] text-[#64748B]'
+                }`}
+              >
+                Nhãn mặt hộp
               </button>
-              <button onClick={() => setZoom2D(2.0)} className="px-1.5 hover:text-[#146C53] text-[11px] cursor-pointer">
-                200%
-              </button>
-              <button onClick={() => setZoom2D((z) => Math.max(0.4, Math.round((z - 0.2) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
-                −
-              </button>
-              <span className="min-w-[44px] text-center font-bold text-[#146C53]">{Math.round(zoom2D * 100)}%</span>
-              <button onClick={() => setZoom2D((z) => Math.min(8.0, Math.round((z + 0.2) * 100) / 100))} className="px-1.5 hover:text-slate-900 cursor-pointer">
-                +
-              </button>
-            </div>
-          )}
+            )}
+            {canvasMode !== '3d' && (
+              <div className="flex items-center gap-1 bg-white border border-[#E2E8F0] rounded-md px-1.5 py-0.5 text-xs font-mono text-[#64748B]">
+                <button onClick={() => setZoom2D(1.0)} className="px-1.5 hover:text-[#087F5B] font-sans font-semibold cursor-pointer">
+                  Fit
+                </button>
+                <button onClick={() => setZoom2D(2.0)} className="px-1.5 hover:text-[#087F5B] text-[11px] cursor-pointer">
+                  200%
+                </button>
+                <button onClick={() => setZoom2D((z) => Math.max(0.4, Math.round((z - 0.2) * 100) / 100))} className="px-1.5 hover:text-[#17212F] cursor-pointer">
+                  −
+                </button>
+                <span className="min-w-[44px] text-center font-bold text-[#087F5B]">{Math.round(zoom2D * 100)}%</span>
+                <button onClick={() => setZoom2D((z) => Math.min(8.0, Math.round((z + 0.2) * 100) / 100))} className="px-1.5 hover:text-[#17212F] cursor-pointer">
+                  +
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Canvas Body */}
-        <div className={`flex-1 grid ${canvasMode === 'split' ? 'grid-cols-1 xl:grid-cols-2 divide-y xl:divide-y-0 xl:divide-x divide-slate-200' : 'grid-cols-1'}`}>
+        <div className={`flex-1 min-h-0 grid ${canvasMode === 'split' ? 'grid-cols-1 xl:grid-cols-2 divide-y xl:divide-y-0 xl:divide-x divide-[#334155]' : 'grid-cols-1'}`}>
           {(canvasMode === '2d' || canvasMode === 'split') && (
             <div
               onWheel={(e) => {
@@ -248,38 +386,56 @@ export default function DielineStudio({
                 const delta = e.deltaY < 0 ? 0.2 : -0.2;
                 setZoom2D((z) => Math.round(Math.min(8.0, Math.max(0.4, z + delta)) * 100) / 100);
               }}
-              title="Cuộn chuột để Phóng to / Thu nhỏ khuôn 2D"
-              className="relative flex p-4 overflow-auto min-h-[580px]"
-              style={{
-                backgroundColor: '#fcfdfc',
-                backgroundImage:
-                  'linear-gradient(to right, #eef2f1 1px, transparent 1px), linear-gradient(to bottom, #eef2f1 1px, transparent 1px)',
-                backgroundSize: '24px 24px',
-              }}
+              title="Cuộn chuột để Phóng to / Thu nhỏ khuôn 2D · Rê chuột lên từng mặt để xem thông số"
+              className="relative flex p-6 overflow-auto bg-[#1e232a]"
             >
-              {/* Spec Header */}
-              <div className="absolute top-3 left-4 text-[11px] font-mono font-semibold text-slate-500">
-                {tpl.code} — L{dieline.params.L}×W{dieline.params.W}×H{dieline.params.H} mm · CAL {dieline.params.thickness}
+              {/* Top-left Spec & Hover Pill */}
+              <div className="sticky top-0 left-0 z-10 h-0 flex items-start justify-between w-full pointer-events-none">
+                <div className="bg-slate-900/85 backdrop-blur border border-slate-700 rounded-md px-2.5 py-1 text-[11px] font-mono text-slate-200 shadow-sm">
+                  {tpl.code} · {dieline.bounds.width}×{dieline.bounds.height} mm
+                  {hoveredPanel && (
+                    <span className="ml-2 text-emerald-300 font-bold">
+                      · [{hoveredPanel.label}: {hoveredPanel.w}×{hoveredPanel.h} mm]
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="m-auto shrink-0">
                 <svg
-                  viewBox={`-18 -18 ${dieline.bounds.width + 36} ${dieline.bounds.height + 36}`}
-                  style={{ width: `${Math.round(680 * zoom2D)}px`, height: 'auto' }}
-                  className="block"
+                  viewBox={`-22 -22 ${dieline.bounds.width + 44} ${dieline.bounds.height + 44}`}
+                  style={{ width: `${Math.round(620 * zoom2D)}px`, height: 'auto' }}
+                  className="block select-none"
                 >
-                  {/* Overall bounding Bleed indicator */}
-                  <rect
-                    x="-2"
-                    y="-2"
-                    width={dieline.bounds.width + 4}
-                    height={dieline.bounds.height + 4}
-                    fill="none"
-                    stroke="#16a34a"
-                    strokeWidth="0.45"
-                    strokeDasharray="2 2"
-                    opacity="0.55"
-                  />
+                  {/* 1. Pacora-style glowing Bleed Silhouette around box panels */}
+                  <g fill="none" stroke="#38bdf8" strokeWidth="4.2" strokeLinejoin="round" opacity="0.28">
+                    {flatPanels.map((fp) => (
+                      <polygon key={`bl-glow-${fp.id}`} points={fp.pointsStr} />
+                    ))}
+                  </g>
+                  <g fill="none" stroke="#38bdf8" strokeWidth="1.2" strokeLinejoin="round" opacity="0.85">
+                    {flatPanels.map((fp) => (
+                      <polygon key={`bl-line-${fp.id}`} points={fp.pointsStr} />
+                    ))}
+                  </g>
+
+                  {/* 2. Interactive Cream Paper Panels (hover highlights both 2D and 3D!) */}
+                  {flatPanels.map((fp) => {
+                    const isHover = hoveredPanelId === fp.id;
+                    return (
+                      <polygon
+                        key={`fill-${fp.id}`}
+                        points={fp.pointsStr}
+                        fill={isHover ? '#fde8ea' : '#f7f5ef'}
+                        stroke="none"
+                        className="cursor-pointer transition-colors duration-100"
+                        onMouseEnter={() => setHoveredPanelId(fp.id)}
+                        onMouseLeave={() => setHoveredPanelId((cur) => (cur === fp.id ? null : cur))}
+                      />
+                    );
+                  })}
+
+                  {/* 3. Artwork overlay clipped to dieline bounds */}
                   {artworkDataUrl && (
                     <image
                       href={artworkDataUrl}
@@ -288,9 +444,12 @@ export default function DielineStudio({
                       width={dieline.bounds.width}
                       height={dieline.bounds.height}
                       preserveAspectRatio="none"
-                      opacity="0.78"
+                      opacity="0.72"
+                      className="pointer-events-none"
                     />
                   )}
+
+                  {/* 4. Crease (Red Dashed) & Cut (Dark Ink / Blue) */}
                   {dieline.creaseSegments.map(([a, b], i) => (
                     <line
                       key={`cr-${i}`}
@@ -299,39 +458,113 @@ export default function DielineStudio({
                       x2={b[0]}
                       y2={b[1]}
                       stroke="#dc2626"
-                      strokeWidth="0.7"
+                      strokeWidth="0.75"
                       strokeDasharray="3 2"
+                      className="pointer-events-none"
                     />
                   ))}
                   {dieline.cutSegments.map(([a, b], i) => (
-                    <line key={`ct-${i}`} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#1d4ed8" strokeWidth="0.9" />
+                    <line
+                      key={`ct-${i}`}
+                      x1={a[0]}
+                      y1={a[1]}
+                      x2={b[0]}
+                      y2={b[1]}
+                      stroke="#0f172a"
+                      strokeWidth="0.95"
+                      className="pointer-events-none"
+                    />
                   ))}
 
-                  {/* Dimension Callout Top */}
-                  <line x1="0" y1="-9" x2={dieline.bounds.width} y2="-9" stroke="#0284c7" strokeWidth="0.5" />
+                  {/* 5. Pacora-style Floating White Label Pills + Dimensions inside each panel */}
+                  {showPanelLabels2D &&
+                    flatPanels.map((fp) => {
+                      if (fp.w < 14 || fp.h < 12) return null;
+                      const isHover = hoveredPanelId === fp.id;
+                      const pillW = Math.min(fp.w * 0.86, Math.max(22, fp.label.length * 3.1 + 8));
+                      const pillH = 9.5;
+                      const dimText = `${fp.w}×${fp.h}`;
+                      const showDim = fp.w >= 26 && fp.h >= 24;
+                      return (
+                        <g key={`lbl-${fp.id}`} className="pointer-events-none">
+                          <rect
+                            x={fp.cx - pillW / 2}
+                            y={fp.cy - (showDim ? 6.5 : pillH / 2)}
+                            width={pillW}
+                            height={pillH}
+                            rx="3.5"
+                            fill={isHover ? '#087F5B' : '#ffffff'}
+                            fillOpacity="0.94"
+                            stroke={isHover ? '#064E3B' : '#cbd5e1'}
+                            strokeWidth="0.45"
+                          />
+                          <text
+                            x={fp.cx}
+                            y={fp.cy - (showDim ? 1.8 : -0.2)}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            fill={isHover ? '#ffffff' : '#1e293b'}
+                            fontSize="4.2"
+                            fontWeight="700"
+                            fontFamily="Inter, sans-serif"
+                          >
+                            {fp.label}
+                          </text>
+                          {showDim && (
+                            <g>
+                              <rect
+                                x={fp.cx - 15}
+                                y={fp.cy + 4.2}
+                                width="30"
+                                height="7.5"
+                                rx="3"
+                                fill="#ffffff"
+                                fillOpacity="0.92"
+                                stroke="#93c5fd"
+                                strokeWidth="0.45"
+                              />
+                              <text
+                                x={fp.cx}
+                                y={fp.cy + 8.1}
+                                textAnchor="middle"
+                                dominantBaseline="middle"
+                                fill="#2563eb"
+                                fontSize="3.8"
+                                fontWeight="700"
+                                fontFamily="monospace"
+                              >
+                                {dimText}
+                              </text>
+                            </g>
+                          )}
+                        </g>
+                      );
+                    })}
+
+                  {/* 6. Outer Overall Dimensions */}
+                  <line x1="0" y1="-10" x2={dieline.bounds.width} y2="-10" stroke="#94a3b8" strokeWidth="0.55" />
                   <text
                     x={dieline.bounds.width / 2}
-                    y="-12"
+                    y="-13.5"
                     textAnchor="middle"
-                    fill="#0284c7"
-                    fontSize="6"
+                    fill="#e2e8f0"
+                    fontSize="5.8"
                     fontFamily="monospace"
                     fontWeight="bold"
                   >
                     {dieline.bounds.width} mm
                   </text>
 
-                  {/* Dimension Callout Left */}
-                  <line x1="-9" y1="0" x2="-9" y2={dieline.bounds.height} stroke="#0284c7" strokeWidth="0.5" />
+                  <line x1="-10" y1="0" x2="-10" y2={dieline.bounds.height} stroke="#94a3b8" strokeWidth="0.55" />
                   <text
-                    x="-12"
+                    x="-13.5"
                     y={dieline.bounds.height / 2}
                     textAnchor="middle"
-                    fill="#0284c7"
-                    fontSize="6"
+                    fill="#e2e8f0"
+                    fontSize="5.8"
                     fontFamily="monospace"
                     fontWeight="bold"
-                    transform={`rotate(-90 -12 ${dieline.bounds.height / 2})`}
+                    transform={`rotate(-90 -13.5 ${dieline.bounds.height / 2})`}
                   >
                     {dieline.bounds.height} mm
                   </text>
@@ -339,15 +572,15 @@ export default function DielineStudio({
               </div>
 
               {/* Floating Bottom-Left Legend Pill */}
-              <div className="absolute bottom-3 left-3 bg-white/95 backdrop-blur border border-slate-200 rounded-full px-3.5 py-1.5 flex items-center gap-3 text-[11px] font-semibold text-slate-600 shadow-xs">
+              <div className="absolute bottom-3 left-3 bg-slate-900/90 backdrop-blur border border-slate-700 rounded-full px-3.5 py-1.5 flex items-center gap-3 text-[11px] font-semibold text-slate-200 shadow-sm">
                 <span className="flex items-center gap-1.5">
-                  <span className="w-3.5 h-0.5 border-t border-dashed border-emerald-600 inline-block" /> Bleed
+                  <span className="w-3.5 h-0.5 bg-sky-400 inline-block" /> Bleed
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="w-3.5 h-0.5 bg-blue-700 inline-block" /> Trim / Cut
+                  <span className="w-3.5 h-0.5 bg-white inline-block" /> Cut / Trim
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="w-3.5 h-0.5 border-t border-dashed border-red-600 inline-block" /> Crease
+                  <span className="w-3.5 h-0.5 border-t border-dashed border-red-400 inline-block" /> Crease
                 </span>
               </div>
             </div>
@@ -392,22 +625,41 @@ export default function DielineStudio({
                   <button
                     onClick={() => setShowEdges3D((v) => !v)}
                     className={`px-2 py-0.5 rounded-full cursor-pointer ${
-                      showEdges3D ? 'bg-[#E6F4EF] text-[#146C53]' : 'text-slate-500'
+                      showEdges3D ? 'bg-[#DDF5EC] text-[#064E3B]' : 'text-slate-500'
                     }`}
                   >
                     Nét bế
+                  </button>
+                  <span className="w-px h-3 bg-slate-200 mx-1" />
+                  <button
+                    onClick={handleCapturePng3D}
+                    title="Chụp ảnh Mockup 3D nền trong suốt (.PNG)"
+                    className="px-2 py-0.5 rounded-full bg-slate-100 hover:bg-[#DDF5EC] text-[#17212F] hover:text-[#064E3B] cursor-pointer"
+                  >
+                    📸 PNG 3D
+                  </button>
+                  <button
+                    onClick={handleExportGlb}
+                    title="Xuất file mô hình 3D (.GLB) gửi khách xem trên điện thoại/Blender"
+                    className="px-2 py-0.5 rounded-full bg-slate-100 hover:bg-[#DDF5EC] text-[#17212F] hover:text-[#064E3B] cursor-pointer"
+                  >
+                    📦 .GLB
                   </button>
                 </div>
               </div>
 
               <Box3DViewer
+                ref={box3DRef}
                 dieline={dieline}
                 foldProgress={foldProgress}
                 materialKey={materialKey}
+                finishMode={finishMode}
                 artworkDataUrl={artworkDataUrl}
+                innerArtworkDataUrl={innerArtworkDataUrl}
                 cameraPreset={cameraPreset}
                 autoRotate={autoRotate}
                 showEdges={showEdges3D}
+                hoveredPanelId={hoveredPanelId}
               />
 
               {/* Floating Bottom Pill (Fold Playback) */}
@@ -579,8 +831,8 @@ export default function DielineStudio({
         </div>
       </main>
 
-      {/* 2. MIDDLE-RIGHT SETTINGS & SUMMARY SIDEBAR (~345px) */}
-      <aside className="w-full lg:w-[345px] bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-4 overflow-y-auto max-h-[calc(100vh-80px)] shrink-0 shadow-xs">
+      {/* 2. MIDDLE-RIGHT SETTINGS & SUMMARY SIDEBAR */}
+      <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col justify-between gap-3.5 overflow-y-auto h-full shrink-0">
         <div className="flex flex-col gap-3.5">
           {/* Selected Template Card */}
           <div className="rounded-xl border border-slate-200 bg-[#FAFBF9] p-3">
@@ -671,6 +923,18 @@ export default function DielineStudio({
                 </option>
               ))}
             </select>
+            <select
+              value={finishMode}
+              onChange={(e) => setFinishMode(e.target.value)}
+              className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800"
+              title="Hiệu ứng gia công bề mặt 3D (Cán mờ / Cán bóng / Ép kim)"
+            >
+              {Object.entries(FINISH_MODES).map(([k, fm]) => (
+                <option key={k} value={k}>
+                  Gia công 3D: {fm.name}
+                </option>
+              ))}
+            </select>
             <div className="grid grid-cols-3 gap-2">
               <div className="flex flex-col gap-0.5">
                 <label className="text-[10px] text-slate-500">Độ dày (mm)</label>
@@ -707,17 +971,17 @@ export default function DielineStudio({
             </div>
           </div>
 
-          {/* Artwork Upload */}
+          {/* Artwork Upload (Outer + Inner 2-sided 3D) */}
           <div className="flex flex-col gap-1.5 pt-2 border-t border-slate-100">
-            <span className="text-xs font-bold text-slate-800">Ốp thiết kế lên mặt hộp</span>
-            <div className="flex items-center gap-2">
-              <label className="flex-1 text-center py-1.5 px-3 rounded-xl border border-dashed border-slate-300 hover:border-[#146C53] bg-[#FAFBF9] text-xs font-medium text-slate-600 cursor-pointer truncate">
-                {artworkName ? `🎨 ${artworkName}` : '⬆️ Chọn ảnh / PDF bản trải'}
+            <span className="text-xs font-bold text-slate-800">Ốp thiết kế lên hộp (Ngoài &amp; Trong)</span>
+            <div className="flex items-center gap-1.5">
+              <label className="flex-1 text-center py-1.5 px-2.5 rounded-lg border border-dashed border-slate-300 hover:border-[#087F5B] bg-[#FAFBF9] text-[11px] font-medium text-slate-700 cursor-pointer truncate">
+                {artworkName ? `Ngoài: ${artworkName}` : '+ Mặt ngoài (PNG / PDF)'}
                 <input
                   type="file"
                   accept="image/*,.pdf"
                   className="hidden"
-                  onChange={(e) => handleArtworkUpload(e.target.files[0])}
+                  onChange={(e) => handleArtworkUpload(e.target.files[0], 'outer')}
                 />
               </label>
               {artworkDataUrl && (
@@ -726,7 +990,29 @@ export default function DielineStudio({
                     setArtworkDataUrl(null);
                     setArtworkName('');
                   }}
-                  className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-xs font-semibold text-rose-600 cursor-pointer"
+                  className="px-2 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-[11px] font-semibold text-rose-600 cursor-pointer"
+                >
+                  Xóa
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <label className="flex-1 text-center py-1.5 px-2.5 rounded-lg border border-dashed border-slate-300 hover:border-[#087F5B] bg-[#FAFBF9] text-[11px] font-medium text-slate-700 cursor-pointer truncate">
+                {innerArtworkName ? `Trong: ${innerArtworkName}` : '+ Mặt trong hộp (Tùy chọn)'}
+                <input
+                  type="file"
+                  accept="image/*,.pdf"
+                  className="hidden"
+                  onChange={(e) => handleArtworkUpload(e.target.files[0], 'inner')}
+                />
+              </label>
+              {innerArtworkDataUrl && (
+                <button
+                  onClick={() => {
+                    setInnerArtworkDataUrl(null);
+                    setInnerArtworkName('');
+                  }}
+                  className="px-2 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-[11px] font-semibold text-rose-600 cursor-pointer"
                 >
                   Xóa
                 </button>

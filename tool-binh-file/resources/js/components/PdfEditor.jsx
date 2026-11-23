@@ -774,18 +774,16 @@ export default function PdfEditor() {
         )}
 
         {activeStudio === 'dieline' && (
-          <div className="flex-1 min-w-0 h-full overflow-y-auto p-3 flex">
-            <DielineStudio
-              templateId={selectedTemplateId}
-              onChangeTemplate={(id) => setSelectedTemplateId(id)}
-              onOpenLibrary={() => setActiveStudio('library')}
-              onOpenImpose={() => {
-                setActiveStudio('namecard');
-                setShowSettingsPanel(true);
-                setCurrentSheetIndex(0);
-              }}
-            />
-          </div>
+          <DielineStudio
+            templateId={selectedTemplateId}
+            onChangeTemplate={(id) => setSelectedTemplateId(id)}
+            onOpenLibrary={() => setActiveStudio('library')}
+            onOpenImpose={() => {
+              setActiveStudio('namecard');
+              setShowSettingsPanel(true);
+              setCurrentSheetIndex(0);
+            }}
+          />
         )}
 
         {activeStudio === 'bleed' && (
