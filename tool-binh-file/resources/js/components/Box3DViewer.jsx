@@ -1,4 +1,4 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import React, { forwardRef, memo, useEffect, useImperativeHandle, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
@@ -60,7 +60,8 @@ function buildSolidPanelMesh(
   thicknessMm,
   showEdges,
   showLabels3D,
-  panelMeshMap
+  panelMeshMap,
+  localHinge = null
 ) {
   const group = new THREE.Group();
   const shape = new THREE.Shape();
@@ -129,7 +130,8 @@ function buildSolidPanelMesh(
 
   const mesh = new THREE.Mesh(geo, [pInner, pOuter, pEdge]);
   mesh.castShadow = true;
-  mesh.receiveShadow = true;
+  // Panels don't receive shadows: self-shadowing on 0.4mm-thick extrusions caused striped "shadow acne"
+  mesh.receiveShadow = false;
   mesh.userData = { panelId: nodeId, panelLabel, panelDims };
   group.add(mesh);
 
@@ -151,11 +153,25 @@ function buildSolidPanelMesh(
   }
 
   if (showEdges) {
-    const edgePoints = localPoly.map(([px, py]) => new THREE.Vector3(px, t / 2 + 0.06, py));
-    edgePoints.push(edgePoints[0].clone());
-    const lineGeo = new THREE.BufferGeometry().setFromPoints(edgePoints);
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x1d4ed8, transparent: true, opacity: 0.4 });
-    group.add(new THREE.Line(lineGeo, lineMat));
+    // Draw dieline cut/panel outline on BOTH inner (+Y) and outer (-Y) surfaces
+    const innerEdgePts = localPoly.map(([px, py]) => new THREE.Vector3(px, t / 2 + 0.08, py));
+    innerEdgePts.push(innerEdgePts[0].clone());
+    const outerEdgePts = localPoly.map(([px, py]) => new THREE.Vector3(px, -t / 2 - 0.08, py));
+    outerEdgePts.push(outerEdgePts[0].clone());
+
+    const edgeLineMat = new THREE.LineBasicMaterial({ color: 0x2563eb, transparent: true, opacity: 0.75 });
+    group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(innerEdgePts), edgeLineMat));
+    group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(outerEdgePts), edgeLineMat));
+
+    // Draw crease/fold hinge line in red on BOTH surfaces so fold lines match the 2D dieline
+    if (localHinge && localHinge.length === 2) {
+      const [[hx1, hy1], [hx2, hy2]] = localHinge;
+      const creaseMat = new THREE.LineBasicMaterial({ color: 0xdc2626, transparent: true, opacity: 0.9 });
+      const innerCrease = [new THREE.Vector3(hx1, t / 2 + 0.12, hy1), new THREE.Vector3(hx2, t / 2 + 0.12, hy2)];
+      const outerCrease = [new THREE.Vector3(hx1, -t / 2 - 0.12, hy1), new THREE.Vector3(hx2, -t / 2 - 0.12, hy2)];
+      group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(innerCrease), creaseMat));
+      group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(outerCrease), creaseMat));
+    }
   }
 
   return group;
@@ -246,6 +262,10 @@ function buildFoldHierarchy(
     });
 
     const localPoly = node.polygon.map(([px, py]) => [px - x1, py - y1]);
+    const localHinge = [
+      [0, 0],
+      [x2 - x1, y2 - y1],
+    ];
     pivot.add(
       buildSolidPanelMesh(
         node.id,
@@ -260,7 +280,8 @@ function buildFoldHierarchy(
         thicknessMm,
         showEdges,
         showLabels3D,
-        panelMeshMap
+        panelMeshMap,
+        localHinge
       )
     );
 
@@ -362,6 +383,13 @@ const Box3DViewer = forwardRef(function Box3DViewer(
   });
 
   useImperativeHandle(ref, () => ({
+    // Apply fold progress directly to the 3D scene (no React re-render) — used by the fold animation loop
+    setFold: (p) => {
+      const { animNodes, rootWrapper } = stateRef.current;
+      if (!rootWrapper || !dieline) return;
+      applyFoldToNodes(animNodes, rootWrapper, dieline.uprightRotateX || 0, p);
+      stateRef.current.invalidate?.();
+    },
     capturePng: (transparent = true) => {
       const { renderer, scene, camera, grid } = stateRef.current;
       if (!renderer || !scene || !camera) return null;
@@ -405,17 +433,38 @@ const Box3DViewer = forwardRef(function Box3DViewer(
     const camera = new THREE.PerspectiveCamera(38, width / height, 1, 4000);
     camera.position.set(220, 190, 260);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    // Detect CPU-only WebGL (SwiftShader / Microsoft Basic Render / llvmpipe) so we can drop costly effects.
+    const isSoftwareGL = (() => {
+      try {
+        const probe = document.createElement('canvas');
+        const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+        if (!gl) return true;
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+        const name = String(dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER) || '');
+        gl.getExtension('WEBGL_lose_context')?.loseContext();
+        return /swiftshader|basic render|llvmpipe|software|microsoft basic/i.test(name);
+      } catch {
+        return false;
+      }
+    })();
+    stateRef.current.isSoftwareGL = isSoftwareGL;
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: !isSoftwareGL,
+      alpha: true,
+      preserveDrawingBuffer: true,
+      powerPreference: 'high-performance',
+    });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.setPixelRatio(isSoftwareGL ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.shadowMap.enabled = !isSoftwareGL;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
+    controls.dampingFactor = 0.12;
     controls.minDistance = 60;
     controls.maxDistance = 1400;
 
@@ -424,8 +473,18 @@ const Box3DViewer = forwardRef(function Box3DViewer(
 
     const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
     keyLight.position.set(260, 420, 240);
-    keyLight.castShadow = true;
+    keyLight.castShadow = !isSoftwareGL;
     keyLight.shadow.mapSize.set(1024, 1024);
+    // Bias values remove "shadow acne" (the striped moiré bands on panels)
+    keyLight.shadow.bias = -0.0008;
+    keyLight.shadow.normalBias = 0.6;
+    const sc = keyLight.shadow.camera;
+    sc.left = -320;
+    sc.right = 320;
+    sc.top = 320;
+    sc.bottom = -320;
+    sc.near = 50;
+    sc.far = 1400;
     scene.add(keyLight);
 
     const fillLight = new THREE.DirectionalLight(0xf0fdf4, 0.45);
@@ -436,17 +495,41 @@ const Box3DViewer = forwardRef(function Box3DViewer(
     grid.position.y = -95;
     scene.add(grid);
 
+    // Dedicated ground plane receives the box's soft shadow (panels themselves don't self-shadow)
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(1200, 1200),
+      new THREE.ShadowMaterial({ opacity: 0.16 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -94.9;
+    ground.receiveShadow = true;
+    ground.visible = !isSoftwareGL;
+    scene.add(ground);
+
     stateRef.current.scene = scene;
     stateRef.current.camera = camera;
     stateRef.current.controls = controls;
     stateRef.current.renderer = renderer;
     stateRef.current.grid = grid;
 
+    // On-demand rendering: only draw a frame when something actually changed
+    // (camera move, damping settle, auto-rotate, fold change, texture load, hover highlight).
+    let needsRender = true;
+    const invalidate = () => {
+      needsRender = true;
+    };
+    stateRef.current.invalidate = invalidate;
+    controls.addEventListener('change', invalidate);
+
     let rafId = 0;
     const animate = () => {
       rafId = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
+      if (document.hidden) return;
+      const moved = controls.update();
+      if (moved || needsRender || controls.autoRotate) {
+        needsRender = false;
+        renderer.render(scene, camera);
+      }
     };
     animate();
 
@@ -457,6 +540,7 @@ const Box3DViewer = forwardRef(function Box3DViewer(
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
+      invalidate();
     };
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(handleResize) : null;
     if (ro) ro.observe(container);
@@ -466,8 +550,15 @@ const Box3DViewer = forwardRef(function Box3DViewer(
       cancelAnimationFrame(rafId);
       if (ro) ro.disconnect();
       window.removeEventListener('resize', handleResize);
+      controls.removeEventListener('change', invalidate);
       controls.dispose();
+      disposeObject3D(stateRef.current.rootWrapper);
+      ground.geometry.dispose();
+      ground.material.dispose();
+      grid.geometry.dispose();
+      grid.material.dispose();
       renderer.dispose();
+      renderer.forceContextLoss?.();
     };
   }, []);
 
@@ -477,6 +568,7 @@ const Box3DViewer = forwardRef(function Box3DViewer(
       controls.autoRotate = autoRotate;
       controls.autoRotateSpeed = 1.8;
     }
+    stateRef.current.invalidate?.();
   }, [autoRotate]);
 
   useEffect(() => {
@@ -485,6 +577,8 @@ const Box3DViewer = forwardRef(function Box3DViewer(
 
     if (rootWrapper) {
       scene.remove(rootWrapper);
+      // Free GPU memory from the previous model (geometries, cloned materials, textures, label canvases)
+      disposeObject3D(rootWrapper);
     }
 
     const preset = PAPER_MATERIALS[materialKey] || PAPER_MATERIALS.ivory;
@@ -529,11 +623,12 @@ const Box3DViewer = forwardRef(function Box3DViewer(
       const loader = new THREE.TextureLoader();
       loader.load(url, (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = 8;
+        tex.anisotropy = stateRef.current.isSoftwareGL ? 1 : 4;
         for (const entry of panelMeshMap.values()) {
           entry.mats[matIndex].map = tex;
           entry.mats[matIndex].needsUpdate = true;
         }
+        stateRef.current.invalidate?.();
       });
     };
 
@@ -549,6 +644,7 @@ const Box3DViewer = forwardRef(function Box3DViewer(
     stateRef.current.panelMeshMap = panelMeshMap;
 
     applyFoldToNodes(animNodes, wrapper, dieline.uprightRotateX || 0, foldProgress);
+    stateRef.current.invalidate?.();
   }, [dieline, materialKey, finishMode, artworkDataUrl, innerArtworkDataUrl, showEdges, showLabels3D]);
 
   // Sync 2D -> 3D hovered panel highlight
@@ -561,12 +657,14 @@ const Box3DViewer = forwardRef(function Box3DViewer(
         m.emissiveIntensity = isHit ? 0.35 : 0;
       }
     }
+    stateRef.current.invalidate?.();
   }, [hoveredPanelId]);
 
   useEffect(() => {
     const { animNodes, rootWrapper } = stateRef.current;
     if (!rootWrapper || !dieline) return;
     applyFoldToNodes(animNodes, rootWrapper, dieline.uprightRotateX || 0, foldProgress);
+    stateRef.current.invalidate?.();
   }, [foldProgress, dieline]);
 
   useEffect(() => {
@@ -583,35 +681,68 @@ const Box3DViewer = forwardRef(function Box3DViewer(
 
     controls.target.set(0, 0, 0);
     controls.update();
+    stateRef.current.invalidate?.();
   }, [cameraPreset]);
 
+  // Hover raycast: throttled to 1 per frame, skipped while dragging (orbiting), and only
+  // notifies the parent when the hovered panel actually changes (avoids re-rendering the whole studio).
+  const hoverRef = useRef({ raf: 0, lastId: null, x: 0, y: 0, raycaster: new THREE.Raycaster(), mouse: new THREE.Vector2() });
   const handlePointerMove3D = (e) => {
-    if (!onHoverPanel) return;
-    const { camera, rootWrapper, renderer } = stateRef.current;
-    if (!camera || !rootWrapper || !renderer) return;
-    const rect = renderer.domElement.getBoundingClientRect();
-    const mouse = new THREE.Vector2(
-      ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
-      -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
-    );
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(mouse, camera);
-    const hits = raycaster.intersectObjects(rootWrapper.children, true);
-    const hitMesh = hits.find((h) => h.object?.userData?.panelId);
-    onHoverPanel(hitMesh ? hitMesh.object.userData.panelId : null);
+    if (!onHoverPanel || e.buttons !== 0) return;
+    const h = hoverRef.current;
+    h.x = e.clientX;
+    h.y = e.clientY;
+    if (h.raf) return;
+    h.raf = requestAnimationFrame(() => {
+      h.raf = 0;
+      const { camera, rootWrapper, renderer } = stateRef.current;
+      if (!camera || !rootWrapper || !renderer) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      h.mouse.set(
+        ((h.x - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+        -((h.y - rect.top) / Math.max(1, rect.height)) * 2 + 1
+      );
+      h.raycaster.setFromCamera(h.mouse, camera);
+      const hits = h.raycaster.intersectObjects(rootWrapper.children, true);
+      const hitMesh = hits.find((hit) => hit.object?.userData?.panelId);
+      const id = hitMesh ? hitMesh.object.userData.panelId : null;
+      if (id !== h.lastId) {
+        h.lastId = id;
+        onHoverPanel(id);
+      }
+    });
   };
 
   return (
     <div
       ref={mountRef}
       onPointerMove={handlePointerMove3D}
-      onPointerLeave={() => onHoverPanel?.(null)}
+      onPointerLeave={() => {
+        if (hoverRef.current.lastId !== null) {
+          hoverRef.current.lastId = null;
+          onHoverPanel?.(null);
+        }
+      }}
       className="w-full h-full min-h-[480px] cursor-grab active:cursor-grabbing"
     />
   );
 });
 
-export default Box3DViewer;
+export default memo(Box3DViewer);
+
+function disposeObject3D(root) {
+  if (!root) return;
+  const textures = new Set();
+  root.traverse((obj) => {
+    if (obj.geometry) obj.geometry.dispose();
+    const mats = Array.isArray(obj.material) ? obj.material : obj.material ? [obj.material] : [];
+    for (const m of mats) {
+      if (m.map) textures.add(m.map);
+      m.dispose();
+    }
+  });
+  for (const t of textures) t.dispose();
+}
 
 function applyFoldToNodes(animNodes, wrapper, uprightRotateX, foldProgress) {
   const t = Math.max(0, Math.min(1, foldProgress));

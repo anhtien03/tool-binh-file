@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import PdfCanvasPreview from './PdfCanvasPreview';
 import DielineStudio from './DielineStudio';
 import Book3DViewer from './Book3DViewer';
@@ -9,6 +9,22 @@ import BleedAndContourStudio from './BleedAndContourStudio';
 import { PkIcon } from './PrintKitUI';
 import { PAPER_SIZES, computeImpositionPlan } from '../engine/impositionEngine';
 import { exportImposedPdf, exportStickerPdf, exportStickerCutSvg } from '../engine/pdfExporter';
+import {
+  buildV1StickerTabPlan,
+  exportV1StickerTabOutputs,
+  exportV1StickerBatchBundle,
+  buildProductionReportV1,
+} from '../engine/stickerTabV1Adapter';
+import { createStickerPipelineCache } from '../engine/stickerPipelineCache';
+import { releaseCheckpointKOutput } from '../engine/checkpointKUiBridge';
+import { listMachineProfiles, getMachineProfile } from '../engine/machineCompatibilityProfiles';
+import {
+  PAIR_VIEW_MODES,
+  PARITY_STATUS,
+  buildPairThumbnailsModel,
+  checkPreviewVsExportParity,
+} from '../engine/pairPreviewEngine';
+import { ROTATION_MODES, CLUSTER_MODES } from '../engine/smartImpositionPlanner';
 
 export default function PdfEditor() {
   // --- Top-Level Navigation ('viewer' | 'library' | 'dieline' | 'namecard' | 'sticker' | 'booklet' | 'bleed' | 'resize' | 'organizer' | 'crop' | 'trimShift') ---
@@ -23,6 +39,19 @@ export default function PdfEditor() {
   const [sourceFiles, setSourceFiles] = useState([]);
   const [pdfPages, setPdfPages] = useState([]);
   const [gangItems, setGangItems] = useState([]);
+
+  // --- PrintKit V1 Authoritative Sticker Handoff State (from BleedAndContourStudio) ---
+  const [v1StickerPayload, setV1StickerPayload] = useState(null);
+  const [v1PlanState, setV1PlanState] = useState(null);
+  const [v1LastExport, setV1LastExport] = useState(null);
+  const [v1BleedPolicy, setV1BleedPolicy] = useState('strict');
+  const [v1BleedOverlapConfirmed, setV1BleedOverlapConfirmed] = useState(false);
+  const [v1BleedOverlapJustification, setV1BleedOverlapJustification] = useState('');
+  const [v1PageRunCounts, setV1PageRunCounts] = useState({});
+  const v1PipelineCacheRef = useRef(null);
+  if (!v1PipelineCacheRef.current) {
+    v1PipelineCacheRef.current = createStickerPipelineCache();
+  }
 
   // --- Core Imposition Mode (synced cleanly with activeStudio) ---
   const mode = activeStudio === 'booklet' ? 'booklet' : activeStudio === 'sticker' ? 'sticker' : 'grid';
@@ -61,12 +90,26 @@ export default function PdfEditor() {
   const [stickerShape, setStickerShape] = useState('rect'); // 'rect' | 'circle' | 'oval' | 'pdfContour'
   const [cornerRadiusMm, setCornerRadiusMm] = useState(3);
   const [stickerLayout, setStickerLayout] = useState('nesting'); // 'nesting' | 'optimal' | 'honeycomb' | 'simple'
-  const [pontType, setPontType] = useState('circle5mm'); // 'circle5mm' | 'circleHollow' | 'graphtec' | 'none'
+  const [pontType, setPontType] = useState('circle5mm'); // 'circle5mm' | 'circleHollow' | 'graphtec' | 'graphtecType2' | 'none'
+  const [machineProfileId, setMachineProfileId] = useState('diecut_sheet_5mm'); // 'diecut_sheet_5mm' | 'graphtec_arms_t1' | 'graphtec_arms_t2' | 'custom'
+  const [requireSpotCutContour, setRequireSpotCutContour] = useState(true);
   const [pontMarginMm, setPontMarginMm] = useState(10);
   const [pontSizeMm, setPontSizeMm] = useState(5);
   const [avoidCornerMarks, setAvoidCornerMarks] = useState(true);
   const [singleCut1Dao, setSingleCut1Dao] = useState(true);
   const [splitStickerPreview, setSplitStickerPreview] = useState(false);
+  // --- Phase 3: PrynX-style PRINT/CUT Pair Viewer & Overlay Inspection State ---
+  const [pairViewMode, setPairViewMode] = useState(PAIR_VIEW_MODES.SIDE_BY_SIDE);
+  const [overlayArtworkOpacity, setOverlayArtworkOpacity] = useState(0.72);
+  const [overlayCutColor, setOverlayCutColor] = useState('#e11d48');
+  const [overlayCutStrokePx, setOverlayCutStrokePx] = useState(1.8);
+  const [overlayShowBleed, setOverlayShowBleed] = useState(true);
+  const [v1ParityCheck, setV1ParityCheck] = useState(null);
+  // --- Phase 4: Smart Sticker Imposition State ---
+  const [allowRotationMode, setAllowRotationMode] = useState(ROTATION_MODES.ROT_90_180);
+  const [smartClusterMode, setSmartClusterMode] = useState(CLUSTER_MODES.NONE);
+  const [selectedImpositionOptionId, setSelectedImpositionOptionId] = useState(null);
+  const [orderIdByPage, setOrderIdByPage] = useState({});
   const [autoCropInk, setAutoCropInk] = useState(false);
   const [pageRangeExpr, setPageRangeExpr] = useState('');
   const [stickerAutoFillSheet, setStickerAutoFillSheet] = useState(true);
@@ -76,8 +119,23 @@ export default function PdfEditor() {
   const [openStickerSubSection, setOpenStickerSubSection] = useState('pont');
   const [clusterSplit, setClusterSplit] = useState('none'); // 'none' | 'split2H' | 'split2V' | 'split3H'
   const [stickerTrimMarks, setStickerTrimMarks] = useState('none'); // 'none' | 'guillotine'
+  const [showPaperGuides, setShowPaperGuides] = useState(false);
   const [showTrimMarkModal, setShowTrimMarkModal] = useState(false);
   const [markThicknessPt, setMarkThicknessPt] = useState(0.25);
+
+  // --- Saved V1 Sticker Presets (localStorage: printkit_v1_sticker_presets) ---
+  const V1_PRESETS_KEY = 'printkit_v1_sticker_presets';
+  const [v1Presets, setV1Presets] = useState(() => {
+    try {
+      const raw = typeof window !== 'undefined' ? window.localStorage?.getItem(V1_PRESETS_KEY) : null;
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+  const [selectedV1PresetName, setSelectedV1PresetName] = useState('');
+  const [v1PresetNameInput, setV1PresetNameInput] = useState('');
 
   // --- Margins & Marks ---
   const [marginTop, setMarginTop] = useState(10);
@@ -444,7 +502,13 @@ export default function PdfEditor() {
       stickerShape,
       cornerRadiusMm,
       stickerLayout,
+      allowRotationMode,
+      smartClusterMode,
+      selectedImpositionOptionId,
+      orderIdByPage,
       pontType,
+      machineProfileId,
+      requireSpotCutContour,
       pontMarginMm,
       pontSizeMm,
       avoidCornerMarks,
@@ -452,6 +516,7 @@ export default function PdfEditor() {
       stickerAutoFillSheet,
       clusterSplit,
       stickerTrimMarks,
+      showPaperGuides,
       marginTop,
       marginBottom,
       marginLeft,
@@ -499,7 +564,13 @@ export default function PdfEditor() {
       stickerShape,
       cornerRadiusMm,
       stickerLayout,
+      allowRotationMode,
+      smartClusterMode,
+      selectedImpositionOptionId,
+      orderIdByPage,
       pontType,
+      machineProfileId,
+      requireSpotCutContour,
       pontMarginMm,
       pontSizeMm,
       avoidCornerMarks,
@@ -507,6 +578,7 @@ export default function PdfEditor() {
       stickerAutoFillSheet,
       clusterSplit,
       stickerTrimMarks,
+      showPaperGuides,
       marginTop,
       marginBottom,
       marginLeft,
@@ -535,7 +607,180 @@ export default function PdfEditor() {
   }, [liveConfig]); // eslint-disable-line react-hooks/exhaustive-deps
   const isRecomputingPlan = liveConfig !== config;
 
-  const plan = useMemo(() => computeImpositionPlan(pdfPages, config), [pdfPages, config]);
+  // Map extra V1 preset D320x330 to Custom 320x330 for LOCKED legacy impositionEngine/pdfExporter
+  const legacyConfig = useMemo(
+    () =>
+      config.paperSizeKey === 'D320x330'
+        ? { ...config, paperSizeKey: 'Custom', customPaperWidth: 320, customPaperHeight: 330 }
+        : config,
+    [config]
+  );
+
+  const legacyPlan = useMemo(() => computeImpositionPlan(pdfPages, legacyConfig), [pdfPages, legacyConfig]);
+
+  // Authoritative V1/H.2 plan for Bình Tem Bế when handed off from BleedAndContourStudio.
+  // Preview and Export ALWAYS share this exact single H.2 plan (NEVER silently falls back to legacy).
+  const isV1StickerActive = mode === 'sticker' && Boolean(v1StickerPayload);
+  const v1SelectedPages = useMemo(() => {
+    if (!v1StickerPayload) return [];
+    if (Array.isArray(v1StickerPayload.pages) && v1StickerPayload.pages.length > 0) {
+      return v1StickerPayload.pages;
+    }
+    if (Array.isArray(v1StickerPayload.contoursMm) && v1StickerPayload.contoursMm.length > 0) {
+      return [
+        {
+          pageNum: 1,
+          contoursMm: v1StickerPayload.contoursMm,
+          sourceSizeMm: v1StickerPayload.sourceSizeMm,
+          cleanArtworkCanvas: v1StickerPayload.cleanArtworkCanvas || null,
+          bleedOffsetMm: v1StickerPayload.bleedOffsetMm || 0,
+        },
+      ];
+    }
+    return [];
+  }, [v1StickerPayload]);
+
+  const v1IsSingleContourMode =
+    v1SelectedPages.length > 0 &&
+    v1SelectedPages.every((pg) => (pg?.contoursMm?.length || 0) === 1) &&
+    stickerUnit !== 'sheet';
+
+  // Reset export record only when source payload changes (preserve across config edits so STALE_EXPORT_VS_PREVIEW alerts!)
+  useEffect(() => {
+    setV1LastExport(null);
+    setV1ParityCheck(null);
+    setSelectedImpositionOptionId(null);
+  }, [v1StickerPayload]);
+
+  useEffect(() => {
+    if (!isV1StickerActive) {
+      setV1PlanState(null);
+      setV1ParityCheck(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const isSingleContourMode = v1IsSingleContourMode;
+        const parsedQty = parseInt((stickerQtyInput || '').trim(), 10);
+        const globalRun = !isSingleContourMode && Number.isFinite(parsedQty) && parsedQty >= 1 ? parsedQty : 1;
+        const quantityByPage = isSingleContourMode
+          ? Object.fromEntries(
+              v1SelectedPages.map((pg) => [
+                pg.pageNum,
+                v1PageRunCounts[pg.pageNum] || (Number.isFinite(parsedQty) && parsedQty >= 1 ? parsedQty : 0),
+              ])
+            )
+          : null;
+        const runCountByPage = !isSingleContourMode ? v1PageRunCounts : null;
+
+        const res = await buildV1StickerTabPlan({
+          v1Payload: v1StickerPayload,
+          config,
+          bleedPolicy: v1BleedPolicy,
+          bleedOverlapConfirmed: v1BleedOverlapConfirmed,
+          bleedOverlapJustification: v1BleedPolicy === 'allow_overlap' ? v1BleedOverlapJustification : null,
+          runCount: globalRun,
+          runCountByPage,
+          quantityByPage,
+          pipelineCache: v1PipelineCacheRef.current,
+        });
+        if (!cancelled) {
+          setV1PlanState(res);
+          if (!res.supported && res.unsupportedReasons?.length) {
+            setError(res.unsupportedReasons[0]);
+          } else {
+            setError(null);
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setV1PlanState({
+            supported: false,
+            unsupportedReasons: [err?.message || 'Không thể lập kế hoạch bình tem V1/H.2.'],
+            warnings: [],
+            checkpoint: null,
+            previewPlan: null,
+          });
+          setError(err?.message || 'Không thể lập kế hoạch bình tem V1/H.2.');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isV1StickerActive,
+    v1StickerPayload,
+    v1SelectedPages,
+    config,
+    v1BleedPolicy,
+    v1BleedOverlapConfirmed,
+    v1BleedOverlapJustification,
+    v1PageRunCounts,
+    stickerQtyInput,
+  ]);
+
+  const plan = isV1StickerActive
+    ? v1PlanState?.previewPlan || {
+        mode: 'sticker',
+        isV1Authoritative: true,
+        sheetWidthMm: 330,
+        sheetHeightMm: 390,
+        sheetDim: { width: 330, height: 390 },
+        sheets: [],
+        totalSheets: 0,
+        totalPlacements: 0,
+        jobChecks: [],
+        summary: {
+          itemsPerSheet: 0,
+          primaryCount: 0,
+          secondaryCount: 0,
+          utilizationPct: 0,
+          ratioSheetsNeeded: 0,
+          totalPlacedItems: 0,
+          totalNeededItems: 0,
+          physicalSheets: 0,
+          trimW: 0,
+          trimH: 0,
+        },
+        stats: { pagesPerSheet: 0, totalSheets: 0 },
+      }
+    : legacyPlan;
+
+  // Live Preview-vs-Export Parity verification (Phase 3)
+  useEffect(() => {
+    if (!isV1StickerActive || !v1PlanState) {
+      setV1ParityCheck(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const parity = await checkPreviewVsExportParity({
+        v1PlanState,
+        lastExport: v1LastExport,
+      });
+      if (!cancelled) {
+        // If export returned byte-verified parity AND signature still matches, preserve byte-level result
+        if (
+          v1LastExport?.previewParity &&
+          v1LastExport.previewParitySignature === v1PlanState.previewParitySignature
+        ) {
+          setV1ParityCheck(v1LastExport.previewParity);
+        } else {
+          setV1ParityCheck(parity);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isV1StickerActive, v1PlanState, v1LastExport]);
+
+  const pairThumbnails = useMemo(() => {
+    if (mode !== 'sticker' || !plan?.sheets?.length) return [];
+    return buildPairThumbnailsModel(plan, { parityReport: v1ParityCheck });
+  }, [mode, plan, v1ParityCheck]);
 
   useEffect(() => {
     if (plan.sheets.length > 0 && currentSheetIndex >= plan.sheets.length) {
@@ -543,7 +788,221 @@ export default function PdfEditor() {
     }
   }, [plan.sheets.length, currentSheetIndex]);
 
+  const persistV1Presets = (nextList) => {
+    setV1Presets(nextList);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(V1_PRESETS_KEY, JSON.stringify(nextList));
+      }
+    } catch {
+      // ignore storage quota errors
+    }
+  };
+
+  const handleSaveV1Preset = () => {
+    const name = (v1PresetNameInput || '').trim();
+    if (!name) return;
+    const snapshot = {
+      name,
+      savedAt: new Date().toISOString(),
+      settings: {
+        paperSizeKey,
+        customPaperWidth,
+        customPaperHeight,
+        orientation,
+        marginTop,
+        marginBottom,
+        marginLeft,
+        marginRight,
+        marginIncludesMarks,
+        gutterX,
+        gutterY,
+        stickerUnit,
+        collation,
+        stickerLayout: stickerLayout === 'honeycomb' || stickerLayout === 'nesting' ? 'optimal' : stickerLayout,
+        allowRotationMode,
+        smartClusterMode,
+        alignment,
+        pontType,
+        machineProfileId,
+        pontMarginMm,
+        pontSizeMm,
+        requireSpotCutContour,
+        stickerTrimMarks,
+        showPaperGuides,
+        showSlugLine,
+      },
+    };
+    const next = [...v1Presets.filter((p) => p.name !== name), snapshot];
+    persistV1Presets(next);
+    setSelectedV1PresetName(name);
+    setV1PresetNameInput('');
+  };
+
+  const handleLoadV1Preset = (name) => {
+    setSelectedV1PresetName(name);
+    const found = v1Presets.find((p) => p.name === name);
+    if (!found?.settings) return;
+    const s = found.settings;
+    if (s.paperSizeKey) setPaperSizeKey(s.paperSizeKey);
+    if (s.customPaperWidth !== undefined) setCustomPaperWidth(String(s.customPaperWidth));
+    if (s.customPaperHeight !== undefined) setCustomPaperHeight(String(s.customPaperHeight));
+    if (s.orientation) setOrientation(s.orientation);
+    if (Number.isFinite(Number(s.marginTop))) setMarginTop(Number(s.marginTop));
+    if (Number.isFinite(Number(s.marginBottom))) setMarginBottom(Number(s.marginBottom));
+    if (Number.isFinite(Number(s.marginLeft))) setMarginLeft(Number(s.marginLeft));
+    if (Number.isFinite(Number(s.marginRight))) setMarginRight(Number(s.marginRight));
+    if (typeof s.marginIncludesMarks === 'boolean') setMarginIncludesMarks(s.marginIncludesMarks);
+    if (Number.isFinite(Number(s.gutterX))) setGutterX(Number(s.gutterX));
+    if (Number.isFinite(Number(s.gutterY))) setGutterY(Number(s.gutterY));
+    if (s.stickerUnit) setStickerUnit(s.stickerUnit);
+    if (s.collation) setCollation(s.collation);
+    if (s.stickerLayout) setStickerLayout(s.stickerLayout);
+    if (s.allowRotationMode) setAllowRotationMode(s.allowRotationMode);
+    if (s.smartClusterMode) setSmartClusterMode(s.smartClusterMode);
+    setSelectedImpositionOptionId(null);
+    if (s.alignment) setAlignment(s.alignment);
+    if (s.pontType) setPontType(s.pontType);
+    if (s.machineProfileId) setMachineProfileId(s.machineProfileId);
+    if (Number.isFinite(Number(s.pontMarginMm))) setPontMarginMm(Number(s.pontMarginMm));
+    if (Number.isFinite(Number(s.pontSizeMm))) setPontSizeMm(Number(s.pontSizeMm));
+    if (typeof s.requireSpotCutContour === 'boolean') setRequireSpotCutContour(s.requireSpotCutContour);
+    if (s.stickerTrimMarks) setStickerTrimMarks(s.stickerTrimMarks);
+    if (typeof s.showPaperGuides === 'boolean') setShowPaperGuides(s.showPaperGuides);
+    if (typeof s.showSlugLine === 'boolean') setShowSlugLine(s.showSlugLine);
+  };
+
+  const handleDeleteV1Preset = () => {
+    if (!selectedV1PresetName) return;
+    const next = v1Presets.filter((p) => p.name !== selectedV1PresetName);
+    persistV1Presets(next);
+    setSelectedV1PresetName('');
+  };
+
+  const handleDownloadProductionReport = () => {
+    if (!v1PlanState) return;
+    const report = buildProductionReportV1(v1PlanState, v1LastExport);
+    if (!report) return;
+    const base = (v1StickerPayload?.sourceFileName || 'tem').replace(/\.[^.]+$/, '');
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `PrintKitV1_Report_${base}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => window.URL.revokeObjectURL(url), 5000);
+  };
+
   const handleDownload = async (stickerRole = 'print') => {
+    if (isV1StickerActive) {
+      if (!v1PlanState?.supported || !v1PlanState?.checkpoint) {
+        setError(v1PlanState?.unsupportedReasons?.[0] || 'Kế hoạch bình tem V1 chưa hợp lệ — không thể xuất file.');
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      setSuccess(false);
+      try {
+        const base = (v1StickerPayload?.sourceFileName || 'tem').replace(/\.[^.]+$/, '');
+        const bundle = await exportV1StickerBatchBundle({
+          v1PlanState,
+          baseName: base,
+          verifyEachCutPage: stickerRole === 'cut' || stickerRole === 'ai',
+          includeLayeredAi: stickerRole === 'ai',
+        });
+
+        if (stickerRole === 'ai') {
+          for (let i = 0; i < (bundle.aiFiles || []).length; i++) {
+            const af = bundle.aiFiles[i];
+            const blob = new Blob([af.bytes], { type: 'application/postscript' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = af.fileName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => window.URL.revokeObjectURL(url), 5000);
+            if (i < bundle.aiFiles.length - 1) {
+              await new Promise((r) => setTimeout(r, 180));
+            }
+          }
+          setV1LastExport({
+            status: bundle.finalCheck?.status || 'PASS',
+            finalCheck: bundle.finalCheck || null,
+            postExportVerification: bundle.postExportVerification || null,
+            geometryReport: bundle.geometryReport || null,
+            machineReport: bundle.machineReport || null,
+            previewParitySignature: bundle.previewParitySignature || v1PlanState.previewParitySignature || null,
+            previewParity: bundle.previewParity || null,
+            cutSplitCount: bundle.aiFiles?.length || 0,
+            exportKind: 'ai',
+            warnings: bundle.finalCheck?.warnings || [],
+          });
+        } else if (stickerRole === 'cut') {
+          for (let i = 0; i < bundle.cutPageFiles.length; i++) {
+            const pf = bundle.cutPageFiles[i];
+            const blob = new Blob([pf.bytes], { type: 'application/pdf' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download =
+              bundle.cutPageFiles.length > 1 ? pf.fileName : `PrintKitV1_FileBe_${base}.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => window.URL.revokeObjectURL(url), 5000);
+            if (i < bundle.cutPageFiles.length - 1) {
+              await new Promise((r) => setTimeout(r, 180));
+            }
+          }
+          setV1LastExport({
+            status: bundle.finalCheck?.status || 'PASS',
+            finalCheck: bundle.finalCheck || null,
+            postExportVerification: bundle.postExportVerification || null,
+            geometryReport: bundle.geometryReport || null,
+            machineReport: bundle.machineReport || null,
+            previewParitySignature: bundle.previewParitySignature || v1PlanState.previewParitySignature || null,
+            previewParity: bundle.previewParity || null,
+            cutSplitCount: bundle.cutPageFiles.length,
+            exportKind: 'cut',
+            warnings: bundle.finalCheck?.warnings || [],
+          });
+        } else {
+          const blob = new Blob([bundle.printPdfBytes], { type: 'application/pdf' });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `PrintKitV1_FileIn_${base}.pdf`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => window.URL.revokeObjectURL(url), 5000);
+          setV1LastExport({
+            status: bundle.finalCheck?.status || 'PASS',
+            finalCheck: bundle.finalCheck || null,
+            postExportVerification: bundle.postExportVerification || null,
+            geometryReport: bundle.geometryReport || null,
+            machineReport: bundle.machineReport || null,
+            previewParitySignature: bundle.previewParitySignature || v1PlanState.previewParitySignature || null,
+            previewParity: bundle.previewParity || null,
+            cutSplitCount: 0,
+            exportKind: 'print',
+            warnings: bundle.finalCheck?.warnings || [],
+          });
+        }
+        setSuccess(true);
+      } catch (err) {
+        console.error(err);
+        setError(err?.message || 'Xuất sản xuất PrintKit V1 bị chặn.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     if (sourceFiles.length === 0 || plan.sheets.length === 0) {
       setError('Vui lòng chọn ít nhất 1 file PDF trước khi xuất!');
       return;
@@ -567,7 +1026,7 @@ export default function PdfEditor() {
           a.remove();
           window.URL.revokeObjectURL(url);
         } else {
-          const pdfBytesOutput = await exportStickerPdf(sourceFiles, plan, config, stickerRole);
+          const pdfBytesOutput = await exportStickerPdf(sourceFiles, plan, legacyConfig, stickerRole);
           const blob = new Blob([pdfBytesOutput], { type: 'application/pdf' });
           const url = window.URL.createObjectURL(blob);
           const a = document.createElement('a');
@@ -579,7 +1038,7 @@ export default function PdfEditor() {
           window.URL.revokeObjectURL(url);
         }
       } else {
-        const pdfBytesOutput = await exportImposedPdf(sourceFiles, plan, config);
+        const pdfBytesOutput = await exportImposedPdf(sourceFiles, plan, legacyConfig);
         const blob = new Blob([pdfBytesOutput], { type: 'application/pdf' });
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -630,7 +1089,7 @@ export default function PdfEditor() {
 
           {/* Active Document Tab Pill */}
           {sourceFiles.length > 0 ? (
-            <div className="flex items-center bg-[#F3F5F7] rounded-md border border-[#E2E8F0] overflow-hidden max-w-[300px]">
+            <div className="flex items-center bg-[#F3F5F7] rounded-md border border-[#E2E8F0] overflow-hidden max-w-[300px] min-w-0 shrink">
               <button
                 onClick={() => {
                   setActiveStudio('viewer');
@@ -676,7 +1135,7 @@ export default function PdfEditor() {
             className="h-8 px-3 rounded-md bg-white hover:bg-[#F3F5F7] border border-[#CBD5E1] text-xs font-semibold text-[#17212F] cursor-pointer flex items-center gap-1.5 transition-colors"
           >
             <PkIcon name="folder" className="w-3.5 h-3.5 text-[#087F5B]" />
-            <span>{sourceFiles.length > 0 ? 'Mở file khác' : 'Mở file PDF'}</span>
+            <span className="hidden lg:inline whitespace-nowrap">{sourceFiles.length > 0 ? 'Mở file khác' : 'Mở file PDF'}</span>
             <input
               type="file"
               accept=".pdf,application/pdf"
@@ -735,7 +1194,7 @@ export default function PdfEditor() {
                 }`}
               >
                 <PkIcon name="download" className="w-3.5 h-3.5" />
-                <span>
+                <span className="whitespace-nowrap">
                   {loading
                     ? 'Đang xuất...'
                     : activeStudio === 'booklet'
@@ -799,7 +1258,76 @@ export default function PdfEditor() {
               setShowSettingsPanel(true);
               setCurrentSheetIndex(0);
             }}
+            onSendV1StickersToImpose={(payload) => {
+              setV1StickerPayload(payload);
+              setV1LastExport(null);
+              const pagesList =
+                Array.isArray(payload?.pages) && payload.pages.length > 0
+                  ? payload.pages
+                  : [{ pageNum: 1, contoursMm: payload?.contoursMm || [] }];
+              const isSingleContourHandoff =
+                pagesList.length > 0 && pagesList.every((pg) => (pg?.contoursMm?.length || 0) === 1);
+              const initRuns = {};
+              if (!isSingleContourHandoff) {
+                for (const pg of pagesList) {
+                  initRuns[pg.pageNum || 1] = 1;
+                }
+              }
+              setV1PageRunCounts(initRuns);
+              setStickerQtyInput('');
+              setStickerAutoFillSheet(true);
+              setMarginIncludesMarks(true);
+              const is320x330 =
+                Math.abs((payload?.sourceSizeMm?.w || 0) - 320) < 3 &&
+                Math.abs((payload?.sourceSizeMm?.h || 0) - 330) < 3;
+              if (is320x330) {
+                setPaperSizeKey('D320x330');
+                setCustomPaperWidth('320');
+                setCustomPaperHeight('330');
+                setOrientation('portrait');
+                setMarginTop(12.5);
+                setMarginBottom(12.5);
+                setMarginLeft(12.5);
+                setMarginRight(12.5);
+                setPontMarginMm(8);
+                setPontSizeMm(5);
+                setGutterX(2.4);
+                setGutterY(2.4);
+                if ((payload?.bleedOffsetMm || 0) > 1.1) {
+                  setV1BleedPolicy('allow_overlap');
+                  setV1BleedOverlapConfirmed(true);
+                  setV1BleedOverlapJustification('Các tem dùng cùng màu nền tràn viền, chỉ chồng BLEED trong vùng rác');
+                } else {
+                  setV1BleedPolicy('strict');
+                }
+              } else {
+                setPaperSizeKey('D330x390');
+                setOrientation('portrait');
+                setMarginTop(14.5);
+                setMarginBottom(14.5);
+                setMarginLeft(14.5);
+                setMarginRight(14.5);
+                setPontMarginMm(10);
+                setPontSizeMm(5);
+                const safeGap = Math.max(2, Number(((payload?.bleedOffsetMm || 0) * 2 + 0.2).toFixed(1)));
+                setGutterX(safeGap);
+                setGutterY(safeGap);
+                setV1BleedPolicy('strict');
+              }
+              setStickerUnit('single');
+              setStickerShape('pdfContour');
+              setStickerLayout('optimal');
+              setClusterSplit('none');
+              setStickerTrimMarks('none');
+              setPontType('graphtec');
+              setAlignment('center');
+              setActiveStudio('sticker');
+              setShowSettingsPanel(true);
+              setInspectedPageIndex(null);
+              setCurrentSheetIndex(0);
+            }}
             onSendSplitStickersToImpose={(splitPdfFile, preferredLayout = 'nesting') => {
+              setV1StickerPayload(null);
               setSourceFiles([{ id: `split-${Date.now()}`, file: splitPdfFile }]);
               setPaperSizeKey('D330x390');
               setOrientation('portrait');
@@ -880,7 +1408,9 @@ export default function PdfEditor() {
               <aside className="w-[172px] xl:w-[196px] bg-white border-r border-[#E2E8F0] p-2 flex flex-col gap-2 overflow-hidden h-full shrink-0">
                 <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-2">
                   <span className="text-[11px] font-bold text-[#17212F] tracking-wider uppercase">
-                    Trang ({gangItems.length}/{pdfPages.length})
+                    {isV1StickerActive
+                      ? `Trang V1 (${v1SelectedPages.length}/${Math.max(pdfPages.length, v1SelectedPages.length)})`
+                      : `Trang (${gangItems.length}/${pdfPages.length})`}
                   </span>
                   <button
                     onClick={() => setShowPagesSidebar(false)}
@@ -891,56 +1421,64 @@ export default function PdfEditor() {
                   </button>
                 </div>
 
-                {/* Page range filter box: e.g. 1-3, odd, 3* */}
-                <div className="flex items-center gap-1">
-                  <input
-                    type="text"
-                    value={pageRangeExpr}
-                    onChange={(e) => setPageRangeExpr(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') applyPageRangeFilter();
-                    }}
-                    placeholder="e.g. 3-15, odd, 3*"
-                    className="flex-1 min-w-0 bg-slate-50 border border-slate-300 rounded px-2 py-1 text-[11px] font-mono text-slate-800 focus:outline-none focus:border-[#146C53]"
-                  />
-                  <button
-                    onClick={() => applyPageRangeFilter()}
-                    title="Áp dụng lọc trang (Enter)"
-                    className="px-2 py-1 rounded bg-[#146C53] hover:bg-[#115e48] text-white text-[10px] font-bold cursor-pointer shrink-0"
-                  >
-                    Lọc
-                  </button>
-                </div>
+                {isV1StickerActive ? (
+                  <div className="px-2 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-[10px] text-emerald-900 font-semibold">
+                    Đang bình {v1SelectedPages.length} trang chọn từ Studio V1 (nguồn: {Math.max(pdfPages.length, v1SelectedPages.length)} trang)
+                  </div>
+                ) : (
+                  <>
+                    {/* Page range filter box: e.g. 1-3, odd, 3* */}
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        value={pageRangeExpr}
+                        onChange={(e) => setPageRangeExpr(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') applyPageRangeFilter();
+                        }}
+                        placeholder="e.g. 3-15, odd, 3*"
+                        className="flex-1 min-w-0 bg-slate-50 border border-slate-300 rounded px-2 py-1 text-[11px] font-mono text-slate-800 focus:outline-none focus:border-[#146C53]"
+                      />
+                      <button
+                        onClick={() => applyPageRangeFilter()}
+                        title="Áp dụng lọc trang (Enter)"
+                        className="px-2 py-1 rounded bg-[#146C53] hover:bg-[#115e48] text-white text-[10px] font-bold cursor-pointer shrink-0"
+                      >
+                        Lọc
+                      </button>
+                    </div>
 
-                {/* Quick Page Prep Icon Toolbar */}
-                <div className="flex items-center justify-between gap-1 bg-slate-50 border border-slate-200/80 rounded-lg px-1.5 py-1">
-                  <button
-                    onClick={() => setAutoCropInk((v) => !v)}
-                    title="Tự động cắt sát vùng mực (Auto-Crop lề trắng)"
-                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
-                      autoCropInk ? 'bg-[#146C53] text-white' : 'text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    ✂️ Crop
-                  </button>
-                  <button
-                    onClick={removeSmallMarkPages}
-                    title="Loại bỏ dấu bon góc / trang nhỏ hơn 25mm"
-                    className="px-1.5 py-0.5 rounded text-[10px] font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 cursor-pointer"
-                  >
-                    🧹 &lt;25mm
-                  </button>
-                  <button
-                    onClick={() => {
-                      resetAllGangPages();
-                      setInspectedPageIndex(null);
-                    }}
-                    title="Khôi phục toàn bộ trang"
-                    className="px-1.5 py-0.5 rounded text-[10px] font-semibold text-slate-600 hover:bg-slate-200 cursor-pointer"
-                  >
-                    ↺ All
-                  </button>
-                </div>
+                    {/* Quick Page Prep Icon Toolbar */}
+                    <div className="flex items-center justify-between gap-1 bg-slate-50 border border-slate-200/80 rounded-lg px-1.5 py-1">
+                      <button
+                        onClick={() => setAutoCropInk((v) => !v)}
+                        title="Tự động cắt sát vùng mực (Auto-Crop lề trắng)"
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
+                          autoCropInk ? 'bg-[#146C53] text-white' : 'text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        ✂️ Crop
+                      </button>
+                      <button
+                        onClick={removeSmallMarkPages}
+                        title="Loại bỏ dấu bon góc / trang nhỏ hơn 25mm"
+                        className="px-1.5 py-0.5 rounded text-[10px] font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 cursor-pointer"
+                      >
+                        🧹 &lt;25mm
+                      </button>
+                      <button
+                        onClick={() => {
+                          resetAllGangPages();
+                          setInspectedPageIndex(null);
+                        }}
+                        title="Khôi phục toàn bộ trang"
+                        className="px-1.5 py-0.5 rounded text-[10px] font-semibold text-slate-600 hover:bg-slate-200 cursor-pointer"
+                      >
+                        ↺ All
+                      </button>
+                    </div>
+                  </>
+                )}
 
                 {inspectedPageIndex !== null && (
                   <button
@@ -951,9 +1489,222 @@ export default function PdfEditor() {
                   </button>
                 )}
 
-                {/* Vertical Page Thumbnails List */}
+                {/* Vertical Page / Pair Thumbnails List */}
                 <div className="flex-1 overflow-y-auto flex flex-col gap-2 pr-0.5">
-                  {pdfPages.length === 0 ? (
+                  {isV1StickerActive && pairThumbnails.length > 0 ? (
+                    pairThumbnails.map((pt) => {
+                      const isActiveSheet = currentSheetIndex === pt.sheetIndex && inspectedPageIndex === null;
+                      const modelPalette = ['#10b981', '#0ea5e9', '#8b5cf6', '#f59e0b', '#ec4899', '#14b8a6'];
+                      const parityBadge =
+                        pt.parityStatus === PARITY_STATUS.VERIFIED
+                          ? { cls: 'bg-emerald-100 text-emerald-800', txt: '✓' }
+                          : pt.parityStatus === PARITY_STATUS.MISMATCH
+                          ? { cls: 'bg-rose-100 text-rose-700', txt: '⛔' }
+                          : pt.parityStatus === PARITY_STATUS.WARNING
+                          ? { cls: 'bg-amber-100 text-amber-800', txt: '⚠' }
+                          : null;
+
+                      return (
+                        <div
+                          key={`v1-pair-${pt.sheetIndex}`}
+                          onClick={() => {
+                            setInspectedPageIndex(null);
+                            setCurrentSheetIndex(pt.sheetIndex);
+                          }}
+                          title={`Bấm để chuyển đồng bộ cặp IN/BẾ Tờ #${pt.sheetNumber} (${pt.placementCount} tem, ×${pt.runCount} tờ)`}
+                          className={`group relative rounded-xl p-1.5 border transition-all cursor-pointer flex flex-col items-center ${
+                            isActiveSheet
+                              ? 'bg-emerald-50/90 border-[#146C53] ring-2 ring-[#146C53]/25'
+                              : 'bg-slate-100/80 hover:bg-emerald-50/40 border-slate-200 hover:border-[#146C53]'
+                          }`}
+                        >
+                          <div className="w-full flex items-center justify-between mb-1 px-0.5 gap-1">
+                            <span className="text-[10px] font-mono font-bold text-slate-700 truncate">
+                              Cặp #{pt.sheetNumber}
+                            </span>
+                            <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                              {parityBadge && (
+                                <span
+                                  className={`px-1 rounded text-[9px] font-bold ${parityBadge.cls}`}
+                                  title={`Đối chiếu Preview/PDF: ${pt.parityStatus}`}
+                                >
+                                  {parityBadge.txt}
+                                </span>
+                              )}
+                              <span className="px-1 rounded bg-emerald-100 text-emerald-800 text-[9px] font-bold">
+                                ×{pt.runCount}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Side-by-side Mini PRINT + Mini CUT Imposed Sheet Pair Thumbnail (1:1 sheet coords) */}
+                          <div className="w-full grid grid-cols-2 gap-1">
+                            <div className="h-20 bg-[#9ca3af] rounded-md border border-[#146C53]/70 flex flex-col items-center justify-center p-0.5 overflow-hidden relative">
+                              <span className="absolute top-0.5 left-0.5 px-1 rounded bg-[#087F5B]/90 text-white text-[7px] font-extrabold leading-tight">
+                                IN
+                              </span>
+                              <svg
+                                viewBox={`0 0 ${pt.widthMm} ${pt.heightMm}`}
+                                className="max-w-full max-h-full bg-white shadow-2xs"
+                              >
+                                {pt.pontMarks.map((pm, mIdx) => (
+                                  <circle
+                                    key={`pm-in-${mIdx}`}
+                                    cx={pm.cx}
+                                    cy={pm.cy}
+                                    r={Math.max(2.5, (pm.size || 5) / 2)}
+                                    fill="#0f172a"
+                                  />
+                                ))}
+                                {pt.placementRects.map((rc, rIdx) => {
+                                  const color = modelPalette[(rc.artworkPageIdx || 0) % modelPalette.length];
+                                  return (
+                                    <rect
+                                      key={rIdx}
+                                      x={rc.x}
+                                      y={rc.y}
+                                      width={rc.w}
+                                      height={rc.h}
+                                      fill={color}
+                                      fillOpacity="0.34"
+                                      stroke={color}
+                                      strokeWidth={Math.max(0.8, pt.widthMm * 0.004)}
+                                    />
+                                  );
+                                })}
+                              </svg>
+                            </div>
+
+                            <div className="h-20 bg-[#9ca3af] rounded-md border border-rose-500/70 flex flex-col items-center justify-center p-0.5 overflow-hidden relative">
+                              <span className="absolute top-0.5 left-0.5 px-1 rounded bg-[#DC4545]/90 text-white text-[7px] font-extrabold leading-tight">
+                                BẾ
+                              </span>
+                              <svg
+                                viewBox={`0 0 ${pt.widthMm} ${pt.heightMm}`}
+                                className="max-w-full max-h-full bg-white shadow-2xs"
+                              >
+                                {pt.pontMarks.map((pm, mIdx) => (
+                                  <circle
+                                    key={`m-${mIdx}`}
+                                    cx={pm.cx}
+                                    cy={pm.cy}
+                                    r={Math.max(2.5, (pm.size || 5) / 2)}
+                                    fill="#0f172a"
+                                  />
+                                ))}
+                                {pt.cutSvgPaths.map((d, cIdx) => (
+                                  <path
+                                    key={`c-${cIdx}`}
+                                    d={d}
+                                    fill="none"
+                                    stroke="#e11d48"
+                                    strokeWidth={Math.max(1.2, pt.widthMm * 0.006)}
+                                  />
+                                ))}
+                              </svg>
+                            </div>
+                          </div>
+
+                          <div className="mt-1 flex items-center justify-between w-full px-0.5 gap-1">
+                            <span className="text-[9px] font-bold text-[#146C53] truncate">
+                              {pt.placementCount} tem · {pt.cutPathCount} bế
+                            </span>
+                            <span
+                              className={`text-[9px] font-mono font-bold shrink-0 ${
+                                pt.overlayStatus === 'PASS'
+                                  ? 'text-emerald-700'
+                                  : pt.overlayStatus === 'WARNING'
+                                  ? 'text-amber-700'
+                                  : 'text-rose-600'
+                              }`}
+                            >
+                              Δ{pt.maxOverlayDeltaMm.toFixed(2)}
+                            </span>
+                          </div>
+                          {pt.clusterLabel && (
+                            <div className="w-full mt-0.5 px-1 py-0.2 rounded bg-indigo-50 border border-indigo-200 text-[8px] font-semibold text-indigo-800 truncate text-center">
+                              {pt.clusterLabel}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : isV1StickerActive ? (
+                    v1SelectedPages.map((vpg, idx) => {
+                      const srcPg = pdfPages[(vpg.pageNum || idx + 1) - 1] || null;
+                      const thumbSrc = srcPg?.dataUrl || null;
+                      const isActiveSheet = currentSheetIndex === idx && inspectedPageIndex === null;
+                      const runCnt = v1PageRunCounts[vpg.pageNum] || 1;
+                      const wMm = Number(vpg.sourceSizeMm?.w || 0);
+                      const hMm = Number(vpg.sourceSizeMm?.h || 0);
+
+                      return (
+                        <div
+                          key={`v1-pg-${vpg.pageNum}-${idx}`}
+                          onClick={() => {
+                            setInspectedPageIndex(null);
+                            setCurrentSheetIndex(idx);
+                          }}
+                          title={`Bấm để xem Tờ ${idx + 1} (Trang gốc ${vpg.pageNum})`}
+                          className={`group relative rounded-xl p-1.5 border transition-all cursor-pointer flex flex-col items-center ${
+                            isActiveSheet
+                              ? 'bg-emerald-50/90 border-[#146C53] ring-2 ring-[#146C53]/20'
+                              : 'bg-slate-100/80 hover:bg-emerald-50/40 border-slate-200 hover:border-[#146C53]'
+                          }`}
+                        >
+                          <div className="w-full flex items-center justify-between mb-1 px-0.5">
+                            <span className="text-[10px] font-mono font-bold text-slate-700">
+                              Trang {vpg.pageNum}
+                            </span>
+                            <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                              <span className="px-1 rounded bg-emerald-100 text-emerald-800 text-[9px] font-bold">
+                                ×{runCnt} tờ
+                              </span>
+                              {v1SelectedPages.length > 1 && (
+                                <button
+                                  onClick={() => {
+                                    setV1StickerPayload((prev) => {
+                                      if (!prev || !Array.isArray(prev.pages) || prev.pages.length <= 1) return prev;
+                                      const nextPages = prev.pages.filter((p) => p.pageNum !== vpg.pageNum);
+                                      return { ...prev, pages: nextPages };
+                                    });
+                                    setCurrentSheetIndex((c) => Math.max(0, Math.min(c, v1SelectedPages.length - 2)));
+                                  }}
+                                  title="Bỏ trang này khỏi phiên bình V1"
+                                  className="px-1 rounded bg-white hover:bg-rose-50 border border-slate-200 text-[10px] font-bold text-rose-600 cursor-pointer"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="w-full h-24 bg-[#9ca3af] rounded-lg border-2 border-[#146C53]/60 flex items-center justify-center p-1 overflow-hidden">
+                            {thumbSrc ? (
+                              <img
+                                src={thumbSrc}
+                                alt={`Trang ${vpg.pageNum}`}
+                                className="max-w-full max-h-full object-contain bg-white shadow-xs"
+                              />
+                            ) : (
+                              <div className="text-[10px] font-mono text-white font-bold">
+                                Tờ #{idx + 1} · {vpg.contoursMm?.length || 0} tem
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="mt-1 flex items-center justify-between w-full px-0.5">
+                            <span className="text-[10px] font-bold text-[#146C53]">
+                              {vpg.contoursMm?.length || 0} tem
+                            </span>
+                            <span className="text-[10px] font-mono font-semibold text-slate-600">
+                              {wMm.toFixed(0)}×{hMm.toFixed(0)}mm
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : pdfPages.length === 0 ? (
                     <div className="text-[11px] text-slate-400 text-center py-8 px-2">
                       Tải file PDF để xem danh sách thumbnail từng trang
                     </div>
@@ -1119,6 +1870,90 @@ export default function PdfEditor() {
                     Safe
                   </button>
 
+                  {mode === 'sticker' && (
+                    <>
+                      <span className="h-5 w-px bg-[#E2E8F0] mx-0.5" />
+                      <div className="flex items-center bg-white border border-[#E2E8F0] rounded-md p-0.5 text-[11px] font-semibold">
+                        <button
+                          onClick={() => {
+                            setPairViewMode(PAIR_VIEW_MODES.SIDE_BY_SIDE);
+                            setSplitStickerPreview(true);
+                          }}
+                          title="Hiển thị PRINT và CUT cạnh nhau đồng bộ (PrynX Pair View)"
+                          className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+                            pairViewMode === PAIR_VIEW_MODES.SIDE_BY_SIDE
+                              ? 'bg-[#087F5B] text-white'
+                              : 'text-[#475569] hover:bg-[#F3F5F7]'
+                          }`}
+                        >
+                          IN | BẾ
+                        </button>
+                        <button
+                          onClick={() => {
+                            setPairViewMode(PAIR_VIEW_MODES.OVERLAY);
+                            setSplitStickerPreview(false);
+                          }}
+                          title="Chồng lớp Artwork/CUT để kiểm tra độ lệch"
+                          className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+                            pairViewMode === PAIR_VIEW_MODES.OVERLAY
+                              ? 'bg-[#DC4545] text-white'
+                              : 'text-[#475569] hover:bg-[#F3F5F7]'
+                          }`}
+                        >
+                          Chồng lớp
+                        </button>
+                        <button
+                          onClick={() => {
+                            setPairViewMode(PAIR_VIEW_MODES.SINGLE);
+                            setSplitStickerPreview(false);
+                          }}
+                          title="Xem đơn trang gộp"
+                          className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+                            pairViewMode === PAIR_VIEW_MODES.SINGLE
+                              ? 'bg-[#17212F] text-white'
+                              : 'text-[#475569] hover:bg-[#F3F5F7]'
+                          }`}
+                        >
+                          Đơn
+                        </button>
+                      </div>
+                      {pairViewMode === PAIR_VIEW_MODES.OVERLAY && (
+                        <div className="flex items-center gap-1.5 bg-white border border-rose-200 rounded-md px-2 py-0.5 text-[10px]">
+                          <span className="text-slate-500 font-semibold">Mờ IN:</span>
+                          <input
+                            type="range"
+                            min="0.15"
+                            max="1"
+                            step="0.05"
+                            value={overlayArtworkOpacity}
+                            onChange={(e) => setOverlayArtworkOpacity(parseFloat(e.target.value))}
+                            className="w-14 accent-[#DC4545]"
+                          />
+                          <select
+                            value={overlayCutColor}
+                            onChange={(e) => setOverlayCutColor(e.target.value)}
+                            title="Màu nét CUT tương phản"
+                            className="bg-slate-50 border border-slate-200 rounded px-1 py-0.2 text-[10px] font-semibold"
+                          >
+                            <option value="#e11d48">Đỏ Magenta</option>
+                            <option value="#22c55e">Xanh Neon</option>
+                            <option value="#eab308">Vàng</option>
+                            <option value="#06b6d4">Cyan</option>
+                          </select>
+                          <label className="flex items-center gap-1 text-slate-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={overlayShowBleed}
+                              onChange={(e) => setOverlayShowBleed(e.target.checked)}
+                              className="accent-[#06b6d4]"
+                            />
+                            Bleed
+                          </label>
+                        </div>
+                      )}
+                    </>
+                  )}
+
                   {mode === 'booklet' && (
                     <button
                       onClick={() => setShowBook3D(true)}
@@ -1183,7 +2018,7 @@ export default function PdfEditor() {
                   }
                 }}
               >
-                {sourceFiles.length === 0 && (
+                {sourceFiles.length === 0 && !isV1StickerActive && (
                   <div className="absolute inset-0 z-10 flex items-center justify-center p-6 bg-[#52565E]">
                     <label
                       className={`cursor-pointer bg-white rounded-xl border-2 border-dashed p-9 max-w-[420px] w-full flex flex-col items-center gap-3 text-center shadow-2xl transition-all ${
@@ -1225,13 +2060,24 @@ export default function PdfEditor() {
                 <PdfCanvasPreview
                   sourceFiles={sourceFiles}
                   plan={plan}
-                  margins={{ top: marginTop, bottom: marginBottom, left: marginLeft, right: marginRight }}
+                  margins={
+                    isV1StickerActive && v1PlanState?.effectiveMarginsMm
+                      ? v1PlanState.effectiveMarginsMm
+                      : { top: marginTop, bottom: marginBottom, left: marginLeft, right: marginRight }
+                  }
                   bleedMm={bleedMm}
                   showBleedOverlay={showBleedOverlay}
                   showSafeArea={showSafeArea}
                   showRulers={showRulers}
                   safeInsetMm={safeInsetMm}
-                  splitStickerPreview={mode === 'sticker' && splitStickerPreview}
+                  splitStickerPreview={mode === 'sticker' && (splitStickerPreview || pairViewMode === PAIR_VIEW_MODES.SIDE_BY_SIDE)}
+                  pairViewMode={mode === 'sticker' ? pairViewMode : PAIR_VIEW_MODES.SINGLE}
+                  overlayArtworkOpacity={overlayArtworkOpacity}
+                  overlayCutColor={overlayCutColor}
+                  overlayCutStrokePx={overlayCutStrokePx}
+                  overlayShowBleed={overlayShowBleed}
+                  parityCheck={isV1StickerActive ? v1ParityCheck : null}
+                  requireSpotCutContour={requireSpotCutContour}
                   autoCropInk={autoCropInk}
                   inspectedPageIndex={
                     activeStudio === 'viewer' ? (inspectedPageIndex !== null ? inspectedPageIndex : 0) : inspectedPageIndex
@@ -1248,6 +2094,24 @@ export default function PdfEditor() {
                   onPagesSynced={handlePagesSynced}
                   zoom={zoom}
                   onZoomChange={setZoom}
+                  v1ArtworkInfo={
+                    isV1StickerActive && v1StickerPayload?.cleanArtworkCanvas
+                      ? {
+                          img: v1StickerPayload.cleanArtworkCanvas,
+                          mediaWmm: v1StickerPayload.sourceSizeMm.w,
+                          mediaHmm: v1StickerPayload.sourceSizeMm.h,
+                        }
+                      : null
+                  }
+                  v1ArtworkPages={
+                    isV1StickerActive && Array.isArray(v1StickerPayload?.pages)
+                      ? v1StickerPayload.pages.map((pg) => ({
+                          img: pg.cleanArtworkCanvas,
+                          mediaWmm: pg.sourceSizeMm.w,
+                          mediaHmm: pg.sourceSizeMm.h,
+                        }))
+                      : null
+                  }
                 />
               </div>
               {showBook3D && mode === 'booklet' && (
@@ -1376,13 +2240,14 @@ export default function PdfEditor() {
               )}
 
               {gangItems.length > 0 && (
-                <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-1">
-                  <div className="flex items-center justify-between text-[11px] text-slate-400">
-                    <span>Danh sách mẫu ({gangItems.length}):</span>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between text-[11px] text-slate-500">
+                    <span className="font-semibold">Danh sách mẫu ({gangItems.length}):</span>
                     <button onClick={clearAllFiles} className="text-rose-600 hover:underline font-semibold cursor-pointer">
                       Xóa hết
                     </button>
                   </div>
+                  <div className="flex flex-col gap-1.5 max-h-44 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50/60 p-1.5">
                   {gangItems.map((item, idx) => {
                     const pgMeta = pdfPages[item.frontIndex];
                     const itemW = pgMeta
@@ -1402,7 +2267,7 @@ export default function PdfEditor() {
                     return (
                     <div
                       key={item.id}
-                      className="flex items-center justify-between gap-1.5 bg-[#FAFBF9] border border-slate-200 rounded-lg px-2.5 py-1.5 text-[11px]"
+                      className="shrink-0 flex items-center justify-between gap-1.5 bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-[11px]"
                     >
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-semibold text-slate-800" title={item.name}>
@@ -1459,6 +2324,7 @@ export default function PdfEditor() {
                     </div>
                   );
                   })}
+                  </div>
                 </div>
               )}
             </div>
@@ -1472,6 +2338,7 @@ export default function PdfEditor() {
                   onChange={(e) => setPaperSizeKey(e.target.value)}
                   className="col-span-2 bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs text-slate-800"
                 >
+                  <option value="D320x330">Decal 320×330mm (32×33cm — Khuôn xưởng)</option>
                   {Object.keys(PAPER_SIZES).map((k) => (
                     <option key={k} value={k}>
                       {PAPER_SIZES[k].name}
@@ -1766,8 +2633,8 @@ export default function PdfEditor() {
                   </span>
                 </div>
 
-                {/* ĐƠN VỊ BÌNH: Từng tem vs Nguyên tấm decal (Exact Images 3 & 4) */}
-                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                {/* ĐƠN VỊ BÌNH: Từng tem vs Nguyên tấm decal */}
+                <div className="grid grid-cols-[88px_1fr] items-center gap-2">
                   <label className="text-[11px] font-bold text-slate-600">ĐƠN VỊ BÌNH</label>
                   <select
                     value={stickerUnit}
@@ -1777,38 +2644,54 @@ export default function PdfEditor() {
                       if (val === 'sheet') {
                         setStickerLayout('optimal');
                         setStickerTrimMarks('guillotine');
-                        setGutterX(0);
-                        setGutterY(0);
+                        if (!isV1StickerActive) {
+                          setGutterX(0);
+                          setGutterY(0);
+                        }
                       } else {
-                        setStickerLayout('nesting');
+                        setStickerLayout(isV1StickerActive ? 'optimal' : 'nesting');
                         setStickerTrimMarks('none');
-                        setGutterX(2);
-                        setGutterY(2);
+                        if (!isV1StickerActive) {
+                          setGutterX(2);
+                          setGutterY(2);
+                        }
                       }
                     }}
                     className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
                   >
-                    <option value="single">Từng tem (Bế rời / Nesting)</option>
-                    <option value="sheet">Nguyên tấm decal (Sticker Sheet)</option>
+                    <option value="single">Từng tem (Bế rời)</option>
+                    <option value="sheet">Nguyên tờ decal (Sticker Sheet)</option>
                   </select>
                 </div>
 
                 {/* TÁC VỤ */}
-                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                <div className="grid grid-cols-[88px_1fr] items-center gap-2">
                   <label className="text-[11px] font-bold text-slate-600">TÁC VỤ</label>
                   <select
-                    value={collation === 'stepAndRepeat' ? 'stepAndRepeat' : 'sequential'}
-                    onChange={(e) => setCollation(e.target.value)}
+                    value={
+                      collation === 'mixed'
+                        ? 'mixed'
+                        : collation === 'stepAndRepeat'
+                        ? 'stepAndRepeat'
+                        : 'sequential'
+                    }
+                    onChange={(e) => {
+                      setCollation(e.target.value);
+                      setSelectedImpositionOptionId(null);
+                    }}
                     className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
                   >
-                    <option value="sequential">Dàn nhiều mẫu (N-Up)</option>
+                    {isV1StickerActive && (
+                      <option value="mixed">Hỗn hợp S&amp;R + N-Up (Thông minh)</option>
+                    )}
+                    <option value="sequential">Dàn nhiều mẫu (N-Up Multi-SKU)</option>
                     <option value="stepAndRepeat">Bình trang (S&amp;R — 1 mẫu/tờ)</option>
                   </select>
                 </div>
 
-                {/* CÁCH THỨC RÁP (Appears when ĐƠN VỊ BÌNH = Nguyên tấm decal, Image 4) */}
-                {stickerUnit === 'sheet' && (
-                  <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                {/* CÁCH THỨC RÁP (Legacy only when ĐƠN VỊ BÌNH = Nguyên tấm decal) */}
+                {!isV1StickerActive && stickerUnit === 'sheet' && (
+                  <div className="grid grid-cols-[88px_1fr] items-center gap-2">
                     <label className="text-[11px] font-bold text-slate-600">CÁCH THỨC RÁP</label>
                     <select
                       value={collation}
@@ -1822,8 +2705,8 @@ export default function PdfEditor() {
                   </div>
                 )}
 
-                {/* CÁCH XẾP & HÌNH DÁNG DAO BẾ */}
-                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                {/* CÁCH XẾP */}
+                <div className="grid grid-cols-[88px_1fr] items-center gap-2">
                   <label className="text-[11px] font-bold text-slate-600">CÁCH XẾP</label>
                   <select
                     value={stickerLayout}
@@ -1831,50 +2714,162 @@ export default function PdfEditor() {
                     className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
                   >
                     {stickerUnit === 'single' && (
-                      <option value="nesting">Xếp tối ưu (Lồng ghép tự do 1:1)</option>
+                      <option value="nesting" disabled={isV1StickerActive}>
+                        Xếp lồng ghép tự do {isV1StickerActive ? '(Chưa hỗ trợ V1)' : '(1:1)'}
+                      </option>
                     )}
-                    <option value="optimal">Xếp tối ưu (Trộn 0°+90°)</option>
-                    <option value="honeycomb">Tổ ong so le (Honeycomb)</option>
-                    <option value="simple">Lưới đơn giản</option>
+                    <option value="optimal">Xếp tối ưu (Lưới 0°/90°)</option>
+                    <option value="simple">Lưới đơn giản (0°)</option>
+                    <option value="honeycomb" disabled={isV1StickerActive}>
+                      Tổ ong so le (Honeycomb){isV1StickerActive ? ' — Chưa hỗ trợ V1' : ''}
+                    </option>
                   </select>
                 </div>
 
-                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
-                  <label className="text-[11px] font-bold text-slate-600">DAO BẾ</label>
-                  <select
-                    value={stickerShape}
-                    onChange={(e) => setStickerShape(e.target.value)}
-                    className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
-                  >
-                    <option value="pdfContour">Theo CutContour PDF</option>
-                    <option value="rect">Chữ nhật / Bo góc</option>
-                    <option value="circle">Hình tròn</option>
-                    <option value="oval">Hình Oval / Elip</option>
-                  </select>
-                </div>
-
-                {/* HỞ TEM (Từng tem) vs KHOẢNG CÁCH TẤM + BLEED + 👁️ (Nguyên tấm decal) */}
-                {stickerUnit === 'single' ? (
-                  <div className="grid grid-cols-[105px_1fr] items-center gap-2">
-                    <label className="text-[11px] font-bold text-slate-600">HỞ TEM</label>
-                    <div className="relative flex items-center">
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.5"
-                        value={gutterX}
+                {/* PHASE 4: SMART ROTATION (0°/90°/180°), CLUSTERING & MULTI-OPTION RANKING */}
+                {isV1StickerActive && (
+                  <>
+                    <div className="grid grid-cols-[88px_1fr] items-center gap-2">
+                      <label className="text-[11px] font-bold text-slate-600">XOAY TEM</label>
+                      <select
+                        value={allowRotationMode}
                         onChange={(e) => {
-                          const v = Math.max(0, parseFloat(e.target.value) || 0);
-                          setGutterX(v);
-                          setGutterY(v);
+                          setAllowRotationMode(e.target.value);
+                          setSelectedImpositionOptionId(null);
                         }}
-                        className="w-full bg-white border border-slate-200 rounded-lg pl-2.5 pr-9 py-1.5 text-xs font-mono"
-                      />
-                      <span className="absolute right-2.5 text-[10px] font-mono text-slate-400">MM</span>
+                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                      >
+                        <option value={ROTATION_MODES.ROT_90_180}>Tự xoay 0° / 90° / 180°</option>
+                        <option value={ROTATION_MODES.ROT_90}>Chỉ xoay 0° / 90°</option>
+                        <option value={ROTATION_MODES.ROT_180}>Chỉ xoay 0° / 180° (Đảo nhíp)</option>
+                        <option value={ROTATION_MODES.NONE}>Khóa 0° (Không xoay)</option>
+                      </select>
+                    </div>
+
+                    <div className="grid grid-cols-[88px_1fr] items-center gap-2">
+                      <label className="text-[11px] font-bold text-slate-600">CHIA CỤM</label>
+                      <select
+                        value={smartClusterMode}
+                        onChange={(e) => {
+                          const nextCluster = e.target.value;
+                          setSmartClusterMode(nextCluster);
+                          setSelectedImpositionOptionId(null);
+                          if (nextCluster === CLUSTER_MODES.BY_ORDER) {
+                            setShowStickerQtyTable(true);
+                          }
+                        }}
+                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                      >
+                        <option value={CLUSTER_MODES.NONE}>Không chia cụm (Tối ưu chung)</option>
+                        <option value={CLUSTER_MODES.BY_MODEL}>Chia cụm theo Mẫu (SKU)</option>
+                        <option value={CLUSTER_MODES.BY_QUANTITY}>Chia cụm theo Số lượng</option>
+                        <option value={CLUSTER_MODES.BY_ORDER}>Chia cụm theo Đơn hàng</option>
+                      </select>
+                    </div>
+
+                    {Array.isArray(v1PlanState?.smartOptions) && v1PlanState.smartOptions.length > 0 && (
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between text-[10px] font-extrabold text-slate-700">
+                          <span>✨ PHƯƠNG ÁN BÌNH THÔNG MINH ({v1PlanState.smartOptions.length})</span>
+                          <span className="font-mono text-[#087F5B]">Chọn để áp dụng</span>
+                        </div>
+                        <div className="flex flex-col gap-1 max-h-44 overflow-y-auto pr-0.5">
+                          {v1PlanState.smartOptions.map((opt) => {
+                            const isSelected = v1PlanState.selectedOptionId === opt.optionId;
+                            return (
+                              <button
+                                key={opt.optionId}
+                                type="button"
+                                onClick={() => setSelectedImpositionOptionId(opt.optionId)}
+                                className={`w-full text-left rounded-lg px-2 py-1.5 border transition-all cursor-pointer flex flex-col gap-0.5 ${
+                                  isSelected
+                                    ? 'bg-emerald-50 border-[#087F5B] ring-1 ring-[#087F5B]/30'
+                                    : 'bg-white border-slate-200 hover:border-emerald-300'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-[11px] font-bold text-slate-800 truncate">
+                                    {opt.label}
+                                  </span>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <span className="px-1 rounded bg-slate-100 text-slate-700 font-mono text-[9px] font-bold">
+                                      {opt.rotationDegSummary}
+                                    </span>
+                                    {opt.recommended && (
+                                      <span className="px-1 rounded bg-[#087F5B] text-white text-[9px] font-bold">
+                                        Tối ưu
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex items-center justify-between text-[10px] font-mono text-slate-600">
+                                  <span>
+                                    <strong className="text-[#064E3B]">{opt.metrics.stickersPerSheet}</strong> tem/tờ ·{' '}
+                                    <strong>{opt.metrics.physicalSheetsNeeded}</strong> tờ
+                                  </span>
+                                  <span>
+                                    Hiệu suất <strong className="text-[#087F5B]">{opt.metrics.utilizationPct}%</strong> · Dư{' '}
+                                    <strong className="text-amber-700">{opt.metrics.wastePct}%</strong>
+                                  </span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {!isV1StickerActive && (
+                  <div className="grid grid-cols-[88px_1fr] items-center gap-2">
+                    <label className="text-[11px] font-bold text-slate-600">DAO BẾ</label>
+                    <select
+                      value={stickerShape}
+                      onChange={(e) => setStickerShape(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                    >
+                      <option value="pdfContour">Theo CutContour PDF</option>
+                      <option value="rect">Chữ nhật / Bo góc</option>
+                      <option value="circle">Hình tròn</option>
+                      <option value="oval">Hình Oval / Elip</option>
+                    </select>
+                  </div>
+                )}
+
+                {/* HỞ TEM (Từng tem: Ngang X & Dọc Y riêng) vs KHOẢNG CÁCH TẤM + BLEED + 👁️ (Nguyên tấm decal) */}
+                {stickerUnit === 'single' ? (
+                  <div className="grid grid-cols-[88px_1fr] items-center gap-2">
+                    <label className="text-[11px] font-bold text-slate-600">HỞ TEM (X/Y)</label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div className="relative flex items-center">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.2"
+                          value={gutterX}
+                          title="Khoảng cách ngang giữa các cột tem (mm)"
+                          onChange={(e) => setGutterX(Math.max(0, parseFloat(e.target.value) || 0))}
+                          className="w-full bg-white border border-slate-200 rounded-lg pl-2 pr-6 py-1.5 text-xs font-mono"
+                        />
+                        <span className="absolute right-1.5 text-[9px] font-mono text-slate-400">X</span>
+                      </div>
+                      <div className="relative flex items-center">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.2"
+                          value={gutterY}
+                          title="Khoảng cách dọc giữa các hàng tem (mm)"
+                          onChange={(e) => setGutterY(Math.max(0, parseFloat(e.target.value) || 0))}
+                          className="w-full bg-white border border-slate-200 rounded-lg pl-2 pr-6 py-1.5 text-xs font-mono"
+                        />
+                        <span className="absolute right-1.5 text-[9px] font-mono text-slate-400">Y</span>
+                      </div>
                     </div>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                  <div className="grid grid-cols-[88px_1fr] items-center gap-2">
                     <label className="text-[10px] font-bold text-slate-600 leading-tight">KHOẢNG CÁCH TẤM</label>
                     <div className="grid grid-cols-[1fr_1fr_auto] items-center gap-1.5">
                       <div className="relative flex items-center">
@@ -1921,9 +2916,15 @@ export default function PdfEditor() {
                 )}
 
                 {/* SL MỖI LOẠI / SỐ TẤM DECAL (with ⌄ drawer toggle) */}
-                <div className="grid grid-cols-[105px_1fr] items-center gap-2">
+                <div className="grid grid-cols-[88px_1fr] items-center gap-2">
                   <label className="text-[11px] font-bold text-slate-600">
-                    {stickerUnit === 'sheet' ? 'SỐ TẤM DECAL' : 'SL MỖI LOẠI'}
+                    {isV1StickerActive
+                      ? v1IsSingleContourMode
+                        ? 'SL MỖI LOẠI'
+                        : 'SỐ TỜ / TRANG'
+                      : stickerUnit === 'sheet'
+                      ? 'SỐ TẤM DECAL'
+                      : 'SL MỖI LOẠI'}
                   </label>
                   <div className="flex items-center gap-1">
                     <input
@@ -1935,20 +2936,35 @@ export default function PdfEditor() {
                         const trimmed = val.trim();
                         if (!trimmed || trimmed === '0') {
                           setStickerAutoFillSheet(true);
+                          if (isV1StickerActive) {
+                            if (v1IsSingleContourMode) {
+                              setV1PageRunCounts({});
+                            } else {
+                              const resetRuns = {};
+                              for (const pg of v1SelectedPages) resetRuns[pg.pageNum] = 1;
+                              setV1PageRunCounts(resetRuns);
+                            }
+                          }
                         } else {
                           const n = parseInt(trimmed, 10);
                           if (n > 0) {
                             setStickerAutoFillSheet(false);
-                            setGangItems((prev) => prev.map((it) => ({ ...it, quantity: n })));
+                            if (isV1StickerActive) {
+                              const nextRuns = {};
+                              for (const pg of v1SelectedPages) nextRuns[pg.pageNum] = n;
+                              setV1PageRunCounts(nextRuns);
+                            } else {
+                              setGangItems((prev) => prev.map((it) => ({ ...it, quantity: n })));
+                            }
                           }
                         }
                       }}
-                      placeholder="Trống = Tự lấp đầy tờ"
+                      placeholder={isV1StickerActive ? 'Mặc định: 1 tờ/trang' : 'Trống = Tự lấp đầy tờ'}
                       className="flex-1 min-w-0 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800"
                     />
                     <button
                       onClick={() => setShowStickerQtyTable((v) => !v)}
-                      title="Mở bảng chỉnh số lượng riêng từng mẫu"
+                      title="Mở bảng chỉnh số lượng riêng từng mẫu / từng trang"
                       className="px-2 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs cursor-pointer shrink-0"
                     >
                       {showStickerQtyTable ? '⌃' : '⌄'}
@@ -1956,7 +2972,52 @@ export default function PdfEditor() {
                   </div>
                 </div>
 
-                {showStickerQtyTable && gangItems.length > 0 && (
+                {showStickerQtyTable && isV1StickerActive && v1SelectedPages.length > 0 && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 font-semibold">
+                      <span>
+                        {v1IsSingleContourMode
+                          ? `Số lượng tem từng mẫu V1 (${v1SelectedPages.length} mẫu):`
+                          : `Số tờ in từng trang V1 (${v1SelectedPages.length} trang):`}
+                      </span>
+                      <span className="font-mono text-[#146C53]">
+                        Tổng: {plan.summary?.physicalSheets || v1SelectedPages.length} tờ
+                      </span>
+                    </div>
+                    {v1SelectedPages.map((vpg, idx) => (
+                      <div key={`v1-qty-${vpg.pageNum}`} className="flex items-center justify-between gap-1.5 text-[11px]">
+                        <span className="truncate text-slate-700 font-medium flex-1 min-w-0">
+                          #{idx + 1}. Trang {vpg.pageNum} ({vpg.contoursMm?.length || 0} tem)
+                        </span>
+                        {smartClusterMode === CLUSTER_MODES.BY_ORDER && (
+                          <input
+                            type="text"
+                            value={orderIdByPage[vpg.pageNum] ?? 'DON-01'}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setOrderIdByPage((prev) => ({ ...prev, [vpg.pageNum]: val }));
+                            }}
+                            title="Mã đơn hàng để chia cụm sản xuất"
+                            placeholder="DON-01"
+                            className="w-16 bg-white border border-indigo-300 rounded px-1 py-0.5 text-[10px] font-mono font-bold text-indigo-800"
+                          />
+                        )}
+                        <input
+                          type="number"
+                          min="1"
+                          value={v1PageRunCounts[vpg.pageNum] ?? 1}
+                          onChange={(e) => {
+                            const n = Math.max(1, parseInt(e.target.value, 10) || 1);
+                            setV1PageRunCounts((prev) => ({ ...prev, [vpg.pageNum]: n }));
+                          }}
+                          className="w-16 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-[11px] font-mono text-right font-bold text-[#146C53]"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {showStickerQtyTable && !isV1StickerActive && gangItems.length > 0 && (
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 flex flex-col gap-1.5 max-h-36 overflow-y-auto">
                     <div className="flex items-center justify-between text-[10px] text-slate-500 font-semibold">
                       <span>Số lượng in từng mẫu:</span>
@@ -2030,19 +3091,82 @@ export default function PdfEditor() {
                       </button>
                       {openStickerSubSection === 'pont' && (
                         <div className="flex flex-col gap-2 pt-1 border-t border-slate-100">
+                          {isV1StickerActive && (
+                            <div className="grid grid-cols-[95px_1fr] items-center gap-2">
+                              <label className="text-[10px] font-bold text-slate-500">CHUẨN MÁY BẾ</label>
+                              <select
+                                value={machineProfileId}
+                                onChange={(e) => {
+                                  const nextId = e.target.value;
+                                  setMachineProfileId(nextId);
+                                  const prof = getMachineProfile(nextId);
+                                  if (prof) {
+                                    setPontType(prof.pontType);
+                                    setPontSizeMm(prof.markSizeMm);
+                                    setPontMarginMm(prof.defaultMarkInsetMm);
+                                  }
+                                }}
+                                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold"
+                              >
+                                {listMachineProfiles().map((mp) => (
+                                  <option key={mp.id} value={mp.id}>
+                                    {mp.label}
+                                  </option>
+                                ))}
+                                <option value="custom">Tùy chỉnh thủ công</option>
+                              </select>
+                            </div>
+                          )}
                           <div className="grid grid-cols-[95px_1fr] items-center gap-2">
                             <label className="text-[10px] font-bold text-slate-500">BOONG ĐỊNH VỊ</label>
                             <select
                               value={pontType}
-                              onChange={(e) => setPontType(e.target.value)}
+                              onChange={(e) => {
+                                const nextPont = e.target.value;
+                                setPontType(nextPont);
+                                if (nextPont === 'circle5mm' || nextPont === 'circleHollow') {
+                                  setMachineProfileId('diecut_sheet_5mm');
+                                } else if (nextPont === 'graphtec') {
+                                  setMachineProfileId('graphtec_arms_t1');
+                                } else if (nextPont === 'graphtecType2') {
+                                  setMachineProfileId('graphtec_arms_t2');
+                                } else {
+                                  setMachineProfileId('custom');
+                                }
+                              }}
                               className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold"
                             >
                               <option value="circle5mm">Boong 5mm (Tròn đặc)</option>
                               <option value="circleHollow">Boong Tròn rỗng</option>
-                              <option value="graphtec">Graphtec (Chữ L)</option>
+                              <option value="graphtec">Graphtec Type 1 (Ôm trong ┌ ┐ └ ┘)</option>
+                              <option value="graphtecType2">Graphtec Type 2 (Lật ngược ┘ └ ┐ ┌)</option>
                               <option value="none">Không dùng boong</option>
                             </select>
+                            {(pontType === 'graphtec' || pontType === 'graphtecType2') && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nextPont = pontType === 'graphtec' ? 'graphtecType2' : 'graphtec';
+                                  setPontType(nextPont);
+                                  setMachineProfileId(nextPont === 'graphtecType2' ? 'graphtec_arms_t2' : 'graphtec_arms_t1');
+                                }}
+                                className="mt-1 px-2 py-1 rounded-lg bg-slate-100 hover:bg-emerald-50 border border-slate-200 hover:border-emerald-300 text-[10px] font-bold text-slate-700 hover:text-emerald-800 cursor-pointer transition-colors"
+                              >
+                                ⇄ Lật hướng boong ({pontType === 'graphtec' ? 'sang Type 2: ┘ └ ┐ ┌' : 'sang Type 1: ┌ ┐ └ ┘'})
+                              </button>
+                            )}
                           </div>
+                          {isV1StickerActive && (
+                            <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="accent-[#146C53]"
+                                checked={requireSpotCutContour}
+                                onChange={(e) => setRequireSpotCutContour(e.target.checked)}
+                              />
+                              Xuất Spot Color <span className="font-mono font-bold text-rose-700">CutContour</span> trên đường bế
+                            </label>
+                          )}
                           <div className="grid grid-cols-2 gap-2">
                             <div className="flex flex-col gap-0.5">
                               <label className="text-[10px] text-slate-500">Lề đặt boong (mm)</label>
@@ -2066,15 +3190,17 @@ export default function PdfEditor() {
                               />
                             </div>
                           </div>
-                          <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              className="accent-[#146C53]"
-                              checked={avoidCornerMarks}
-                              onChange={(e) => setAvoidCornerMarks(e.target.checked)}
-                            />
-                            Tránh vùng góc boong (nhét thêm tem dải giữa)
-                          </label>
+                          {!isV1StickerActive && (
+                            <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="accent-[#146C53]"
+                                checked={avoidCornerMarks}
+                                onChange={(e) => setAvoidCornerMarks(e.target.checked)}
+                              />
+                              Tránh vùng góc boong (nhét thêm tem dải giữa)
+                            </label>
+                          )}
                         </div>
                       )}
                     </div>
@@ -2099,8 +3225,19 @@ export default function PdfEditor() {
                               checked={showSlugLine}
                               onChange={(e) => setShowSlugLine(e.target.checked)}
                             />
-                            In dòng thông tin bài in (Slug Line) ở chân tờ
+                            In dòng thông tin bài in (Slug Line) {isV1StickerActive ? 'ở đỉnh giữa tờ' : 'ở chân tờ'}
                           </label>
+                          {isV1StickerActive && (
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="accent-[#146C53]"
+                                checked={showPaperGuides}
+                                onChange={(e) => setShowPaperGuides(e.target.checked)}
+                              />
+                              Thanh canh giấy (Paper Guides) ở 4 mép tờ
+                            </label>
+                          )}
                           <label className="flex items-center gap-2 cursor-pointer">
                             <input
                               type="checkbox"
@@ -2152,19 +3289,21 @@ export default function PdfEditor() {
                     </div>
 
                     {/* CÁCH CHIA CỤM (Cluster Splitting for long sheets) */}
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-bold text-slate-600">CÁCH CHIA CỤM (CHỐNG LỆCH MÁY BẾ)</label>
-                      <select
-                        value={clusterSplit}
-                        onChange={(e) => setClusterSplit(e.target.value)}
-                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
-                      >
-                        <option value="none">Không chia cụm (4 boong góc tờ)</option>
-                        <option value="split2H">Chia 2 cụm Ngang (8 boong — Nửa trên &amp; Nửa dưới)</option>
-                        <option value="split2V">Chia 2 cụm Dọc (8 boong — Trái &amp; Phải)</option>
-                        <option value="split3H">Chia 3 cụm Ngang (12 boong — Khổ dài)</option>
-                      </select>
-                    </div>
+                    {!isV1StickerActive && (
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-bold text-slate-600">CÁCH CHIA CỤM (CHỐNG LỆCH MÁY BẾ)</label>
+                        <select
+                          value={clusterSplit}
+                          onChange={(e) => setClusterSplit(e.target.value)}
+                          className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                        >
+                          <option value="none">Không chia cụm (4 boong góc tờ)</option>
+                          <option value="split2H">Chia 2 cụm Ngang (8 boong — Nửa trên &amp; Nửa dưới)</option>
+                          <option value="split2V">Chia 2 cụm Dọc (8 boong — Trái &amp; Phải)</option>
+                          <option value="split3H">Chia 3 cụm Ngang (12 boong — Khổ dài)</option>
+                        </select>
+                      </div>
+                    )}
 
                     {/* CANH KHỐI SAU KHI XẾP */}
                     <div className="flex flex-col gap-1">
@@ -2180,17 +3319,19 @@ export default function PdfEditor() {
                       </select>
                     </div>
 
-                    {/* DẤU XÉN (TRIM MARKS) + Button ⚙️ to open Modal (Exact Image 5 & 6) */}
+                    {/* DẤU XÉN (TRIM MARKS) + Button ⚙️ to open Modal */}
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center justify-between">
                         <label className="text-[10px] font-bold text-slate-600">DẤU XÉN (TRIM MARKS)</label>
-                        <button
-                          onClick={() => setShowTrimMarkModal(true)}
-                          title="Tuỳ chỉnh kiểu và kích thước Dấu Xén"
-                          className="text-xs text-slate-500 hover:text-[#146C53] cursor-pointer font-bold px-1"
-                        >
-                          ⚙️ Tuỳ chỉnh
-                        </button>
+                        {!isV1StickerActive && (
+                          <button
+                            onClick={() => setShowTrimMarkModal(true)}
+                            title="Tuỳ chỉnh kiểu và kích thước Dấu Xén"
+                            className="text-xs text-slate-500 hover:text-[#146C53] cursor-pointer font-bold px-1"
+                          >
+                            ⚙️ Tuỳ chỉnh
+                          </button>
+                        )}
                       </div>
                       <select
                         value={stickerTrimMarks}
@@ -2198,9 +3339,56 @@ export default function PdfEditor() {
                         className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800"
                       >
                         <option value="none">Không đánh dấu xén (Chỉ dùng Boong bế)</option>
-                        <option value="guillotine">Xén thành phẩm (dao thẳng)</option>
+                        <option value="guillotine">Xén thành phẩm (dao thẳng / Guillotine)</option>
                       </select>
                     </div>
+
+                    {/* LƯU / TẢI / XÓA CẤU HÌNH MẪU V1 */}
+                    {isV1StickerActive && (
+                      <div className="bg-white border border-slate-200 rounded-xl p-2 flex flex-col gap-1.5">
+                        <span className="text-[10px] font-extrabold text-slate-700">💾 CẤU HÌNH MẪU (PRESET)</span>
+                        <div className="flex items-center gap-1">
+                          <select
+                            value={selectedV1PresetName}
+                            onChange={(e) => handleLoadV1Preset(e.target.value)}
+                            className="flex-1 min-w-0 bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] text-slate-800"
+                          >
+                            <option value="">-- Chọn cấu hình mẫu ({v1Presets.length}) --</option>
+                            {v1Presets.map((pr) => (
+                              <option key={pr.name} value={pr.name}>
+                                {pr.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            disabled={!selectedV1PresetName}
+                            onClick={handleDeleteV1Preset}
+                            title="Xóa cấu hình mẫu đang chọn"
+                            className="px-2 py-1 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-[10px] font-bold cursor-pointer disabled:opacity-40 shrink-0"
+                          >
+                            🗑️ Xóa
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="text"
+                            value={v1PresetNameInput}
+                            onChange={(e) => setV1PresetNameInput(e.target.value)}
+                            placeholder="Tên cấu hình mẫu mới..."
+                            className="flex-1 min-w-0 bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] text-slate-800"
+                          />
+                          <button
+                            type="button"
+                            disabled={!v1PresetNameInput.trim()}
+                            onClick={handleSaveV1Preset}
+                            className="px-2 py-1 rounded-lg bg-[#146C53] hover:bg-[#0f5440] text-white text-[10px] font-bold cursor-pointer disabled:opacity-40 shrink-0"
+                          >
+                            Lưu mẫu
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -2598,13 +3786,88 @@ export default function PdfEditor() {
 
                 {/* Export Buttons */}
                 <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
+                  {isV1StickerActive && (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-2.5 py-2 text-[11px] flex flex-col gap-1">
+                      <div className="flex items-center justify-between font-bold text-emerald-900">
+                        <span>PrintKit V1 / H.2</span>
+                        <span className="font-mono text-[10px] text-emerald-700">
+                          {v1StickerPayload?.contourProvenance?.badge || 'V1'}
+                        </span>
+                      </div>
+                      {v1PlanState?.supported && v1PlanState?.summary && (
+                        <div className="text-[10px] text-emerald-800 flex flex-col gap-1">
+                          <div>
+                            <strong>{v1PlanState.summary.stickersPerSheet}</strong> tem/tờ · Cần in{' '}
+                            <strong>{v1PlanState.summary.physicalSheets}</strong> tờ ({v1PlanState.summary.totalSheets}{' '}
+                            khuôn) · Xoay <strong>{v1PlanState.summary.rotationDeg}°</strong>
+                          </div>
+                          {v1PlanState.wasteMetrics && (
+                            <div className="grid grid-cols-2 gap-1 bg-white/80 rounded-lg border border-emerald-200/80 px-2 py-1 font-mono text-[9.5px]">
+                              <span>
+                                Hiệu suất: <strong className="text-[#087F5B]">{v1PlanState.wasteMetrics.utilizationPct}%</strong>
+                              </span>
+                              <span>
+                                Giấy dư:{' '}
+                                <strong className="text-amber-700">
+                                  {v1PlanState.wasteMetrics.wastePct}% ({v1PlanState.wasteMetrics.wasteAreaCm2} cm²)
+                                </strong>
+                              </span>
+                            </div>
+                          )}
+                          {Array.isArray(v1PlanState.clusters) && v1PlanState.clusters.length > 1 && (
+                            <div className="text-[9.5px] text-indigo-800 font-semibold">
+                              Chia cụm ({v1PlanState.clusters.length}):{' '}
+                              {v1PlanState.clusters.map((c) => `${c.clusterLabel} (${c.physicalSheets} tờ)`).join(' · ')}
+                            </div>
+                          )}
+                          {v1PlanState.cacheStats && (
+                            <div className="font-mono text-[9px] text-emerald-700/90">
+                              {v1PlanState.summary.geometryStatus} · BLEED: {v1PlanState.cacheStats.bleedEngineCalls} lần · Cache hit:{' '}
+                              {v1PlanState.cacheStats.geoCacheHits} · Layout: {v1PlanState.cacheStats.lastLayoutMs}ms
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      <label className="flex items-center gap-1.5 text-[10px] text-slate-700 font-semibold cursor-pointer pt-0.5">
+                        <input
+                          type="checkbox"
+                          checked={v1BleedPolicy === 'allow_overlap'}
+                          onChange={(e) => {
+                            const allow = e.target.checked;
+                            setV1BleedPolicy(allow ? 'allow_overlap' : 'strict');
+                            setV1BleedOverlapConfirmed(allow);
+                            setV1BleedOverlapJustification(
+                              allow ? 'Các tem dùng cùng màu nền tràn viền, chỉ chồng BLEED trong vùng rác' : ''
+                            );
+                          }}
+                        />
+                        Cho phép chồng BLEED vùng rác (cùng nền)
+                      </label>
+                      {v1LastExport?.postExportVerification && (
+                        <div className="text-[10px] text-emerald-900 font-mono">
+                          Hậu kiểm CUT.pdf: {v1LastExport.postExportVerification.status} · Hausdorff{' '}
+                          {v1LastExport.postExportVerification.metrics?.maxHausdorffMm?.toFixed?.(4) ?? '0'}mm · Khấc mới:{' '}
+                          {v1LastExport.postExportVerification.metrics?.newKinksCount ?? 0}
+                        </div>
+                      )}
+                      {!v1PlanState?.supported && v1PlanState?.unsupportedReasons?.length > 0 && (
+                        <div className="text-[10px] text-rose-700 font-semibold">
+                          ⛔ {v1PlanState.unsupportedReasons[0]}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {mode === 'sticker' ? (
                     <>
                       <button
                         onClick={() => handleDownload('print')}
-                        disabled={loading || sourceFiles.length === 0}
+                        disabled={
+                          loading ||
+                          (isV1StickerActive ? !v1PlanState?.supported || !v1PlanState?.checkpoint : sourceFiles.length === 0)
+                        }
                         className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                          loading || sourceFiles.length === 0
+                          loading ||
+                          (isV1StickerActive ? !v1PlanState?.supported || !v1PlanState?.checkpoint : sourceFiles.length === 0)
                             ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
                             : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
                         }`}
@@ -2613,22 +3876,97 @@ export default function PdfEditor() {
                       </button>
                       <button
                         onClick={() => handleDownload('cut')}
-                        disabled={loading || sourceFiles.length === 0}
+                        disabled={
+                          loading ||
+                          (isV1StickerActive ? !v1PlanState?.supported || !v1PlanState?.checkpoint : sourceFiles.length === 0)
+                        }
                         className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                          loading || sourceFiles.length === 0
+                          loading ||
+                          (isV1StickerActive ? !v1PlanState?.supported || !v1PlanState?.checkpoint : sourceFiles.length === 0)
                             ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
                             : 'bg-rose-600 hover:bg-rose-500 text-white shadow-xs'
                         }`}
                       >
-                        ✂️ Xuất File BẾ (CutContour PDF)
+                        {isV1StickerActive && (v1PlanState?.summary?.totalSheets || 1) > 1
+                          ? `✂️ Xuất ${v1PlanState.summary.totalSheets} File BẾ riêng (TRANG 1–${v1PlanState.summary.totalSheets})`
+                          : '✂️ Xuất File BẾ (CutContour PDF)'}
                       </button>
-                      <button
-                        onClick={() => handleDownload('svg')}
-                        disabled={loading || sourceFiles.length === 0}
-                        className="w-full py-2 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold cursor-pointer disabled:opacity-40"
-                      >
-                        🧩 Xuất File BẾ (.SVG)
-                      </button>
+                      {isV1StickerActive && (
+                        <>
+                          <button
+                            onClick={() => handleDownload('ai')}
+                            disabled={loading || !v1PlanState?.supported || !v1PlanState?.checkpoint}
+                            className={`w-full py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                              loading || !v1PlanState?.supported || !v1PlanState?.checkpoint
+                                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs'
+                            }`}
+                          >
+                            📐 Xuất File AI phân lớp (.ai: RegMark / CutLine / Design)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDownloadProductionReport}
+                            disabled={!v1PlanState?.supported}
+                            className={`w-full py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer border ${
+                              !v1PlanState?.supported
+                                ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                                : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-300 shadow-xs'
+                            }`}
+                          >
+                            📋 Xuất Report sản xuất (JSON)
+                          </button>
+                          {(v1LastExport?.geometryReport || v1PlanState?.geometryReport) && (
+                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 flex flex-col gap-1 text-[10px]">
+                              {(() => {
+                                const geo = v1LastExport?.geometryReport || v1PlanState?.geometryReport;
+                                const mac = v1LastExport?.machineReport || v1PlanState?.machineReport;
+                                const badgeCls = (st) =>
+                                  st === 'PASS'
+                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                    : st === 'WARNING'
+                                      ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                      : 'bg-rose-100 text-rose-800 border-rose-300';
+                                return (
+                                  <>
+                                    <div className="flex items-center justify-between gap-1">
+                                      <span className="font-bold text-slate-700">Hình học CUT/BLEED:</span>
+                                      <span className={`px-1.5 py-0.5 rounded border font-extrabold whitespace-nowrap shrink-0 ${badgeCls(geo?.status)}`}>
+                                        {geo?.status || '—'}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-1">
+                                      <span className="font-bold text-slate-700">Tương thích máy ({mac?.profileLabel}):</span>
+                                      <span className={`px-1.5 py-0.5 rounded border font-extrabold whitespace-nowrap shrink-0 ${badgeCls(mac?.status)}`}>
+                                        {mac?.status || '—'}
+                                      </span>
+                                    </div>
+                                    {mac?.blockers?.length > 0 && (
+                                      <div className="text-rose-700 font-semibold leading-snug pt-0.5 border-t border-slate-200">
+                                        ⛔ {mac.blockers[0].message}
+                                      </div>
+                                    )}
+                                    {mac?.blockers?.length === 0 && mac?.warnings?.length > 0 && (
+                                      <div className="text-amber-800 leading-snug pt-0.5 border-t border-slate-200">
+                                        ⚠️ {mac.warnings[0].message}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {!isV1StickerActive && (
+                        <button
+                          onClick={() => handleDownload('svg')}
+                          disabled={loading || sourceFiles.length === 0}
+                          className="w-full py-2 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold cursor-pointer disabled:opacity-40"
+                        >
+                          🧩 Xuất File BẾ (.SVG)
+                        </button>
+                      )}
                     </>
                   ) : (
                     <button

@@ -3,7 +3,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { MM_TO_PT, PAPER_SIZES } from '../engine/impositionEngine';
-import { encodeQrMatrix, parseTabularData } from '../engine/vdpEngine';
+import { encodeBarcode1D, encodeQrMatrix, parseTabularData } from '../engine/vdpEngine';
+import { useDragPan } from '../hooks/useDragPan';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -61,6 +62,10 @@ export default function PrepressToolsStudio({
   const [numCutAndStack, setNumCutAndStack] = useState(false);
   const [numSheetKey, setNumSheetKey] = useState('D330x480');
   const [numGutterMm, setNumGutterMm] = useState(2);
+  const [numBarcodeSymbology, setNumBarcodeSymbology] = useState('none'); // 'none' | 'code128' | 'ean13' | 'code39'
+  const [numBarWidthMm, setNumBarWidthMm] = useState(36);
+  const [numBarHeightMm, setNumBarHeightMm] = useState(12);
+  const [numBarShowText, setNumBarShowText] = useState(true);
 
   // 2. VDP state
   const [vdpRawText, setVdpRawText] = useState(SAMPLE_CSV);
@@ -74,6 +79,7 @@ export default function PrepressToolsStudio({
 
   // 3. Preflight report state
   const [preflightReport, setPreflightReport] = useState(null);
+  const panViewport = useDragPan();
 
   // 4. Print Quote state
   const [quoteQty, setQuoteQty] = useState(1000);
@@ -270,6 +276,50 @@ export default function PrepressToolsStudio({
     return `${numPrefix}${val < 0 ? '-' : ''}${absStr}${numSuffix}`;
   };
 
+  // Helper to draw crisp vector 1D barcode onto a pdf-lib page (top-left anchored at xPt, yTopPt)
+  const drawBarcodeOnPdfPage = (pg, value, symbology, xPt, yTopPt, widthMm, heightMm, colorHex, showText, font) => {
+    const bc = encodeBarcode1D(value, symbology);
+    const wPt = Math.max(12, Number(widthMm) || 36) * MM_TO_PT;
+    const hPt = Math.max(5, Number(heightMm) || 12) * MM_TO_PT;
+    const textHpt = showText ? Math.max(6, Math.min(9.5, hPt * 0.28)) : 0;
+    const barsHpt = Math.max(4, hPt - (showText ? textHpt + 2 : 0));
+    const qzPt = Math.min(wPt * 0.08, 2.5 * MM_TO_PT);
+    const innerW = Math.max(4, wPt - qzPt * 2);
+    const modW = innerW / Math.max(1, bc.totalCols);
+    const barColor = hexToPdfRgb(colorHex || '#000000');
+
+    // White quiet-zone backing for reliable scanning
+    pg.drawRectangle({
+      x: xPt,
+      y: yTopPt - hPt,
+      width: wPt,
+      height: hPt,
+      color: rgb(1, 1, 1),
+    });
+
+    for (const [startCol, runCols] of bc.runs) {
+      pg.drawRectangle({
+        x: xPt + qzPt + startCol * modW,
+        y: yTopPt - barsHpt,
+        width: runCols * modW,
+        height: barsHpt,
+        color: barColor,
+      });
+    }
+
+    if (showText && font) {
+      const label = toAsciiSafe(bc.text);
+      const txtW = font.widthOfTextAtSize(label, textHpt);
+      pg.drawText(label, {
+        x: xPt + Math.max(qzPt, (wPt - txtW) / 2),
+        y: yTopPt - hPt + 1.5,
+        size: textHpt,
+        font,
+        color: barColor,
+      });
+    }
+  };
+
   // Export Numbering PDF (Sequential pages OR Cut & Stack imposed sheets)
   const handleExportNumbering = async (sendToImpose = false) => {
     if (!pdfBytes || !pageInfo) return;
@@ -324,14 +374,29 @@ export default function PrepressToolsStudio({
               sheetPage.drawPage(embedded0, { x: px, y: py, width: sw, height: sh });
 
               const txt = toAsciiSafe(formatNumberStr(numbers[itemIdx]));
-              sheetPage.drawText(txt, {
-                x: px + numXmm * MM_TO_PT,
-                y: py + sh - numYmm * MM_TO_PT,
-                size: fontSize,
-                font,
-                color: textColor,
-                rotate: degrees(Number(numRotate) || 0),
-              });
+              if (numBarcodeSymbology !== 'none') {
+                drawBarcodeOnPdfPage(
+                  sheetPage,
+                  txt,
+                  numBarcodeSymbology,
+                  px + numXmm * MM_TO_PT,
+                  py + sh - numYmm * MM_TO_PT,
+                  numBarWidthMm,
+                  numBarHeightMm,
+                  numColor,
+                  numBarShowText,
+                  font
+                );
+              } else {
+                sheetPage.drawText(txt, {
+                  x: px + numXmm * MM_TO_PT,
+                  y: py + sh - numYmm * MM_TO_PT,
+                  size: fontSize,
+                  font,
+                  color: textColor,
+                  rotate: degrees(Number(numRotate) || 0),
+                });
+              }
             }
           }
         }
@@ -342,14 +407,29 @@ export default function PrepressToolsStudio({
           const pg = outDoc.addPage([sw, sh]);
           pg.drawPage(embedded0, { x: 0, y: 0, width: sw, height: sh });
           const txt = toAsciiSafe(formatNumberStr(numbers[i]));
-          pg.drawText(txt, {
-            x: numXmm * MM_TO_PT,
-            y: sh - numYmm * MM_TO_PT,
-            size: fontSize,
-            font,
-            color: textColor,
-            rotate: degrees(Number(numRotate) || 0),
-          });
+          if (numBarcodeSymbology !== 'none') {
+            drawBarcodeOnPdfPage(
+              pg,
+              txt,
+              numBarcodeSymbology,
+              numXmm * MM_TO_PT,
+              sh - numYmm * MM_TO_PT,
+              numBarWidthMm,
+              numBarHeightMm,
+              numColor,
+              numBarShowText,
+              font
+            );
+          } else {
+            pg.drawText(txt, {
+              x: numXmm * MM_TO_PT,
+              y: sh - numYmm * MM_TO_PT,
+              size: fontSize,
+              font,
+              color: textColor,
+              rotate: degrees(Number(numRotate) || 0),
+            });
+          }
         }
       }
 
@@ -429,6 +509,19 @@ export default function PrepressToolsStudio({
                 }
               }
             }
+          } else if (f.type === 'barcode') {
+            drawBarcodeOnPdfPage(
+              pg,
+              val,
+              f.barcodeSymbology || 'code128',
+              xPt,
+              yTopPt,
+              f.barWidthMm || 38,
+              f.barHeightMm || 12,
+              f.color || '#000000',
+              f.showText !== false,
+              font
+            );
           } else {
             pg.drawText(toAsciiSafe(val), {
               x: xPt,
@@ -540,7 +633,13 @@ export default function PrepressToolsStudio({
 
         {error && <div className="px-3 py-1.5 bg-rose-50 border-b border-rose-200 text-[#DC4545] text-xs">{error}</div>}
 
-        <div className="relative flex-1 overflow-auto p-6 flex bg-[#52565E]">
+        <div
+          ref={panViewport.ref}
+          onMouseDown={panViewport.onMouseDown}
+          className={`relative flex-1 overflow-auto p-6 flex bg-[#52565E] select-none ${
+            panViewport.isPanning ? 'cursor-grabbing' : 'cursor-grab'
+          }`}
+        >
           {loading && (
             <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-2xs flex items-center justify-center p-4">
               <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-2xl px-6 py-5 flex items-center gap-3">
@@ -700,26 +799,84 @@ export default function PrepressToolsStudio({
                 >
                   <img src={pageInfo.dataUrl} alt="Mẫu PDF" className="w-full h-full block pointer-events-none" />
 
-                  {activeTool === 'numbering' && (
-                    <div
-                      className="absolute font-mono font-bold whitespace-nowrap pointer-events-none border border-dashed border-[#087F5B] bg-white/75 px-1"
-                      style={{
-                        left: `${numXmm * scale}px`,
-                        top: `${numYmm * scale}px`,
-                        fontSize: `${Math.max(8, (numFontPt / MM_TO_PT) * scale)}px`,
-                        color: numColor,
-                        transform: `translateY(-85%) rotate(${-numRotate}deg)`,
-                        transformOrigin: 'left bottom',
-                      }}
-                    >
-                      {formatNumberStr(numStart)}
-                    </div>
-                  )}
+                  {activeTool === 'numbering' &&
+                    (numBarcodeSymbology !== 'none' ? (
+                      (() => {
+                        const bc = encodeBarcode1D(formatNumberStr(numStart), numBarcodeSymbology);
+                        const bW = Math.max(40, (Number(numBarWidthMm) || 36) * scale);
+                        const bH = Math.max(18, (Number(numBarHeightMm) || 12) * scale);
+                        const txtH = numBarShowText ? Math.max(9, Math.min(13, bH * 0.28)) : 0;
+                        const barsH = Math.max(8, bH - txtH - 4);
+                        return (
+                          <div
+                            className="absolute bg-white pointer-events-none border border-dashed border-[#087F5B] flex flex-col items-center justify-between px-1 py-0.5"
+                            style={{ left: `${numXmm * scale}px`, top: `${numYmm * scale}px`, width: bW, height: bH }}
+                          >
+                            <svg width="100%" height={barsH} viewBox={`0 0 ${bc.totalCols} 10`} preserveAspectRatio="none">
+                              {bc.runs.map(([sx, sw], idx) => (
+                                <rect key={idx} x={sx} y={0} width={sw} height={10} fill={numColor || '#000000'} />
+                              ))}
+                            </svg>
+                            {numBarShowText && (
+                              <span className="font-mono font-bold leading-none truncate max-w-full" style={{ fontSize: `${txtH}px`, color: numColor || '#000000' }}>
+                                {bc.text}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <div
+                        className="absolute font-mono font-bold whitespace-nowrap pointer-events-none border border-dashed border-[#087F5B] bg-white/75 px-1"
+                        style={{
+                          left: `${numXmm * scale}px`,
+                          top: `${numYmm * scale}px`,
+                          fontSize: `${Math.max(8, (numFontPt / MM_TO_PT) * scale)}px`,
+                          color: numColor,
+                          transform: `translateY(-85%) rotate(${-numRotate}deg)`,
+                          transformOrigin: 'left bottom',
+                        }}
+                      >
+                        {formatNumberStr(numStart)}
+                      </div>
+                    ))}
 
                   {activeTool === 'vdp' &&
                     vdpFields.map((f) => {
                       const val = String(previewRow[f.col] ?? `[${f.col}]`);
                       const isSel = f.id === activeVdpFieldId;
+                      if (f.type === 'barcode') {
+                        const bc = encodeBarcode1D(val, f.barcodeSymbology || 'code128');
+                        const bW = Math.max(40, (Number(f.barWidthMm) || 38) * scale);
+                        const bH = Math.max(18, (Number(f.barHeightMm) || 12) * scale);
+                        const showTxt = f.showText !== false;
+                        const txtH = showTxt ? Math.max(9, Math.min(13, bH * 0.28)) : 0;
+                        const barsH = Math.max(8, bH - txtH - 4);
+                        return (
+                          <div
+                            key={f.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveVdpFieldId(f.id);
+                            }}
+                            className={`absolute bg-white flex flex-col items-center justify-between px-1 py-0.5 cursor-pointer ${
+                              isSel ? 'ring-2 ring-[#087F5B]' : 'ring-1 ring-slate-300'
+                            }`}
+                            style={{ left: `${f.xMm * scale}px`, top: `${f.yMm * scale}px`, width: bW, height: bH }}
+                          >
+                            <svg width="100%" height={barsH} viewBox={`0 0 ${bc.totalCols} 10`} preserveAspectRatio="none">
+                              {bc.runs.map(([sx, sw], idx) => (
+                                <rect key={idx} x={sx} y={0} width={sw} height={10} fill={f.color || '#000000'} />
+                              ))}
+                            </svg>
+                            {showTxt && (
+                              <span className="font-mono font-bold leading-none truncate max-w-full" style={{ fontSize: `${txtH}px`, color: f.color || '#000000' }}>
+                                {bc.text}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      }
                       if (f.type === 'qr') {
                         const mat = encodeQrMatrix(val);
                         const qrPx = Math.max(18, f.qrSizeMm * scale);
@@ -849,6 +1006,44 @@ export default function PrepressToolsStudio({
               </div>
             </div>
 
+            <div className="flex flex-col gap-1.5 p-2.5 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-[#17212F]">Định dạng Barcode 1D</span>
+                <select
+                  value={numBarcodeSymbology}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setNumBarcodeSymbology(v);
+                    if (v !== 'none' && numColor === '#dc2626') setNumColor('#000000');
+                  }}
+                  className="border border-[#E2E8F0] bg-white rounded-md px-2 py-1 text-xs font-semibold"
+                >
+                  <option value="none">Chỉ chữ số</option>
+                  <option value="code128">Code 128 (Phổ biến)</option>
+                  <option value="ean13">EAN-13 (13 số)</option>
+                  <option value="code39">Code 39</option>
+                </select>
+              </div>
+              {numBarcodeSymbology !== 'none' && (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-[#64748B]">Rộng mã (mm)</label>
+                      <input type="number" min="12" value={numBarWidthMm} onChange={(e) => setNumBarWidthMm(parseFloat(e.target.value) || 36)} className="w-full bg-white border border-[#E2E8F0] rounded-md px-2 py-1 font-mono text-xs" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-[#64748B]">Cao mã (mm)</label>
+                      <input type="number" min="5" value={numBarHeightMm} onChange={(e) => setNumBarHeightMm(parseFloat(e.target.value) || 12)} className="w-full bg-white border border-[#E2E8F0] rounded-md px-2 py-1 font-mono text-xs" />
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 text-[11px] text-[#475569] cursor-pointer">
+                    <input type="checkbox" checked={numBarShowText} onChange={(e) => setNumBarShowText(e.target.checked)} />
+                    Hiện dãy số bên dưới mã vạch
+                  </label>
+                </>
+              )}
+            </div>
+
             <label className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-[#F3F5F7] border border-[#E2E8F0] text-xs cursor-pointer">
               <span className="font-semibold text-[#17212F]">Bình chồng cắt (Cut &amp; Stack)</span>
               <input type="checkbox" checked={numCutAndStack} onChange={(e) => setNumCutAndStack(e.target.checked)} />
@@ -934,7 +1129,31 @@ export default function PrepressToolsStudio({
                   }}
                   className="px-2 py-1 rounded bg-[#F3F5F7] border border-[#E2E8F0] text-[#17212F] text-[10px] font-bold cursor-pointer"
                 >
-                  + Mã QR
+                  + QR
+                </button>
+                <button
+                  onClick={() => {
+                    const id = `bar-${Date.now()}`;
+                    setVdpFields((p) => [
+                      ...p,
+                      {
+                        id,
+                        type: 'barcode',
+                        col: parsedVdp.headers[0] || '',
+                        xMm: 15,
+                        yMm: 36,
+                        barcodeSymbology: 'code128',
+                        barWidthMm: 38,
+                        barHeightMm: 12,
+                        showText: true,
+                        color: '#000000',
+                      },
+                    ]);
+                    setActiveVdpFieldId(id);
+                  }}
+                  className="px-2 py-1 rounded bg-[#17212F] text-white text-[10px] font-bold cursor-pointer"
+                >
+                  + Barcode
                 </button>
               </div>
             </div>
@@ -951,7 +1170,9 @@ export default function PrepressToolsStudio({
                     }`}
                   >
                     <div className="flex items-center justify-between gap-1.5">
-                      <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-bold">{f.type === 'qr' ? 'QR' : 'TEXT'}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-bold">
+                        {f.type === 'qr' ? 'QR' : f.type === 'barcode' ? 'BAR' : 'TEXT'}
+                      </span>
                       <select
                         value={f.col}
                         onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, col: e.target.value } : x)))}
@@ -972,15 +1193,50 @@ export default function PrepressToolsStudio({
                       </button>
                     </div>
                     {active && (
-                      <div className="grid grid-cols-3 gap-1.5 text-[11px] font-mono">
-                        <input type="number" value={f.xMm} onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, xMm: parseFloat(e.target.value) || 0 } : x)))} className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white" title="X mm" />
-                        <input type="number" value={f.yMm} onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, yMm: parseFloat(e.target.value) || 0 } : x)))} className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white" title="Y mm" />
-                        {f.type === 'qr' ? (
-                          <input type="number" min="6" value={f.qrSizeMm} onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, qrSizeMm: parseFloat(e.target.value) || 12 } : x)))} className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white" title="Cỡ QR mm" />
-                        ) : (
-                          <input type="number" min="5" value={f.fontSizePt} onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, fontSizePt: parseFloat(e.target.value) || 10 } : x)))} className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white" title="Cỡ chữ pt" />
+                      <>
+                        <div className="grid grid-cols-3 gap-1.5 text-[11px] font-mono">
+                          <input type="number" value={f.xMm} onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, xMm: parseFloat(e.target.value) || 0 } : x)))} className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white" title="X mm" />
+                          <input type="number" value={f.yMm} onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, yMm: parseFloat(e.target.value) || 0 } : x)))} className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white" title="Y mm" />
+                          {f.type === 'qr' ? (
+                            <input type="number" min="6" value={f.qrSizeMm} onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, qrSizeMm: parseFloat(e.target.value) || 12 } : x)))} className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white" title="Cỡ QR mm" />
+                          ) : f.type === 'barcode' ? (
+                            <input type="number" min="12" value={f.barWidthMm || 38} onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, barWidthMm: parseFloat(e.target.value) || 38 } : x)))} className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white" title="Rộng mã mm" />
+                          ) : (
+                            <input type="number" min="5" value={f.fontSizePt} onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, fontSizePt: parseFloat(e.target.value) || 10 } : x)))} className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white" title="Cỡ chữ pt" />
+                          )}
+                        </div>
+                        {f.type === 'barcode' && (
+                          <div className="flex flex-col gap-1.5 pt-1 border-t border-slate-200/70">
+                            <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                              <select
+                                value={f.barcodeSymbology || 'code128'}
+                                onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, barcodeSymbology: e.target.value } : x)))}
+                                className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white"
+                              >
+                                <option value="code128">Code 128</option>
+                                <option value="ean13">EAN-13</option>
+                                <option value="code39">Code 39</option>
+                              </select>
+                              <input
+                                type="number"
+                                min="5"
+                                value={f.barHeightMm || 12}
+                                onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, barHeightMm: parseFloat(e.target.value) || 12 } : x)))}
+                                className="border border-[#E2E8F0] rounded px-1.5 py-0.5 bg-white font-mono"
+                                title="Cao mã mm"
+                              />
+                            </div>
+                            <label className="flex items-center gap-1.5 text-[11px] text-[#475569] cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={f.showText !== false}
+                                onChange={(e) => setVdpFields((p) => p.map((x) => (x.id === f.id ? { ...x, showText: e.target.checked } : x)))}
+                              />
+                              Hiện chữ dưới mã vạch
+                            </label>
+                          </div>
                         )}
-                      </div>
+                      </>
                     )}
                   </div>
                 );

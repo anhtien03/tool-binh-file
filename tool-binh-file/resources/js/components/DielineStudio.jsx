@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { DIELINE_TEMPLATES, generateDieline, exportDielineSvg } from '../engine/dielineEngine';
 import { exportDielinePdf, exportImposedDielinePdf } from '../engine/dielinePdfExporter';
 import { PAPER_SIZES, solveDutchCut, solveSimpleGrid } from '../engine/impositionEngine';
+import { useDragPan } from '../hooks/useDragPan';
 import Box3DViewer, { PAPER_MATERIALS, FINISH_MODES } from './Box3DViewer';
 
 const PANEL_VI_LABELS = {
@@ -101,11 +102,13 @@ export default function DielineStudio({
   const [cameraPreset, setCameraPreset] = useState('iso');
   const [autoRotate, setAutoRotate] = useState(false);
   const [showEdges3D, setShowEdges3D] = useState(true);
-  const [showLabels3D, setShowLabels3D] = useState(true);
+  const [showLabels3D, setShowLabels3D] = useState(false);
   const [finishMode, setFinishMode] = useState('standard');
   const [hoveredPanelId, setHoveredPanelId] = useState(null);
   const [showPanelLabels2D, setShowPanelLabels2D] = useState(true);
   const box3DRef = useRef(null);
+  const pan2D = useDragPan();
+  const panSheet = useDragPan();
 
   // Artwork & Export (Outer + Inner)
   const [artworkDataUrl, setArtworkDataUrl] = useState(null);
@@ -196,7 +199,8 @@ export default function DielineStudio({
     let raf = 0;
     let dir = foldProgress >= 0.99 ? -1 : 1;
     let cur = foldProgress;
-    const tick = () => {
+    let lastStateSync = 0;
+    const tick = (now) => {
       cur += dir * 0.012;
       if (cur >= 1) {
         cur = 1;
@@ -205,11 +209,20 @@ export default function DielineStudio({
         cur = 0;
         dir = 1;
       }
-      setFoldProgress(cur);
+      // Drive the 3D scene directly every frame; sync React state (slider) only ~8x/sec
+      box3DRef.current?.setFold?.(cur);
+      if (now - lastStateSync > 120) {
+        lastStateSync = now;
+        setFoldProgress(cur);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      setFoldProgress(cur);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAnimating]);
 
   const updateParam = (key, value) => {
@@ -382,13 +395,17 @@ export default function DielineStudio({
         <div className={`flex-1 min-h-0 grid ${canvasMode === 'split' ? 'grid-cols-1 xl:grid-cols-2 divide-y xl:divide-y-0 xl:divide-x divide-[#334155]' : 'grid-cols-1'}`}>
           {(canvasMode === '2d' || canvasMode === 'split') && (
             <div
+              ref={pan2D.ref}
+              onMouseDown={pan2D.onMouseDown}
               onWheel={(e) => {
                 e.preventDefault();
                 const delta = e.deltaY < 0 ? 0.2 : -0.2;
                 setZoom2D((z) => Math.round(Math.min(8.0, Math.max(0.4, z + delta)) * 100) / 100);
               }}
-              title="Cuộn chuột để Phóng to / Thu nhỏ khuôn 2D · Rê chuột lên từng mặt để xem thông số"
-              className="relative flex p-6 overflow-auto bg-[#1e232a]"
+              title="Kéo chuột trái để di chuyển · Cuộn chuột để Phóng to / Thu nhỏ khuôn 2D"
+              className={`relative flex p-6 overflow-auto bg-[#1e232a] select-none ${
+                pan2D.isPanning ? 'cursor-grabbing' : 'cursor-grab'
+              }`}
             >
               {/* Top-left Spec & Hover Pill */}
               <div className="sticky top-0 left-0 z-10 h-0 flex items-start justify-between w-full pointer-events-none">
@@ -767,13 +784,17 @@ export default function DielineStudio({
 
               {/* Imposed Sheet SVG Preview */}
               <div
+                ref={panSheet.ref}
+                onMouseDown={panSheet.onMouseDown}
                 onWheel={(e) => {
                   e.preventDefault();
                   const delta = e.deltaY < 0 ? 0.15 : -0.15;
                   setZoom2D((z) => Math.round(Math.min(4.0, Math.max(0.4, z + delta)) * 100) / 100);
                 }}
-                title="Cuộn chuột để Phóng to / Thu nhỏ sơ đồ bình khuôn"
-                className="flex-1 flex p-6 overflow-auto max-h-[520px]"
+                title="Kéo chuột trái để di chuyển · Cuộn chuột để Phóng to / Thu nhỏ sơ đồ bình khuôn"
+                className={`flex-1 flex p-6 overflow-auto max-h-[520px] select-none ${
+                  panSheet.isPanning ? 'cursor-grabbing' : 'cursor-grab'
+                }`}
                 style={{
                   backgroundImage:
                     'linear-gradient(to right, #eef2f1 1px, transparent 1px), linear-gradient(to bottom, #eef2f1 1px, transparent 1px)',

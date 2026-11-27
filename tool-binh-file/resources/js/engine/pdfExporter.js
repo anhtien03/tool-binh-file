@@ -1,5 +1,9 @@
 import {
   PDFDocument,
+  PDFName,
+  PDFArray,
+  PDFRawStream,
+  decodePDFRawStream,
   StandardFonts,
   cmyk,
   degrees,
@@ -282,6 +286,50 @@ function drawPontMarksOnPdfPage(page, pontMarks, sheetHPt) {
 }
 
 /**
+ * Strip pure-Magenta CutContour (0 1 0 0 K) and pure-Cyan BleedContour (1 0 0 0 K)
+ * vector stroke blocks from a source PDF page before embedding it into a Print-only sheet.
+ * Leaves all artwork (images, text, normal strokes) untouched.
+ */
+function stripCutAndBleedPathsFromPage(srcDoc, srcPage) {
+  try {
+    const contentsRef = srcPage.node.get(PDFName.of('Contents'));
+    if (!contentsRef) return;
+    const ctx = srcDoc.context;
+    const resolved = ctx.lookup(contentsRef);
+    const refs = resolved instanceof PDFArray ? resolved.asArray() : [contentsRef];
+
+    // Match self-contained `q ... (0 1 0 0 K | 1 0 0 0 K) ... (S|s) Q` contour stroke blocks
+    const contourBlockRe =
+      /\bq\s+(?:0(?:\.0+)?\s+1(?:\.0+)?\s+0(?:\.0+)?\s+0(?:\.0+)?|1(?:\.0+)?\s+0(?:\.0+)?\s+0(?:\.0+)?\s+0(?:\.0+)?)\s+K\b[\s\S]*?\b(?:S|s)\s+Q\b/g;
+
+    let changedAny = false;
+    const newRefs = refs.map((ref) => {
+      const obj = ctx.lookup(ref);
+      if (!(obj instanceof PDFRawStream)) return ref;
+      const bytes = decodePDFRawStream(obj).decode();
+      let text = '';
+      for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
+      const cleaned = text.replace(contourBlockRe, '');
+      if (cleaned === text) return ref;
+      changedAny = true;
+      const outBytes = new Uint8Array(cleaned.length);
+      for (let i = 0; i < cleaned.length; i++) outBytes[i] = cleaned.charCodeAt(i) & 0xff;
+      return ctx.register(ctx.flateStream(outBytes));
+    });
+
+    if (changedAny) {
+      if (resolved instanceof PDFArray) {
+        srcPage.node.set(PDFName.of('Contents'), ctx.obj(newRefs));
+      } else {
+        srcPage.node.set(PDFName.of('Contents'), newRefs[0]);
+      }
+    }
+  } catch (err) {
+    console.warn('stripCutAndBleedPathsFromPage skipped:', err);
+  }
+}
+
+/**
  * Export Sticker Print PDF (artwork + 4 boong marks, NO cut paths)
  * OR Sticker Cut PDF (4 boong marks + CutContour vector paths only)
  */
@@ -299,7 +347,10 @@ export async function exportStickerPdf(sourceFilesInput, plan, config, exportRol
       const pdfBytes = await file.arrayBuffer();
       const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
       const srcPages = srcDoc.getPages();
-      srcPages.forEach((p) => srcBoxes.push(extractSourceBoxes(p, config.bleedMm)));
+      srcPages.forEach((p) => {
+        stripCutAndBleedPathsFromPage(srcDoc, p);
+        srcBoxes.push(extractSourceBoxes(p, config.bleedMm));
+      });
       const embedded = await destDoc.embedPages(srcPages);
       embedded.forEach((ep) => embeddedPages.push(ep));
     }

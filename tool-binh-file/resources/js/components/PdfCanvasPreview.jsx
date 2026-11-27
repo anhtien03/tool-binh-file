@@ -1,8 +1,16 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
 import { MM_TO_PT, PAPER_SIZES } from '../engine/impositionEngine';
 import { extractCutContoursFromPdfPage } from '../engine/pdfCutContourExtractor';
+import {
+  PAIR_VIEW_MODES,
+  PARITY_STATUS,
+  computeSyncedScrollPosition,
+  computeSyncedZoom,
+  analyzeArtworkCutOverlay,
+} from '../engine/pairPreviewEngine';
+import { useDragPan } from '../hooks/useDragPan';
 import { PrepressRulerBar } from './PrintKitUI';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
@@ -19,6 +27,13 @@ export default function PdfCanvasPreview({
   showRulers = true,
   safeInsetMm = 3,
   splitStickerPreview = false,
+  pairViewMode = null,
+  overlayArtworkOpacity = 0.72,
+  overlayCutColor = '#e11d48',
+  overlayCutStrokePx = 1.8,
+  overlayShowBleed = true,
+  parityCheck = null,
+  requireSpotCutContour = true,
   autoCropInk = false,
   inspectedPageIndex = null,
   onExitInspectPage,
@@ -27,11 +42,17 @@ export default function PdfCanvasPreview({
   onPagesSynced,
   zoom = 1.0,
   onZoomChange,
+  v1ArtworkInfo = null,
+  v1ArtworkPages = null,
 }) {
+  const effectiveViewMode =
+    pairViewMode || (splitStickerPreview ? PAIR_VIEW_MODES.SIDE_BY_SIDE : PAIR_VIEW_MODES.SINGLE);
+  const isSideBySide = !inspectedPageIndex && inspectedPageIndex !== 0 && effectiveViewMode === PAIR_VIEW_MODES.SIDE_BY_SIDE;
+  const isOverlayMode = !inspectedPageIndex && inspectedPageIndex !== 0 && effectiveViewMode === PAIR_VIEW_MODES.OVERLAY;
+
   const [pages, setPages] = useState([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState({ pct: 0, page: 0, total: 0, fileName: '', stage: '' });
-  const [isPanning, setIsPanning] = useState(false);
   const [cursorMm, setCursorMm] = useState(null);
   const [vpBox, setVpBox] = useState({ w: 680, h: 540 });
   const [rulerOrigin, setRulerOrigin] = useState({ x: 40, y: 40 });
@@ -39,8 +60,37 @@ export default function PdfCanvasPreview({
   const paperBoxRef = useRef(null);
   const cutCanvasRef = useRef(null);
   const viewportRef = useRef(null);
-  const panStateRef = useRef({ active: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 });
+  const printPaneRef = useRef(null);
+  const cutPaneRef = useRef(null);
+  const syncingPaneRef = useRef(null);
+  const { isPanning, onMouseDown: handleMouseDown } = useDragPan(viewportRef);
+  const { isPanning: isPrintPanning, onMouseDown: handlePrintMouseDown } = useDragPan(printPaneRef);
+  const { isPanning: isCutPanning, onMouseDown: handleCutMouseDown } = useDragPan(cutPaneRef);
+  const cursorRafRef = useRef(0);
+  const scrollRafRef = useRef(0);
   const fileCacheRef = useRef(new Map()); // id -> parsed pages array
+
+  // Synchronized scroll handler between PRINT (left) and CUT (right) panes
+  const syncPaneScroll = useCallback((sourceKey) => {
+    if (syncingPaneRef.current && syncingPaneRef.current !== sourceKey) return;
+    const src = sourceKey === 'print' ? printPaneRef.current : cutPaneRef.current;
+    const dst = sourceKey === 'print' ? cutPaneRef.current : printPaneRef.current;
+    if (!src || !dst) return;
+    syncingPaneRef.current = sourceKey;
+    const synced = computeSyncedScrollPosition({
+      sourceScrollLeft: src.scrollLeft,
+      sourceScrollTop: src.scrollTop,
+      sourceMaxX: Math.max(0, src.scrollWidth - src.clientWidth),
+      sourceMaxY: Math.max(0, src.scrollHeight - src.clientHeight),
+      targetMaxX: Math.max(0, dst.scrollWidth - dst.clientWidth),
+      targetMaxY: Math.max(0, dst.scrollHeight - dst.clientHeight),
+    });
+    if (Math.abs(dst.scrollLeft - synced.scrollLeft) > 1) dst.scrollLeft = synced.scrollLeft;
+    if (Math.abs(dst.scrollTop - synced.scrollTop) > 1) dst.scrollTop = synced.scrollTop;
+    requestAnimationFrame(() => {
+      if (syncingPaneRef.current === sourceKey) syncingPaneRef.current = null;
+    });
+  }, []);
 
   // 1. Parse any newly added PDFs (cached by file id) and flatten into global pagesMeta
   useEffect(() => {
@@ -167,9 +217,29 @@ export default function PdfCanvasPreview({
         const offscreen = document.createElement('canvas');
         offscreen.width = viewport.width;
         offscreen.height = viewport.height;
-        await page.render({ canvasContext: offscreen.getContext('2d'), viewport }).promise;
+        const offCtx = offscreen.getContext('2d');
+        await page.render({ canvasContext: offCtx, viewport, background: 'rgba(0,0,0,0)' }).promise;
 
-        const dataUrl = offscreen.toDataURL('image/jpeg', 0.85);
+        // Preserve alpha transparency (PNG) for cut-out stickers so tightly nested previews
+        // never cover neighboring stickers with an opaque white JPEG rectangle; keep JPEG for opaque pages.
+        let hasTransparency = false;
+        try {
+          const cw = offscreen.width;
+          const ch = offscreen.height;
+          if (cw > 2 && ch > 2) {
+            const c1 = offCtx.getImageData(0, 0, 1, 1).data[3];
+            const c2 = offCtx.getImageData(cw - 1, 0, 1, 1).data[3];
+            const c3 = offCtx.getImageData(0, ch - 1, 1, 1).data[3];
+            const c4 = offCtx.getImageData(cw - 1, ch - 1, 1, 1).data[3];
+            hasTransparency = c1 < 250 || c2 < 250 || c3 < 250 || c4 < 250;
+          }
+        } catch {
+          // ignore
+        }
+
+        const dataUrl = hasTransparency
+          ? offscreen.toDataURL('image/png')
+          : offscreen.toDataURL('image/jpeg', 0.85);
         const img = new Image();
         img.src = dataUrl;
         await new Promise((resolve) => {
@@ -334,8 +404,13 @@ export default function PdfCanvasPreview({
 
   const availW = Math.max(260, vpBox.w - 52);
   const availH = Math.max(240, vpBox.h - 52);
-  const BASE_WIDTH = !inspectedPage && splitStickerPreview ? Math.max(240, Math.floor((availW - 28) / 2)) : availW;
-  const BASE_HEIGHT = availH;
+  const BASE_WIDTH = !inspectedPage && isSideBySide ? Math.max(240, Math.floor((availW - 44) / 2)) : availW;
+  const BASE_HEIGHT = !inspectedPage && isSideBySide ? Math.max(220, availH - 34) : availH;
+
+  const overlayAnalysis = useMemo(() => {
+    if (!activeSheet || inspectedPage) return null;
+    return analyzeArtworkCutOverlay(activeSheet);
+  }, [activeSheet, inspectedPage]);
 
   // Keep pinned rulers' 0mm origin locked to the paper sheet's top-left corner across zoom/resize
   useEffect(() => {
@@ -462,7 +537,7 @@ export default function PdfCanvasPreview({
       ctx.strokeRect(mL * scale, mT * scale, (sheetDim.width - mL - mR) * scale, (sheetDim.height - mT - mB) * scale);
       ctx.setLineDash([]);
 
-      if (!activeSheet || pages.length === 0) {
+      if (!activeSheet || (pages.length === 0 && !activeSheet.isV1Authoritative)) {
         ctx.fillStyle = '#64748b';
         ctx.font = '14px Inter, system-ui';
         ctx.textAlign = 'center';
@@ -473,8 +548,16 @@ export default function PdfCanvasPreview({
 
       // Draw artwork placements (unless cutOnly)
       if (layerFilter !== 'cutOnly') {
+        ctx.save();
+        if (layerFilter === 'overlay') {
+          ctx.globalAlpha = Math.max(0.1, Math.min(1, Number(overlayArtworkOpacity) || 0.72));
+        }
         for (const p of activeSheet.placements) {
-          const pageInfo = pages[p.pageIndex];
+          const v1Pg =
+            p.v1Placement && Array.isArray(v1ArtworkPages) && v1ArtworkPages[p.artworkPageIdx ?? 0]
+              ? v1ArtworkPages[p.artworkPageIdx ?? 0]
+              : v1ArtworkInfo;
+          const pageInfo = p.v1Placement && v1Pg?.img ? v1Pg : pages[p.pageIndex];
           if (!pageInfo || !pageInfo.img) continue;
 
           const xPx = p.x * scale;
@@ -524,15 +607,33 @@ export default function PdfCanvasPreview({
 
           ctx.save();
           ctx.beginPath();
-          ctx.rect(clipX, clipY, clipW, clipH);
+          if (p.v1Placement && Array.isArray(p.bleedBeziersMm) && p.bleedBeziersMm.length >= 2) {
+            for (const cmd of p.bleedBeziersMm) {
+              if (cmd.type === 'M' && cmd.to) ctx.moveTo(cmd.to[0] * scale, cmd.to[1] * scale);
+              else if (cmd.type === 'L' && cmd.to) ctx.lineTo(cmd.to[0] * scale, cmd.to[1] * scale);
+              else if (cmd.type === 'C' && cmd.c1 && cmd.c2 && cmd.to) {
+                ctx.bezierCurveTo(
+                  cmd.c1[0] * scale,
+                  cmd.c1[1] * scale,
+                  cmd.c2[0] * scale,
+                  cmd.c2[1] * scale,
+                  cmd.to[0] * scale,
+                  cmd.to[1] * scale
+                );
+              }
+            }
+            ctx.closePath();
+          } else {
+            ctx.rect(clipX, clipY, clipW, clipH);
+          }
           ctx.clip();
 
           ctx.translate(xPx + wPx / 2, yPx + hPx / 2);
-          ctx.rotate((-rot * Math.PI) / 180);
+          ctx.rotate(((p.v1Placement ? rot : -rot) * Math.PI) / 180);
           ctx.drawImage(pageInfo.img, -trimCenterXInMedia, -trimCenterYInMedia, fullDrawW, fullDrawH);
           ctx.restore();
 
-          if (layerFilter === 'all') {
+          if (layerFilter === 'all' && !p.v1Placement) {
             ctx.strokeStyle = p.block === 'secondary' ? 'rgba(245, 158, 11, 0.85)' : 'rgba(100, 116, 139, 0.6)';
             ctx.lineWidth = 0.85;
             ctx.strokeRect(xPx, yPx, wPx, hPx);
@@ -571,10 +672,11 @@ export default function PdfCanvasPreview({
             ctx.fillText(`${p.pageIndex + 1}${arrow}`, xPx + wPx / 2, yPx + hPx / 2);
           }
         }
+        ctx.restore();
       }
 
       // Draw Crop Marks & Registration Targets
-      for (const line of activeSheet.marks.lines) {
+      for (const line of activeSheet.marks?.lines || []) {
         ctx.strokeStyle = line.kind === 'bleed' ? '#0ea5e9' : '#0f172a';
         ctx.lineWidth = line.kind === 'bleed' ? 0.75 : 1.0;
         ctx.beginPath();
@@ -583,7 +685,7 @@ export default function PdfCanvasPreview({
         ctx.stroke();
       }
 
-      for (const reg of activeSheet.marks.registrations) {
+      for (const reg of activeSheet.marks?.registrations || []) {
         const cx = reg.cx * scale;
         const cy = reg.cy * scale;
         const r = reg.radius * scale;
@@ -597,6 +699,20 @@ export default function PdfCanvasPreview({
         ctx.moveTo(cx, cy - half);
         ctx.lineTo(cx, cy + half);
         ctx.stroke();
+      }
+
+      // Draw Optical Sensor Quiet Zones around registration marks (when Machine Profile active)
+      if (Array.isArray(activeSheet.quietZoneRectsMm) && activeSheet.quietZoneRectsMm.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.55)';
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.06)';
+        ctx.lineWidth = 0.9;
+        ctx.setLineDash([3, 2]);
+        for (const qz of activeSheet.quietZoneRectsMm) {
+          ctx.fillRect(qz.x * scale, qz.y * scale, qz.w * scale, qz.h * scale);
+          ctx.strokeRect(qz.x * scale, qz.y * scale, qz.w * scale, qz.h * scale);
+        }
+        ctx.restore();
       }
 
       // Always draw 4 Pont Marks on both Print and Cut sheets
@@ -616,12 +732,18 @@ export default function PdfCanvasPreview({
           ctx.beginPath();
           ctx.arc(cx, cy, r, 0, Math.PI * 2);
           ctx.stroke();
-        } else if (pm.type === 'graphtec') {
-          const arm = 10 * scale;
-          const sx = pm.corner.includes('L') ? 1 : -1;
-          const sy = pm.corner.includes('T') ? 1 : -1;
+        } else if (pm.type === 'graphtec' || pm.type === 'graphtecType2') {
+          const isType2 = pm.type === 'graphtecType2';
+          const rawArmMm = Math.max(5, (pm.size || 5) * 1.8);
+          const insetMm = Math.min(pm.cx, pm.cy, (activeSheet.widthMm || 320) - pm.cx, (activeSheet.heightMm || 330) - pm.cy);
+          const armMm = isType2 ? Math.min(rawArmMm, Math.max(3, insetMm - 1.2)) : rawArmMm;
+          const arm = armMm * scale;
+          const sx = (pm.corner.includes('L') ? 1 : -1) * (isType2 ? -1 : 1);
+          const sy = (pm.corner.includes('T') ? 1 : -1) * (isType2 ? -1 : 1);
           ctx.strokeStyle = '#0f172a';
-          ctx.lineWidth = 2.0;
+          ctx.lineWidth = Math.max(1.5, 0.6 * scale);
+          ctx.lineJoin = 'miter';
+          ctx.lineCap = 'square';
           ctx.beginPath();
           ctx.moveTo(cx + sx * arm, cy);
           ctx.lineTo(cx, cy);
@@ -631,16 +753,62 @@ export default function PdfCanvasPreview({
         ctx.restore();
       }
 
+      // Draw BLEED paths in Overlay mode (dashed cyan so operator can inspect CUT inside BLEED)
+      if (layerFilter === 'overlay' && overlayShowBleed && Array.isArray(activeSheet.stickerBleedPaths) && activeSheet.stickerBleedPaths.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = '#06b6d4';
+        ctx.lineWidth = 1.0;
+        ctx.setLineDash([4, 3]);
+        for (const bp of activeSheet.stickerBleedPaths) {
+          if (bp.kind === 'bezier' && Array.isArray(bp.beziersMm) && bp.beziersMm.length >= 2) {
+            ctx.beginPath();
+            for (const cmd of bp.beziersMm) {
+              if (cmd.type === 'M' && cmd.to) ctx.moveTo(cmd.to[0] * scale, cmd.to[1] * scale);
+              else if (cmd.type === 'L' && cmd.to) ctx.lineTo(cmd.to[0] * scale, cmd.to[1] * scale);
+              else if (cmd.type === 'C' && cmd.c1 && cmd.c2 && cmd.to) {
+                ctx.bezierCurveTo(
+                  cmd.c1[0] * scale,
+                  cmd.c1[1] * scale,
+                  cmd.c2[0] * scale,
+                  cmd.c2[1] * scale,
+                  cmd.to[0] * scale,
+                  cmd.to[1] * scale
+                );
+              }
+            }
+            if (bp.closed) ctx.closePath();
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
+
       // Draw Sticker CutContour Paths (unless printOnly)
       if (layerFilter !== 'printOnly' && activeSheet.stickerCutPaths && activeSheet.stickerCutPaths.length > 0) {
         ctx.save();
-        ctx.strokeStyle = '#e11d48';
-        ctx.lineWidth = 1.25;
+        ctx.strokeStyle = layerFilter === 'overlay' ? overlayCutColor || '#e11d48' : '#e11d48';
+        ctx.lineWidth = layerFilter === 'overlay' ? Math.max(1, Number(overlayCutStrokePx) || 1.8) : 1.25;
         for (const cp of activeSheet.stickerCutPaths) {
           ctx.beginPath();
           if (cp.kind === 'line') {
             ctx.moveTo(cp.x1 * scale, cp.y1 * scale);
             ctx.lineTo(cp.x2 * scale, cp.y2 * scale);
+          } else if (cp.kind === 'bezier' && Array.isArray(cp.beziersMm) && cp.beziersMm.length >= 2) {
+            for (const cmd of cp.beziersMm) {
+              if (cmd.type === 'M' && cmd.to) ctx.moveTo(cmd.to[0] * scale, cmd.to[1] * scale);
+              else if (cmd.type === 'L' && cmd.to) ctx.lineTo(cmd.to[0] * scale, cmd.to[1] * scale);
+              else if (cmd.type === 'C' && cmd.c1 && cmd.c2 && cmd.to) {
+                ctx.bezierCurveTo(
+                  cmd.c1[0] * scale,
+                  cmd.c1[1] * scale,
+                  cmd.c2[0] * scale,
+                  cmd.c2[1] * scale,
+                  cmd.to[0] * scale,
+                  cmd.to[1] * scale
+                );
+              }
+            }
+            if (cp.closed) ctx.closePath();
           } else if (cp.kind === 'poly') {
             if (cp.pts && cp.pts.length >= 2) {
               cp.pts.forEach(([px, py], idx) => {
@@ -665,29 +833,105 @@ export default function PdfCanvasPreview({
         ctx.restore();
       }
 
-      if (activeSheet.slugText) {
-        ctx.fillStyle = '#334155';
-        ctx.font = `${Math.max(8, Math.round(2.4 * scale))}px monospace`;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'bottom';
-        ctx.fillText(activeSheet.slugText, 6 * scale, canvasHeight - 2 * scale);
+      // Draw V1 Guillotine Trim Marks (Dấu xén) matching PRINT PDF 1:1
+      if (layerFilter !== 'cutOnly' && Array.isArray(activeSheet.v1TrimMarks) && activeSheet.v1TrimMarks.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = '#0f172a';
+        for (const tm of activeSheet.v1TrimMarks) {
+          ctx.lineWidth = Math.max(0.8, (tm.thicknessMm || 0.2) * scale);
+          ctx.beginPath();
+          ctx.moveTo(tm.x1 * scale, tm.y1 * scale);
+          ctx.lineTo(tm.x2 * scale, tm.y2 * scale);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // Draw Paper Guides (Thanh canh giấy) matching PRINT PDF 1:1
+      if (layerFilter !== 'cutOnly' && Array.isArray(activeSheet.paperGuides) && activeSheet.paperGuides.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = '#0f172a';
+        for (const g of activeSheet.paperGuides) {
+          ctx.lineWidth = Math.max(1.0, (g.thicknessMm || 0.35) * scale);
+          ctx.beginPath();
+          ctx.moveTo(g.x1 * scale, g.y1 * scale);
+          ctx.lineTo(g.x2 * scale, g.y2 * scale);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      if (layerFilter !== 'cutOnly' && activeSheet.slugText) {
+        ctx.save();
+        if (activeSheet.isV1Authoritative) {
+          ctx.fillStyle = '#0f172a';
+          ctx.font = `${Math.max(8, Math.round(2.6 * scale))}px Helvetica, Arial, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const slugY = (Number.isFinite(activeSheet.slugYmm) ? activeSheet.slugYmm : 8.5) * scale;
+          ctx.fillText(activeSheet.slugText, canvasWidth / 2, slugY);
+        } else {
+          ctx.fillStyle = '#334155';
+          ctx.font = `${Math.max(8, Math.round(2.4 * scale))}px monospace`;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(activeSheet.slugText, 6 * scale, canvasHeight - 2 * scale);
+        }
+        ctx.restore();
       }
     };
 
-    if (!inspectedPage && splitStickerPreview) {
-      drawSheetToCanvas(canvasRef.current, 'printOnly');
-      drawSheetToCanvas(cutCanvasRef.current, 'cutOnly');
-    } else {
-      drawSheetToCanvas(canvasRef.current, 'all');
-    }
-  }, [activeSheet, pages, sheetDim, margins, bleedMm, showBleedOverlay, showSafeArea, safeInsetMm, splitStickerPreview, autoCropInk, inspectedPage, canvasWidth, canvasHeight]);
+    // Coalesce rapid changes (zoom ticks, slider drags) into a single redraw per animation frame
+    const drawRaf = requestAnimationFrame(() => {
+      if (!inspectedPage && isSideBySide) {
+        drawSheetToCanvas(canvasRef.current, 'printOnly');
+        drawSheetToCanvas(cutCanvasRef.current, 'cutOnly');
+      } else if (!inspectedPage && isOverlayMode) {
+        drawSheetToCanvas(canvasRef.current, 'overlay');
+      } else {
+        drawSheetToCanvas(canvasRef.current, 'all');
+      }
+    });
+    return () => cancelAnimationFrame(drawRaf);
+    // Primitive deps only: parent passes a fresh `margins` object & `sheetDim` is rebuilt every render,
+    // which previously forced a full sheet redraw on every unrelated re-render (mouse move, hover, typing).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeSheet,
+    pages,
+    sheetDim.width,
+    sheetDim.height,
+    margins?.top,
+    margins?.bottom,
+    margins?.left,
+    margins?.right,
+    bleedMm,
+    showBleedOverlay,
+    showSafeArea,
+    safeInsetMm,
+    splitStickerPreview,
+    isSideBySide,
+    isOverlayMode,
+    overlayArtworkOpacity,
+    overlayCutColor,
+    overlayCutStrokePx,
+    overlayShowBleed,
+    autoCropInk,
+    inspectedPage,
+    canvasWidth,
+    canvasHeight,
+    v1ArtworkInfo,
+    v1ArtworkPages,
+  ]);
 
-  // 3. Direct Mouse Wheel Zoom (no Ctrl required — smooth zoom up to 1000% on wheel over canvas)
+  // 3. Direct Mouse Wheel Zoom — attached ONLY to active scroll panes (avoids parent+child double-fire in side-by-side mode)
   useEffect(() => {
-    const el = viewportRef.current;
-    if (!el || !onZoomChange) return;
+    if (!onZoomChange) return;
+    const targets = isSideBySide
+      ? [printPaneRef.current, cutPaneRef.current].filter(Boolean)
+      : [viewportRef.current].filter(Boolean);
+    if (targets.length === 0) return;
 
-    // Coalesce wheel ticks into 1 zoom update per animation frame
     let pendingTicks = 0;
     let rafId = 0;
     const handleWheel = (e) => {
@@ -699,51 +943,16 @@ export default function PdfCanvasPreview({
         pendingTicks = 0;
         rafId = 0;
         if (!ticks) return;
-        onZoomChange((prev) => {
-          let z = prev;
-          for (let i = 0; i < Math.abs(ticks); i++) {
-            const step = z >= 2.5 ? 0.35 : z >= 1.5 ? 0.22 : 0.15;
-            z += ticks > 0 ? step : -step;
-          }
-          return Math.round(Math.min(10.0, Math.max(0.35, z)) * 100) / 100;
-        });
+        onZoomChange((prev) => computeSyncedZoom(prev, ticks));
       });
     };
 
-    el.addEventListener('wheel', handleWheel, { passive: false });
+    targets.forEach((el) => el.addEventListener('wheel', handleWheel, { passive: false }));
     return () => {
-      el.removeEventListener('wheel', handleWheel);
+      targets.forEach((el) => el.removeEventListener('wheel', handleWheel));
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [onZoomChange]);
-
-  // 4. Left-click Drag to Pan
-  const handleMouseDown = (e) => {
-    if (e.button !== 0 || !viewportRef.current) return;
-    panStateRef.current = {
-      active: true,
-      startX: e.clientX,
-      startY: e.clientY,
-      scrollLeft: viewportRef.current.scrollLeft,
-      scrollTop: viewportRef.current.scrollTop,
-    };
-    setIsPanning(true);
-  };
-
-  const handleMouseMove = (e) => {
-    if (!panStateRef.current.active || !viewportRef.current) return;
-    const dx = e.clientX - panStateRef.current.startX;
-    const dy = e.clientY - panStateRef.current.startY;
-    viewportRef.current.scrollLeft = panStateRef.current.scrollLeft - dx;
-    viewportRef.current.scrollTop = panStateRef.current.scrollTop - dy;
-  };
-
-  const stopPanning = () => {
-    if (panStateRef.current.active) {
-      panStateRef.current.active = false;
-      setIsPanning(false);
-    }
-  };
+  }, [onZoomChange, isSideBySide]);
 
   return (
     <div className="flex flex-col w-full h-full relative bg-[#52565E] overflow-hidden">
@@ -805,9 +1014,77 @@ export default function PdfCanvasPreview({
         </div>
       )}
 
+      {/* PREVIEW-VS-EXPORT PARITY WARNING BANNER (Phase 3) */}
+      {!inspectedPage && parityCheck && (parityCheck.status === PARITY_STATUS.MISMATCH || parityCheck.status === PARITY_STATUS.WARNING) && (
+        <div
+          className={`w-full px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] font-semibold border-b shrink-0 ${
+            parityCheck.status === PARITY_STATUS.MISMATCH
+              ? 'bg-rose-600 text-white border-rose-700'
+              : 'bg-amber-500 text-slate-950 border-amber-600'
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="px-1.5 py-0.5 rounded bg-black/15 font-mono text-[10px] font-extrabold shrink-0">
+              {parityCheck.status === PARITY_STATUS.MISMATCH ? '⛔ SAI LỆCH PREVIEW ↔ PDF XUẤT' : '⚠ CẦN XUẤT LẠI PDF'}
+            </span>
+            <span className="truncate">{parityCheck.summaryMessage}</span>
+          </div>
+          {parityCheck.discrepancies?.length > 1 && (
+            <span className="font-mono text-[10px] opacity-90 shrink-0">
+              +{parityCheck.discrepancies.length - 1} cảnh báo khác
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* OVERLAY DEVIATION INSPECTION BAR (Phase 3) */}
+      {!inspectedPage && isOverlayMode && overlayAnalysis && (
+        <div className="w-full px-3 py-1.5 bg-[#1E293B] text-slate-100 border-b border-slate-700 flex flex-wrap items-center justify-between gap-2 text-[11px] shrink-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className={`px-2 py-0.5 rounded font-mono font-extrabold text-[10px] ${
+                overlayAnalysis.status === 'PASS'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                  : overlayAnalysis.status === 'WARNING'
+                  ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
+                  : 'bg-rose-500/25 text-rose-200 border border-rose-500/50'
+              }`}
+            >
+              {overlayAnalysis.status === 'PASS'
+                ? '✓ CHỒNG LỚP KHỚP'
+                : overlayAnalysis.status === 'WARNING'
+                ? '⚠ CẢNH BÁO CHỒNG LỚP'
+                : '⛔ LỆCH ARTWORK ↔ CUT'}
+            </span>
+            <span className="font-mono text-slate-300">
+              Lệch tâm: <strong className="text-white">{overlayAnalysis.maxCenterDeltaMm.toFixed(3)} mm</strong>
+            </span>
+            <span className="text-slate-600">|</span>
+            <span className="font-mono text-slate-300">
+              Lệch biên: <strong className="text-white">{overlayAnalysis.maxBoundsDeltaMm.toFixed(3)} mm</strong>
+            </span>
+            <span className="text-slate-600">|</span>
+            <span className="font-mono text-slate-300">
+              Lệch boong: <strong className="text-white">{overlayAnalysis.maxMarkDeltaMm.toFixed(3)} mm</strong>
+            </span>
+            {overlayAnalysis.minBleedMarginMm !== null && (
+              <>
+                <span className="text-slate-600">|</span>
+                <span className="font-mono text-cyan-300">
+                  Min Bleed: <strong>{overlayAnalysis.minBleedMarginMm.toFixed(2)} mm</strong>
+                </span>
+              </>
+            )}
+          </div>
+          <span className="font-mono text-[10px] text-slate-400">
+            Đã đối chiếu {overlayAnalysis.matchedCutPaths}/{overlayAnalysis.checkedPlacements} tem
+          </span>
+        </div>
+      )}
+
       {/* PINNED TOP & LEFT MM RULERS + DARK GRAY DESKTOP PASTEBOARD */}
       <div className="flex-1 min-h-0 w-full flex flex-col overflow-hidden">
-        {showRulers && (
+        {showRulers && !isSideBySide && (
           <div className="flex h-5 shrink-0 bg-[#F8FAFC]">
             <div className="w-5 h-5 bg-[#E2E8F0] border-r border-b border-[#CBD5E1] text-[8px] font-mono font-bold text-[#475569] flex items-center justify-center shrink-0">
               mm
@@ -822,7 +1099,7 @@ export default function PdfCanvasPreview({
           </div>
         )}
         <div className="flex-1 min-h-0 flex overflow-hidden">
-          {showRulers && (
+          {showRulers && !isSideBySide && (
             <div className="w-5 shrink-0 flex flex-col bg-[#F8FAFC]">
               <PrepressRulerBar
                 orientation="vertical"
@@ -833,72 +1110,190 @@ export default function PdfCanvasPreview({
               />
             </div>
           )}
-          <div
-            ref={viewportRef}
-            onScroll={() => {
-              const vp = viewportRef.current;
-              const pb = paperBoxRef.current;
-              if (vp && pb) {
-                const vr = vp.getBoundingClientRect();
-                const pr = pb.getBoundingClientRect();
-                setRulerOrigin({ x: pr.left - vr.left, y: pr.top - vr.top });
-              }
-            }}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={stopPanning}
-            onMouseLeave={() => {
-              stopPanning();
-              setCursorMm(null);
-            }}
-            title="Cuộn chuột để Zoom (tối đa 1000%) · Kéo chuột trái để di chuyển bàn vẽ"
-            className={`flex-1 h-full overflow-auto p-6 select-none flex bg-[#52565E] ${
-              isPanning ? 'cursor-grabbing' : 'cursor-grab'
-            }`}
-          >
-            {!inspectedPage && splitStickerPreview ? (
-              <div className="flex flex-wrap xl:flex-nowrap items-start justify-center gap-6 m-auto w-fit">
-                <div className="flex flex-col items-center gap-2 shrink-0">
-                  <span className="px-2.5 py-0.5 rounded bg-[#087F5B] text-white text-[11px] font-semibold shadow-sm">
-                    BÀI IN (PRINT)
+          {!inspectedPage && isSideBySide ? (
+            <div ref={viewportRef} className="flex-1 h-full grid grid-cols-1 xl:grid-cols-2 divide-y xl:divide-y-0 xl:divide-x divide-slate-700 overflow-hidden bg-[#52565E]">
+              {/* LEFT PANE: PRINT (Synchronized Scroll + Zoom + Crosshair) */}
+              <div className="flex flex-col min-w-0 min-h-0 overflow-hidden">
+                <div className="h-7 px-3 bg-[#1E293B] border-b border-slate-700 flex items-center justify-between gap-2 text-[11px] shrink-0 select-none">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="px-2 py-0.5 rounded bg-[#087F5B] text-white text-[10px] font-extrabold tracking-wide shrink-0">
+                      BÀI IN (PRINT)
+                    </span>
+                    <span className="font-mono text-slate-300 truncate">
+                      Tờ {activeSheet?.physicalSheet || 1}/{sheets.length || 1} · {activeSheet?.placements?.length || 0} tem
+                      {activeSheet?.runCount > 1 ? ` · ×${activeSheet.runCount} tờ` : ''}
+                    </span>
+                  </div>
+                  <span className="font-mono text-[10px] text-emerald-300 shrink-0">
+                    {sheetDim.width.toFixed(0)}×{sheetDim.height.toFixed(0)} mm
                   </span>
-                  <canvas
-                    ref={canvasRef}
-                    className="bg-white block"
-                    style={{
-                      width: `${canvasWidth}px`,
-                      height: `${canvasHeight}px`,
-                      boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
-                    }}
-                  />
                 </div>
-                <div className="flex flex-col items-center gap-2 shrink-0">
-                  <span className="px-2.5 py-0.5 rounded bg-[#DC4545] text-white text-[11px] font-semibold shadow-sm">
-                    KHUÔN BẾ (CUT)
-                  </span>
-                  <canvas
-                    ref={cutCanvasRef}
-                    className="bg-white block"
-                    style={{
-                      width: `${canvasWidth}px`,
-                      height: `${canvasHeight}px`,
-                      boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
+                <div
+                  ref={printPaneRef}
+                  onScroll={() => syncPaneScroll('print')}
+                  onMouseDown={handlePrintMouseDown}
+                  onMouseLeave={() => setCursorMm(null)}
+                  title="Cuộn chuột để Zoom đồng bộ · Kéo chuột trái để cuộn đồng bộ PRINT & CUT"
+                  className={`flex-1 overflow-auto p-5 select-none flex bg-[#4B5058] ${
+                    isPrintPanning ? 'cursor-grabbing' : 'cursor-grab'
+                  }`}
+                >
+                  <div
+                    className="relative m-auto shrink-0"
+                    style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
+                    onMouseMove={(e) => {
+                      if (isPrintPanning || cursorRafRef.current) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const cx = e.clientX;
+                      const cy = e.clientY;
+                      cursorRafRef.current = requestAnimationFrame(() => {
+                        cursorRafRef.current = 0;
+                        const xMm = ((cx - rect.left) / Math.max(1, rect.width)) * sheetDim.width;
+                        const yMm = ((cy - rect.top) / Math.max(1, rect.height)) * sheetDim.height;
+                        setCursorMm({
+                          x: Math.round(Math.max(0, Math.min(sheetDim.width, xMm)) * 10) / 10,
+                          y: Math.round(Math.max(0, Math.min(sheetDim.height, yMm)) * 10) / 10,
+                        });
+                      });
                     }}
-                  />
+                  >
+                    <canvas
+                      ref={canvasRef}
+                      className="bg-white block"
+                      style={{
+                        width: `${canvasWidth}px`,
+                        height: `${canvasHeight}px`,
+                        boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
+                      }}
+                    />
+                    {cursorMm && (
+                      <>
+                        <div
+                          className="pointer-events-none absolute top-0 bottom-0 border-l border-dashed border-emerald-400/80"
+                          style={{ left: `${(cursorMm.x / Math.max(1, sheetDim.width)) * 100}%` }}
+                        />
+                        <div
+                          className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-emerald-400/80"
+                          style={{ top: `${(cursorMm.y / Math.max(1, sheetDim.height)) * 100}%` }}
+                        />
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
-            ) : (
+
+              {/* RIGHT PANE: CUT (Synchronized Scroll + Zoom + Crosshair) */}
+              <div className="flex flex-col min-w-0 min-h-0 overflow-hidden">
+                <div className="h-7 px-3 bg-[#1E293B] border-b border-slate-700 flex items-center justify-between gap-2 text-[11px] shrink-0 select-none">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="px-2 py-0.5 rounded bg-[#DC4545] text-white text-[10px] font-extrabold tracking-wide shrink-0">
+                      KHUÔN BẾ (CUT)
+                    </span>
+                    <span className="font-mono text-slate-300 truncate">
+                      {activeSheet?.stickerCutPaths?.length || 0} đường bế · {activeSheet?.pontMarks?.length || 0} boong
+                    </span>
+                  </div>
+                  <span className="font-mono text-[10px] text-rose-300 shrink-0">
+                    {requireSpotCutContour ? 'Spot: CutContour' : 'CMYK Magenta'}
+                  </span>
+                </div>
+                <div
+                  ref={cutPaneRef}
+                  onScroll={() => syncPaneScroll('cut')}
+                  onMouseDown={handleCutMouseDown}
+                  onMouseLeave={() => setCursorMm(null)}
+                  title="Cuộn chuột để Zoom đồng bộ · Kéo chuột trái để cuộn đồng bộ PRINT & CUT"
+                  className={`flex-1 overflow-auto p-5 select-none flex bg-[#4B5058] ${
+                    isCutPanning ? 'cursor-grabbing' : 'cursor-grab'
+                  }`}
+                >
+                  <div
+                    className="relative m-auto shrink-0"
+                    style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
+                    onMouseMove={(e) => {
+                      if (isCutPanning || cursorRafRef.current) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const cx = e.clientX;
+                      const cy = e.clientY;
+                      cursorRafRef.current = requestAnimationFrame(() => {
+                        cursorRafRef.current = 0;
+                        const xMm = ((cx - rect.left) / Math.max(1, rect.width)) * sheetDim.width;
+                        const yMm = ((cy - rect.top) / Math.max(1, rect.height)) * sheetDim.height;
+                        setCursorMm({
+                          x: Math.round(Math.max(0, Math.min(sheetDim.width, xMm)) * 10) / 10,
+                          y: Math.round(Math.max(0, Math.min(sheetDim.height, yMm)) * 10) / 10,
+                        });
+                      });
+                    }}
+                  >
+                    <canvas
+                      ref={cutCanvasRef}
+                      className="bg-white block"
+                      style={{
+                        width: `${canvasWidth}px`,
+                        height: `${canvasHeight}px`,
+                        boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
+                      }}
+                    />
+                    {cursorMm && (
+                      <>
+                        <div
+                          className="pointer-events-none absolute top-0 bottom-0 border-l border-dashed border-rose-400/80"
+                          style={{ left: `${(cursorMm.x / Math.max(1, sheetDim.width)) * 100}%` }}
+                        />
+                        <div
+                          className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-rose-400/80"
+                          style={{ top: `${(cursorMm.y / Math.max(1, sheetDim.height)) * 100}%` }}
+                        />
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div
+              ref={viewportRef}
+              onScroll={() => {
+                if (scrollRafRef.current) return;
+                scrollRafRef.current = requestAnimationFrame(() => {
+                  scrollRafRef.current = 0;
+                  const vp = viewportRef.current;
+                  const pb = paperBoxRef.current;
+                  if (vp && pb) {
+                    const vr = vp.getBoundingClientRect();
+                    const pr = pb.getBoundingClientRect();
+                    setRulerOrigin({ x: pr.left - vr.left, y: pr.top - vr.top });
+                  }
+                });
+              }}
+              onMouseDown={handleMouseDown}
+              onMouseLeave={() => {
+                setCursorMm(null);
+              }}
+              title="Cuộn chuột để Zoom (tối đa 1000%) · Kéo chuột trái để di chuyển bàn vẽ"
+              className={`flex-1 h-full overflow-auto p-6 select-none flex bg-[#52565E] ${
+                isPanning ? 'cursor-grabbing' : 'cursor-grab'
+              }`}
+            >
               <div
                 ref={paperBoxRef}
                 className="m-auto shrink-0"
                 style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}
                 onMouseMove={(e) => {
+                  // Skip cursor read-out while drag-panning, and throttle to 1 update per frame
+                  if (isPanning || cursorRafRef.current) return;
                   const rect = e.currentTarget.getBoundingClientRect();
-                  const xMm = ((e.clientX - rect.left) / Math.max(1, rect.width)) * sheetDim.width;
-                  const yMm = ((e.clientY - rect.top) / Math.max(1, rect.height)) * sheetDim.height;
-                  setCursorMm({
-                    x: Math.max(0, Math.min(sheetDim.width, xMm)),
-                    y: Math.max(0, Math.min(sheetDim.height, yMm)),
+                  const cx = e.clientX;
+                  const cy = e.clientY;
+                  cursorRafRef.current = requestAnimationFrame(() => {
+                    cursorRafRef.current = 0;
+                    const xMm = ((cx - rect.left) / Math.max(1, rect.width)) * sheetDim.width;
+                    const yMm = ((cy - rect.top) / Math.max(1, rect.height)) * sheetDim.height;
+                    setCursorMm({
+                      x: Math.round(Math.max(0, Math.min(sheetDim.width, xMm)) * 10) / 10,
+                      y: Math.round(Math.max(0, Math.min(sheetDim.height, yMm)) * 10) / 10,
+                    });
                   });
                 }}
                 onMouseLeave={() => setCursorMm(null)}
@@ -913,8 +1308,8 @@ export default function PdfCanvasPreview({
                   }}
                 />
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -932,7 +1327,9 @@ export default function PdfCanvasPreview({
                 ‹
               </button>
               <span className="font-semibold text-[#17212F]">
-                Tờ {activeSheet.physicalSheet}/{plan.summary.physicalSheets || sheets.length}
+                Tờ {activeSheet.physicalSheet}/{sheets.length}
+                {activeSheet.runCount > 1 ? ` (×${activeSheet.runCount})` : ''}
+                {plan.summary.physicalSheets > sheets.length ? ` · Tổng ${plan.summary.physicalSheets} tờ` : ''}
               </span>
               <button
                 onClick={() => setCurrentSheetIndex(Math.min(sheets.length - 1, safeIndex + 1))}
@@ -973,6 +1370,11 @@ export default function PdfCanvasPreview({
         </div>
 
         <div className="hidden md:flex items-center gap-3.5">
+          {parityCheck?.status === PARITY_STATUS.VERIFIED && (
+            <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-[#064E3B] font-semibold text-[10px] whitespace-nowrap">
+              ✓ Khớp PDF xuất
+            </span>
+          )}
           <span className="flex items-center gap-1.5">
             <span className="w-3.5 border-t-[1.5px] border-dashed border-[#DC4545] inline-block" /> Bleed
           </span>

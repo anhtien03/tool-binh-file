@@ -1,5 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import {
+  buildPaperTransparentCanvas,
+  drawContourBleedFillPreview,
+  buildBleedFilledExportCanvas,
+} from '../engine/contourBleedFill.js';
 import { MM_TO_PT } from '../engine/impositionEngine.js';
 import {
   extractStickerContoursFromImage,
@@ -9,6 +14,33 @@ import {
   exportSplitStickersPdf,
   TARGET_PRINT_DPI,
 } from '../engine/bleedContourEngine.js';
+import {
+  runVectorFirstPdfImport,
+  resolveVectorFirstContours,
+  CONTOUR_PROVENANCE,
+} from '../engine/vectorFirstPipeline.js';
+import {
+  PAGE_STAGE,
+  PAGE_STAGE_META,
+  computeFileSignature,
+  computeBleedSettingsSignature,
+  createInitialPageStates,
+  validatePageOwnership,
+  getEffectivePageStage,
+  partitionPagesForHandoff,
+} from '../engine/studioMultiPageState.js';
+import {
+  DIELINE_MODES,
+  DIELINE_MODE_OPTIONS,
+  MANUAL_EDIT_TOOLS,
+  mapSliderControlsToTracerParams,
+  preprocessCanvasForTracing,
+  applyCornerRoundingMm,
+  mergeSelectedContours,
+  resolveDielineModeContours,
+  extractPdfTrimBleedBoxesMm,
+  buildContourFromTrimBoxMm,
+} from '../engine/contourEditHelpers.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
 
@@ -17,6 +49,7 @@ export default function BleedAndContourStudio({
   onSharedFileChange,
   onOpenStickerImpose,
   onSendSplitStickersToImpose,
+  onSendV1StickersToImpose,
 }) {
   const [subMode, setSubMode] = useState('contour'); // 'contour' | 'bleed'
   const [sourceFile, setSourceFile] = useState(null);
@@ -32,9 +65,35 @@ export default function BleedAndContourStudio({
 
   // Contour Tracer Options (5-Step Pipeline: Alpha Cut + Corner-Preserving Bézier + Bleed Offset + Geometry Validation)
   const [shapeMode, setShapeMode] = useState('auto'); // 'auto' | 'circle' | 'oval' | 'rect'
+  const [detailMode, setDetailMode] = useState('standard'); // 'standard' | 'high'
   const [offsetMm, setOffsetMm] = useState(0.5); // CutContour offset from artwork edge (mm)
   const [bleedOffsetMm, setBleedOffsetMm] = useState(1.5); // Outward Bleed offset from CutContour (mm)
   const [showBleedContour, setShowBleedContour] = useState(true);
+  const [contourBleedFillMode, setContourBleedFillMode] = useState('auto'); // 'auto' | 'solid' | 'off'
+  const [contourBleedColorHex, setContourBleedColorHex] = useState('#f2ead3');
+
+  const transparentArtworkCanvas = useMemo(() => {
+    if (!renderedCanvas) return null;
+    try {
+      return buildPaperTransparentCanvas(renderedCanvas);
+    } catch {
+      return renderedCanvas;
+    }
+  }, [renderedCanvas]);
+  const [showAdvancedTrace, setShowAdvancedTrace] = useState(false);
+  const [dielineMode, setDielineMode] = useState(DIELINE_MODES.ORIGINAL);
+  const [shadowRemovalMode, setShadowRemovalMode] = useState('keep');
+  const [antiAliasPct, setAntiAliasPct] = useState(50);
+  const [fidelityPct, setFidelityPct] = useState(50);
+  const [cornerRadiusMm, setCornerRadiusMm] = useState(0);
+  const [manualEditTool, setManualEditTool] = useState(MANUAL_EDIT_TOOLS.NONE);
+  const [brushRadiusMm, setBrushRadiusMm] = useState(2.5);
+  const [manualMaskRevision, setManualMaskRevision] = useState(0);
+  const [mergedGroups, setMergedGroups] = useState([]);
+  const [selectedStickerIndices, setSelectedStickerIndices] = useState([]);
+  const manualMaskCanvasRef = useRef(null);
+  const isBrushToolActive =
+    manualEditTool === MANUAL_EDIT_TOOLS.ERASE_SHADOW || manualEditTool === MANUAL_EDIT_TOOLS.KEEP_REGION;
   const [cornerAngleDeg, setCornerAngleDeg] = useState(130); // Preserve sharp corners <= 130°
   const [smoothLevel, setSmoothLevel] = useState(1);
   const [simplifyMm, setSimplifyMm] = useState(0.18); // ~0.45px equivalent
@@ -43,9 +102,22 @@ export default function BleedAndContourStudio({
   const [ignoreCornerMarks, setIgnoreCornerMarks] = useState(true);
   const [contoursMm, setContoursMm] = useState([]);
   const [imagePlacementsMm, setImagePlacementsMm] = useState([]);
+  const [vectorImportResult, setVectorImportResult] = useState(null);
+  const [pdfTrimBleedInfo, setPdfTrimBleedInfo] = useState(null);
+  const [forceRasterFallback, setForceRasterFallback] = useState(false);
+  const [contourProvenance, setContourProvenance] = useState({
+    provenance: CONTOUR_PROVENANCE.RASTER_DERIVED,
+    badgeLabel: 'RASTER — STANDARD',
+    badgeTone: 'slate',
+    selectionMode: null,
+    fallbackReason: null,
+    warnings: [],
+    requiresUserConfirmation: false,
+  });
   const [inputMode, setInputMode] = useState('multi'); // 'single' (PDF/PNG đã có biên) | 'multi' (Tách nhiều tem)
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [bleedCompleted, setBleedCompleted] = useState(false);
+  const [handoffPageExpr, setHandoffPageExpr] = useState(''); // '' = trang hiện tại | 'all' | '1-7' | '1,3,5'
   const [selectedStickerIdx, setSelectedStickerIdx] = useState(null); // null = All stickers, or 0..K-1 = specific sticker
   const [perStickerOverrides, setPerStickerOverrides] = useState({}); // { [compIdx]: { shapeMode, offsetMm, hidden } }
 
@@ -61,11 +133,71 @@ export default function BleedAndContourStudio({
   const [activePdfPage, setActivePdfPage] = useState(1);
   const [totalPdfPages, setTotalPdfPages] = useState(1);
   const pdfBytesRef = useRef(null);
+  const pdfFileSigRef = useRef('');
+  const pdfPageCacheRef = useRef(new Map());
+  const batchCancelRef = useRef(false);
+  const [pageStates, setPageStates] = useState({});
+  const [batchProgress, setBatchProgress] = useState(null); // { current, total, pageNum, stageText }
+  const [handoffWarning, setHandoffWarning] = useState('');
   const viewportRef = useRef(null);
   const panStateRef = useRef({ active: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 });
   const previewCanvasRef = useRef(null);
 
-  const renderPdfPageAt = async (bytes, pageNum) => {
+  const currentBleedSig = useMemo(
+    () =>
+      computeBleedSettingsSignature({
+        offsetMm,
+        bleedOffsetMm,
+        showBleedContour,
+        contourBleedFillMode,
+        contourBleedColorHex,
+        shapeMode,
+      }),
+    [offsetMm, bleedOffsetMm, showBleedContour, contourBleedFillMode, contourBleedColorHex, shapeMode]
+  );
+
+  const updatePageStateRecord = (pNum, patch) => {
+    setPageStates((prev) => {
+      const existing = prev[pNum] || {
+        pageNum: pNum,
+        fileSignature: pdfFileSigRef.current,
+        stage: PAGE_STAGE.PDF_LOADED,
+        hasPreview: false,
+        hasCut: false,
+        hasBleed: false,
+        contourCount: 0,
+        bleedSignature: null,
+        errorMessage: null,
+      };
+      return {
+        ...prev,
+        [pNum]: { ...existing, ...patch },
+      };
+    });
+  };
+
+  const renderPdfPageAt = async (bytes, pageNum, fileSigOverride = null) => {
+    const activeSig = fileSigOverride || pdfFileSigRef.current;
+    const cached = pdfPageCacheRef.current.get(pageNum);
+    if (cached && cached.bytesRef === bytes && cached.fileSignature === activeSig) {
+      setTotalPdfPages(cached.totalPages);
+      setActivePdfPage(pageNum);
+      setSizeMm({ w: cached.wMm, h: cached.hMm });
+      setActualDpi(cached.actualDpi);
+      setImagePlacementsMm(cached.placements);
+      setVectorImportResult(cached.vecRes);
+      setPdfTrimBleedInfo(cached.trimBleedInfo || null);
+      setForceRasterFallback(false);
+      if (cached.vecRes?.status === 'OK') {
+        setOffsetMm(0);
+        setShapeMode('auto');
+        setPerStickerOverrides({});
+      }
+      setLoadPct(100);
+      setRenderedCanvas(cached.canvas);
+      return;
+    }
+
     setLoadPct(18);
     setLoadStage('Đang giải mã cấu trúc trang PDF...');
     await new Promise((r) => setTimeout(r, 0));
@@ -79,22 +211,27 @@ export default function BleedAndContourStudio({
         : 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/standard_fonts/',
     }).promise;
     setTotalPdfPages(pdf.numPages);
+    setPageStates((prev) => {
+      if (Object.keys(prev).length === pdf.numPages && prev[1]?.fileSignature === activeSig) return prev;
+      return createInitialPageStates(pdf.numPages, activeSig);
+    });
     const safePage = Math.max(1, Math.min(pdf.numPages, pageNum));
     setActivePdfPage(safePage);
     const page = await pdf.getPage(safePage);
     const vp1 = page.getViewport({ scale: 1.0 });
-    const wMm = Math.round((vp1.width / MM_TO_PT) * 10) / 10;
-    const hMm = Math.round((vp1.height / MM_TO_PT) * 10) / 10;
+    const wMm = vp1.width / MM_TO_PT;
+    const hMm = vp1.height / MM_TO_PT;
     setSizeMm({ w: wMm, h: hMm });
 
     // Render at true 300 DPI (300 / 72 = 4.1667x scale), safely capped at 4800px max dimension
     const scale300 = TARGET_PRINT_DPI / 72;
     const maxSafeScale = 4800 / Math.max(1, vp1.width, vp1.height);
     const renderScale = Math.min(scale300, maxSafeScale);
-    setActualDpi(Math.round(renderScale * 72));
+    const pageDpi = Math.round(renderScale * 72);
+    setActualDpi(pageDpi);
 
     setLoadPct(52);
-    setLoadStage(`Đang kết xuất trang ${safePage}/${pdf.numPages} ở độ phân giải ${Math.round(renderScale * 72)} DPI...`);
+    setLoadStage(`Đang kết xuất trang ${safePage}/${pdf.numPages} ở độ phân giải ${pageDpi} DPI...`);
     await new Promise((r) => setTimeout(r, 0));
 
     const vp = page.getViewport({ scale: renderScale });
@@ -103,13 +240,311 @@ export default function BleedAndContourStudio({
     c.height = Math.round(vp.height);
     // Pass transparent background so PDFs without a full-page white rect preserve their native vector/SMask Alpha channel!
     await page.render({ canvasContext: c.getContext('2d'), viewport: vp, background: 'rgba(0,0,0,0)' }).promise;
+    updatePageStateRecord(safePage, {
+      fileSignature: activeSig,
+      stage: PAGE_STAGE.PREVIEW_READY,
+      hasPreview: true,
+      errorMessage: null,
+    });
+
     setLoadPct(85);
-    setLoadStage('Đang trích xuất tọa độ đối tượng & dò đường bế...');
+    setLoadStage('Đang kiểm tra vector gốc & trích xuất tọa độ đối tượng...');
     await new Promise((r) => setTimeout(r, 0));
     const placements = await extractPdfImagePlacementsMm(bytes, safePage);
     setImagePlacementsMm(placements);
+    const trimBleedInfo = await extractPdfTrimBleedBoxesMm(bytes, safePage);
+    setPdfTrimBleedInfo(trimBleedInfo);
+
+    let vecRes = null;
+    try {
+      vecRes = await runVectorFirstPdfImport(bytes, { pageNumber: safePage, minAreaMm2 });
+      const own = validatePageOwnership({
+        expectedPageNum: safePage,
+        expectedFileSignature: activeSig,
+        actualFileSignature: activeSig,
+        vecRes,
+      });
+      if (!own.ok) throw new Error(own.reason);
+    } catch (vecErr) {
+      vecRes = {
+        status: 'FALLBACK_TO_RASTER',
+        provenance: CONTOUR_PROVENANCE.RASTER_DERIVED,
+        pageNumber: safePage,
+        contours: [],
+        warnings: [`Không thể phân tích luồng vector PDF (${vecErr?.message || 'lỗi định dạng'}) — chuyển sang Raster Fallback`],
+        reasons: ['VECTOR_IMPORT_ERROR'],
+      };
+    }
+    setVectorImportResult(vecRes);
+    setForceRasterFallback(false);
+    if (vecRes?.status === 'OK' && Array.isArray(vecRes.contours) && vecRes.contours.length > 0) {
+      // Preserve 100% VECTOR_ORIGINAL by defaulting offset to 0mm on valid vector PDFs
+      setOffsetMm(0);
+      setShapeMode('auto');
+      setPerStickerOverrides({});
+      updatePageStateRecord(safePage, {
+        fileSignature: activeSig,
+        stage: PAGE_STAGE.CUT_READY,
+        hasPreview: true,
+        hasCut: true,
+        contourCount: vecRes.contours.length,
+        errorMessage: null,
+      });
+    } else {
+      updatePageStateRecord(safePage, {
+        fileSignature: activeSig,
+        stage: PAGE_STAGE.NO_CUT,
+        hasPreview: true,
+        hasCut: false,
+        hasBleed: false,
+        contourCount: 0,
+        errorMessage: vecRes?.warnings?.[0] || 'Trang không có đường bế vector hợp lệ',
+      });
+    }
+
+    pdfPageCacheRef.current.set(safePage, {
+      bytesRef: bytes,
+      fileSignature: activeSig,
+      totalPages: pdf.numPages,
+      canvas: c,
+      wMm,
+      hMm,
+      actualDpi: pageDpi,
+      placements,
+      vecRes,
+      trimBleedInfo,
+      bleedArtifact: null,
+    });
+
     setLoadPct(100);
     setRenderedCanvas(c);
+  };
+
+  const runBatchProcessPages = async (pagesToRun = null) => {
+    if (sourceType !== 'pdf' || !pdfBytesRef.current || totalPdfPages <= 1) return;
+    const bytes = pdfBytesRef.current;
+    const activeSig = pdfFileSigRef.current;
+    const applyBleedFill = showBleedContour && bleedOffsetMm > 0 && contourBleedFillMode !== 'off';
+    const effBleedMm = showBleedContour ? bleedOffsetMm : 0;
+    const targetList =
+      Array.isArray(pagesToRun) && pagesToRun.length > 0
+        ? pagesToRun
+        : Array.from({ length: totalPdfPages }, (_, i) => i + 1);
+
+    batchCancelRef.current = false;
+    setError('');
+    setHandoffWarning('');
+    setLoading(true);
+
+    try {
+      const isLocalDesktop = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+      let pdfDoc = null;
+      const ensurePdfDoc = async () => {
+        if (!pdfDoc) {
+          pdfDoc = await pdfjsLib.getDocument({
+            data: bytes.slice(),
+            cMapUrl: isLocalDesktop ? '/cmaps/' : 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/cmaps/',
+            cMapPacked: true,
+            standardFontDataUrl: isLocalDesktop
+              ? '/standard_fonts/'
+              : 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.0.227/standard_fonts/',
+          }).promise;
+        }
+        return pdfDoc;
+      };
+
+      for (let idx = 0; idx < targetList.length; idx++) {
+        if (batchCancelRef.current) break;
+        const pNum = targetList[idx];
+        const existingRec = pageStates[pNum];
+        const existingStage = getEffectivePageStage(existingRec, currentBleedSig);
+        const existingCache = pdfPageCacheRef.current.get(pNum);
+
+        // Already BLEED_READY for current settings & valid cache -> skip
+        if (
+          existingStage === PAGE_STAGE.BLEED_READY &&
+          existingCache?.fileSignature === activeSig &&
+          existingCache?.bleedArtifact?.bleedSignature === currentBleedSig
+        ) {
+          setBatchProgress({
+            current: idx + 1,
+            total: targetList.length,
+            pageNum: pNum,
+            stageText: `Trang ${pNum} đã BLEED Ready (dùng cache)`,
+          });
+          continue;
+        }
+
+        setBatchProgress({
+          current: idx + 1,
+          total: targetList.length,
+          pageNum: pNum,
+          stageText:
+            existingStage === PAGE_STAGE.CUT_READY
+              ? `Cập nhật BLEED trang ${pNum}/${targetList.length}...`
+              : `Đang bóc tách trang ${pNum}/${targetList.length}...`,
+        });
+        await new Promise((r) => setTimeout(r, 0));
+
+        let cachedPg = existingCache && existingCache.fileSignature === activeSig ? existingCache : null;
+        if (!cachedPg || !cachedPg.canvas || !cachedPg.vecRes) {
+          try {
+            const doc = await ensurePdfDoc();
+            const pdfPage = await doc.getPage(pNum);
+            const vp1 = pdfPage.getViewport({ scale: 1.0 });
+            const pgWmm = vp1.width / MM_TO_PT;
+            const pgHmm = vp1.height / MM_TO_PT;
+            const scale300 = TARGET_PRINT_DPI / 72;
+            const maxSafeScale = 4800 / Math.max(1, vp1.width, vp1.height);
+            const renderScale = Math.min(scale300, maxSafeScale);
+            const vp = pdfPage.getViewport({ scale: renderScale });
+            const pgCanvas = document.createElement('canvas');
+            pgCanvas.width = Math.round(vp.width);
+            pgCanvas.height = Math.round(vp.height);
+            await pdfPage.render({
+              canvasContext: pgCanvas.getContext('2d'),
+              viewport: vp,
+              background: 'rgba(0,0,0,0)',
+            }).promise;
+
+            updatePageStateRecord(pNum, {
+              fileSignature: activeSig,
+              stage: PAGE_STAGE.PREVIEW_READY,
+              hasPreview: true,
+              errorMessage: null,
+            });
+
+            const vecRes = await runVectorFirstPdfImport(bytes, { pageNumber: pNum, minAreaMm2 });
+            const own = validatePageOwnership({
+              expectedPageNum: pNum,
+              expectedFileSignature: activeSig,
+              actualFileSignature: activeSig,
+              vecRes,
+            });
+            if (!own.ok) throw new Error(own.reason);
+
+            cachedPg = {
+              bytesRef: bytes,
+              fileSignature: activeSig,
+              totalPages: doc.numPages,
+              canvas: pgCanvas,
+              wMm: pgWmm,
+              hMm: pgHmm,
+              actualDpi: Math.round(renderScale * 72),
+              placements: [],
+              vecRes,
+              bleedArtifact: null,
+            };
+            pdfPageCacheRef.current.set(pNum, cachedPg);
+          } catch (pgErr) {
+            updatePageStateRecord(pNum, {
+              fileSignature: activeSig,
+              stage: PAGE_STAGE.ERROR,
+              hasCut: false,
+              hasBleed: false,
+              contourCount: 0,
+              errorMessage: pgErr?.message || `Lỗi bóc tách trang ${pNum}`,
+            });
+            continue;
+          }
+        }
+
+        // Resolve CUT & BLEED strictly from this page's own vecRes
+        const ownCheck = validatePageOwnership({
+          expectedPageNum: pNum,
+          expectedFileSignature: activeSig,
+          actualFileSignature: cachedPg.fileSignature,
+          vecRes: cachedPg.vecRes,
+        });
+        if (!ownCheck.ok) {
+          updatePageStateRecord(pNum, {
+            fileSignature: activeSig,
+            stage: PAGE_STAGE.ERROR,
+            hasCut: false,
+            hasBleed: false,
+            errorMessage: ownCheck.reason,
+          });
+          continue;
+        }
+
+        const resolved = resolveVectorFirstContours(cachedPg.vecRes, {
+          offsetMm,
+          bleedOffsetMm: applyBleedFill ? effBleedMm : 0,
+          shapeMode,
+          pageWidthMm: cachedPg.vecRes?.pageWidthMm || cachedPg.wMm,
+          pageHeightMm: cachedPg.vecRes?.pageHeightMm || cachedPg.hMm,
+        });
+
+        if (!resolved.contoursMm || resolved.contoursMm.length === 0) {
+          updatePageStateRecord(pNum, {
+            fileSignature: activeSig,
+            stage: PAGE_STAGE.NO_CUT,
+            hasPreview: true,
+            hasCut: false,
+            hasBleed: false,
+            contourCount: 0,
+            bleedSignature: null,
+            errorMessage: 'Không tìm thấy đường bế vector hợp lệ',
+          });
+          continue;
+        }
+
+        updatePageStateRecord(pNum, {
+          fileSignature: activeSig,
+          stage: PAGE_STAGE.CUT_READY,
+          hasPreview: true,
+          hasCut: true,
+          contourCount: resolved.contoursMm.length,
+          errorMessage: null,
+        });
+
+        const cleanPgCanvas = applyBleedFill
+          ? buildBleedFilledExportCanvas(
+            cachedPg.canvas,
+            buildPaperTransparentCanvas(cachedPg.canvas),
+            { w: cachedPg.wMm, h: cachedPg.hMm },
+            resolved.contoursMm,
+            { mode: contourBleedFillMode, solidColorHex: contourBleedColorHex }
+          )
+          : cachedPg.canvas;
+        const pgBlob = await new Promise((resolve) => cleanPgCanvas.toBlob(resolve, 'image/png'));
+        if (!pgBlob) {
+          updatePageStateRecord(pNum, {
+            fileSignature: activeSig,
+            stage: PAGE_STAGE.ERROR,
+            hasBleed: false,
+            errorMessage: `Không thể tạo ảnh BLEED cho trang ${pNum}`,
+          });
+          continue;
+        }
+        const pgBytes = new Uint8Array(await pgBlob.arrayBuffer());
+        cachedPg.bleedArtifact = {
+          pageNum: pNum,
+          bleedSignature: currentBleedSig,
+          cleanArtworkCanvas: cleanPgCanvas,
+          cleanArtworkBytes: pgBytes,
+          sourceSizeMm: { w: cachedPg.wMm, h: cachedPg.hMm },
+          contoursMm: resolved.contoursMm,
+          bleedOffsetMm: effBleedMm,
+          contourProvenance: resolved.provenance,
+        };
+        pdfPageCacheRef.current.set(pNum, cachedPg);
+
+        updatePageStateRecord(pNum, {
+          fileSignature: activeSig,
+          stage: PAGE_STAGE.BLEED_READY,
+          hasPreview: true,
+          hasCut: true,
+          hasBleed: true,
+          contourCount: resolved.contoursMm.length,
+          bleedSignature: currentBleedSig,
+          errorMessage: null,
+        });
+      }
+    } finally {
+      setBatchProgress(null);
+      setLoading(false);
+    }
   };
 
   const handleUpload = async (file, notifyParent = true) => {
@@ -124,11 +559,23 @@ export default function BleedAndContourStudio({
       if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
         setSourceType('pdf');
         const bytes = new Uint8Array(await file.arrayBuffer());
+        const fileSig = computeFileSignature(bytes, file.name);
+        pdfPageCacheRef.current.clear();
+        pdfFileSigRef.current = fileSig;
         pdfBytesRef.current = bytes;
-        await renderPdfPageAt(bytes, 1);
+        setPageStates({});
+        setHandoffWarning('');
+        await renderPdfPageAt(bytes, 1, fileSig);
       } else {
         setSourceType('image');
+        pdfPageCacheRef.current.clear();
+        pdfFileSigRef.current = '';
         pdfBytesRef.current = null;
+        setPageStates({});
+        setHandoffWarning('');
+        setVectorImportResult(null);
+        setForceRasterFallback(false);
+        setOffsetMm(0.5);
         setImagePlacementsMm([]);
         setTotalPdfPages(1);
         setActivePdfPage(1);
@@ -166,8 +613,10 @@ export default function BleedAndContourStudio({
     }
   }, [initialFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-trace contours asynchronously so UI never freezes on complex PDFs
+  // Re-trace contours asynchronously with stale-run cancellation so UI never shows outdated results
+  const traceSeqRef = useRef(0);
   useEffect(() => {
+    const runSeq = ++traceSeqRef.current;
     if (!renderedCanvas || subMode !== 'contour') {
       setContoursMm([]);
       setIsTracing(false);
@@ -176,7 +625,214 @@ export default function BleedAndContourStudio({
     // Debounce: while user drags a slider, only re-trace after they pause (~250ms) instead of on every tick
     setIsTracing(true);
     const timer = setTimeout(() => {
+      if (runSeq !== traceSeqRef.current) return;
       try {
+        // Prepress "PDF/PNG đã có biên" (explicit TrimBox + existing Bleed 2-3mm, no explicit CutContour layer)
+        if (
+          sourceType === 'pdf' &&
+          inputMode === 'single' &&
+          pdfTrimBleedInfo?.hasExplicitTrimBox &&
+          vectorImportResult?.selectionMode !== 'EXPLICIT_CUT_LAYER' &&
+          !forceRasterFallback
+        ) {
+          const trimContours = buildContourFromTrimBoxMm(pdfTrimBleedInfo, {
+            offsetMm,
+            extraBleedMm: showBleedContour ? bleedOffsetMm : 0,
+          });
+          const finalContours = applyPostContourEdits(trimContours);
+          setContoursMm(finalContours);
+          const hasBuiltInBleed = Boolean(pdfTrimBleedInfo.hasExistingBleed);
+          const bMin = pdfTrimBleedInfo.existingBleedMm?.min || 0;
+          setContourProvenance({
+            provenance: CONTOUR_PROVENANCE.VECTOR_ORIGINAL,
+            badgeLabel: hasBuiltInBleed
+              ? `PDF TRIMBOX — CÓ SẴN BLEED (+${bMin.toFixed(1)}mm)`
+              : 'PDF TRIMBOX — ĐÃ CÓ BIÊN',
+            badgeTone: 'emerald',
+            selectionMode: 'PDF_TRIMBOX',
+            fallbackReason: null,
+            warnings: [],
+            requiresUserConfirmation: false,
+          });
+          setError('');
+
+          const activeSig = pdfFileSigRef.current;
+          const cachedActive = pdfPageCacheRef.current.get(activePdfPage);
+          if (activeSig && cachedActive && cachedActive.fileSignature === activeSig) {
+            // Preserve designer's existing bleed pixels untouched (no double-bleed fill!)
+            const effBleedNow = hasBuiltInBleed ? bMin : showBleedContour ? bleedOffsetMm : 0;
+            const needExtraFill = !hasBuiltInBleed && showBleedContour && bleedOffsetMm > 0 && contourBleedFillMode !== 'off';
+            const cleanPgCanvas = needExtraFill
+              ? buildBleedFilledExportCanvas(
+                cachedActive.canvas,
+                buildPaperTransparentCanvas(cachedActive.canvas),
+                { w: cachedActive.wMm, h: cachedActive.hMm },
+                finalContours,
+                { mode: contourBleedFillMode, solidColorHex: contourBleedColorHex }
+              )
+              : cachedActive.canvas;
+            cleanPgCanvas.toBlob(async (pgBlob) => {
+              if (runSeq !== traceSeqRef.current || !pgBlob) return;
+              const pgBytes = new Uint8Array(await pgBlob.arrayBuffer());
+              if (runSeq !== traceSeqRef.current) return;
+              cachedActive.bleedArtifact = {
+                pageNum: activePdfPage,
+                bleedSignature: currentBleedSig,
+                cleanArtworkCanvas: cleanPgCanvas,
+                cleanArtworkBytes: pgBytes,
+                sourceSizeMm: { w: cachedActive.wMm, h: cachedActive.hMm },
+                contoursMm: finalContours,
+                bleedOffsetMm: effBleedNow,
+                contourProvenance: CONTOUR_PROVENANCE.VECTOR_ORIGINAL,
+              };
+              pdfPageCacheRef.current.set(activePdfPage, cachedActive);
+              updatePageStateRecord(activePdfPage, {
+                fileSignature: activeSig,
+                stage: PAGE_STAGE.BLEED_READY,
+                hasPreview: true,
+                hasCut: true,
+                hasBleed: true,
+                contourCount: finalContours.length,
+                bleedSignature: currentBleedSig,
+                errorMessage: null,
+              });
+            }, 'image/png');
+          }
+          return;
+        }
+
+        // Strict mode separation: "PDF/PNG đã có biên" MUST NOT silently split a multi-sticker PDF
+        // that has neither an explicit CutContour layer nor an explicit TrimBox/BleedBox!
+        if (
+          sourceType === 'pdf' &&
+          inputMode === 'single' &&
+          !pdfTrimBleedInfo?.hasExplicitTrimBox &&
+          vectorImportResult?.selectionMode !== 'EXPLICIT_CUT_LAYER' &&
+          !forceRasterFallback
+        ) {
+          const detectedLooseCount = Array.isArray(vectorImportResult?.contours)
+            ? vectorImportResult.contours.length
+            : 0;
+          setContoursMm([]);
+          setContourProvenance({
+            provenance: CONTOUR_PROVENANCE.VECTOR_IMPORT_REJECTED,
+            badgeLabel: 'CHƯA CÓ BIÊN SẴN (TRIMBOX / CUTCONTOUR)',
+            badgeTone: 'amber',
+            selectionMode: 'SINGLE_MODE_NO_BOUNDARY',
+            fallbackReason:
+              detectedLooseCount > 1
+                ? `PDF chưa có TrimBox/Bleed hay layer CutContour sẵn (phát hiện ${detectedLooseCount} tem rời).`
+                : 'PDF chưa có TrimBox/Bleed hay layer CutContour sẵn.',
+            warnings: [],
+            requiresUserConfirmation: false,
+          });
+          setError('');
+          return;
+        }
+
+        // Vector First Pipeline for PDFs (Points A, B, C, E)
+        if (sourceType === 'pdf' && vectorImportResult && !forceRasterFallback) {
+          const resolved = resolveVectorFirstContours(vectorImportResult, {
+            offsetMm,
+            bleedOffsetMm: showBleedContour ? bleedOffsetMm : 0,
+            shapeMode,
+            pageWidthMm: sizeMm.w,
+            pageHeightMm: sizeMm.h,
+            perStickerOverrides,
+          });
+          if (runSeq !== traceSeqRef.current) return;
+
+          if (resolved.mode === 'VECTOR_ORIGINAL' || resolved.mode === 'VECTOR_TRANSFORMED') {
+            setContoursMm(resolved.contoursMm);
+            setContourProvenance({
+              provenance: resolved.provenance,
+              badgeLabel:
+                resolved.mode === 'VECTOR_ORIGINAL'
+                  ? 'PDF VECTOR — ORIGINAL'
+                  : `PDF VECTOR — TRANSFORMED (${offsetMm > 0 ? '+' : ''}${offsetMm}mm)`,
+              badgeTone: resolved.mode === 'VECTOR_ORIGINAL' ? 'emerald' : 'sky',
+              selectionMode: resolved.selectionMode,
+              fallbackReason: null,
+              warnings: resolved.warnings || [],
+              requiresUserConfirmation: false,
+            });
+            if (resolved.contoursMm?.validation?.errors?.length > 0) {
+              setError(`Cảnh báo hình học: ${resolved.contoursMm.validation.errors[0]}`);
+            } else {
+              setError('');
+            }
+            // Mark active page BLEED_READY for current settings and cache its bleed artifact
+            const activeSig = pdfFileSigRef.current;
+            const cachedActive = pdfPageCacheRef.current.get(activePdfPage);
+            if (
+              activeSig &&
+              cachedActive &&
+              cachedActive.fileSignature === activeSig &&
+              cachedActive.vecRes?.pageNumber === activePdfPage
+            ) {
+              const applyBleedFillNow = showBleedContour && bleedOffsetMm > 0 && contourBleedFillMode !== 'off';
+              const effBleedNow = showBleedContour ? bleedOffsetMm : 0;
+              const cleanPgCanvas = applyBleedFillNow
+                ? buildBleedFilledExportCanvas(
+                  cachedActive.canvas,
+                  buildPaperTransparentCanvas(cachedActive.canvas),
+                  { w: cachedActive.wMm, h: cachedActive.hMm },
+                  resolved.contoursMm,
+                  { mode: contourBleedFillMode, solidColorHex: contourBleedColorHex }
+                )
+                : cachedActive.canvas;
+              cleanPgCanvas.toBlob(async (pgBlob) => {
+                if (runSeq !== traceSeqRef.current || !pgBlob) return;
+                const pgBytes = new Uint8Array(await pgBlob.arrayBuffer());
+                if (runSeq !== traceSeqRef.current) return;
+                cachedActive.bleedArtifact = {
+                  pageNum: activePdfPage,
+                  bleedSignature: currentBleedSig,
+                  cleanArtworkCanvas: cleanPgCanvas,
+                  cleanArtworkBytes: pgBytes,
+                  sourceSizeMm: { w: cachedActive.wMm, h: cachedActive.hMm },
+                  contoursMm: resolved.contoursMm,
+                  bleedOffsetMm: effBleedNow,
+                  contourProvenance: resolved.provenance,
+                };
+                pdfPageCacheRef.current.set(activePdfPage, cachedActive);
+                updatePageStateRecord(activePdfPage, {
+                  fileSignature: activeSig,
+                  stage: PAGE_STAGE.BLEED_READY,
+                  hasPreview: true,
+                  hasCut: true,
+                  hasBleed: true,
+                  contourCount: resolved.contoursMm.length,
+                  bleedSignature: currentBleedSig,
+                  errorMessage: null,
+                });
+              }, 'image/png');
+            }
+            return;
+          }
+
+          if (resolved.mode === 'REJECTED' || resolved.mode === 'CONFIRM_RASTER_FOR_TRANSFORM') {
+            // Points A & B: Do NOT silently drop vector, guess CUT, or leave stale exportable contours
+            setContoursMm([]);
+            setContourProvenance({
+              provenance: resolved.provenance,
+              badgeLabel:
+                resolved.mode === 'REJECTED'
+                  ? 'VECTOR IMPORT REJECTED'
+                  : 'CẦN XÁC NHẬN RASTER',
+              badgeTone: 'rose',
+              selectionMode: resolved.selectionMode,
+              fallbackReason: (resolved.reasons || []).join(', ') || null,
+              warnings: resolved.warnings || [],
+              requiresUserConfirmation: true,
+              confirmationKind: resolved.mode,
+            });
+            setError(resolved.warnings?.[0] || 'Cần xác nhận nguồn đường bế.');
+            return;
+          }
+          // Otherwise resolved.mode === 'FALLBACK_RASTER' (e.g. raster-only PDF) -> fall through to raster tracer
+        }
+
         const traced = extractStickerContoursFromImage(renderedCanvas, sizeMm.w, sizeMm.h, {
           offsetMm,
           bleedOffsetMm: showBleedContour ? bleedOffsetMm : 0,
@@ -186,22 +842,56 @@ export default function BleedAndContourStudio({
           minAreaMm2,
           mergeGapMm,
           shapeMode,
+          detailMode,
           ignoreCornerMarks,
           imagePlacementsMm,
           perStickerOverrides,
         });
+        if (runSeq !== traceSeqRef.current) return;
+        traced.provenance = CONTOUR_PROVENANCE.RASTER_DERIVED;
         setContoursMm(traced);
+
+        const isPdfFallback = sourceType === 'pdf';
+        const fallbackReason = isPdfFallback
+          ? forceRasterFallback
+            ? (vectorImportResult?.reasons?.join(', ') || 'USER_CONFIRMED_RASTER_FALLBACK')
+            : (vectorImportResult?.reasons?.join(', ') || 'NO_VECTOR_CONTOURS')
+          : null;
+        setContourProvenance({
+          provenance: CONTOUR_PROVENANCE.RASTER_DERIVED,
+          badgeLabel: isPdfFallback
+            ? 'RASTER FALLBACK'
+            : detailMode === 'high'
+              ? 'RASTER — HIGH DETAIL'
+              : 'RASTER — STANDARD',
+          badgeTone: isPdfFallback ? 'amber' : 'indigo',
+          selectionMode: null,
+          fallbackReason,
+          warnings: isPdfFallback ? (vectorImportResult?.warnings || []) : [],
+          requiresUserConfirmation: false,
+        });
+
+        if (traced?.validation?.errors?.length > 0) {
+          setError(`Cảnh báo hình học: ${traced.validation.errors[0]}`);
+        } else {
+          setError('');
+        }
       } catch (err) {
+        if (runSeq !== traceSeqRef.current) return;
         console.error(err);
-        setError('Lỗi khi dò đường bế từ hình ảnh.');
+        // Keep last valid contours displayed and explicitly warn user it's the previous valid result
+        setError(`Lỗi khi dò đường bế (${err?.message || 'không xác định'}). Đang giữ kết quả hợp lệ trước đó.`);
       } finally {
-        setIsTracing(false);
+        if (runSeq === traceSeqRef.current) setIsTracing(false);
       }
     }, 250);
     return () => clearTimeout(timer);
   }, [
     renderedCanvas,
     subMode,
+    sourceType,
+    vectorImportResult,
+    forceRasterFallback,
     sizeMm.w,
     sizeMm.h,
     offsetMm,
@@ -213,9 +903,16 @@ export default function BleedAndContourStudio({
     minAreaMm2,
     mergeGapMm,
     shapeMode,
+    detailMode,
     ignoreCornerMarks,
     imagePlacementsMm,
     perStickerOverrides,
+    contourBleedFillMode,
+    contourBleedColorHex,
+    currentBleedSig,
+    activePdfPage,
+    inputMode,
+    pdfTrimBleedInfo,
   ]);
 
   // Draw live preview canvas
@@ -320,8 +1017,18 @@ export default function BleedAndContourStudio({
       ctx.strokeRect(x0 - bL, y0 - bT, w0 + bL + bR, h0 + bT + bB);
       ctx.setLineDash([]);
     } else {
-      // Contour mode: draw image + traced Cyan BleedContour + Magenta CutContour closed Cubic Bézier paths
-      ctx.drawImage(renderedCanvas, x0, y0, w0, h0);
+      // Contour mode: draw Bleed Color Fill underneath artwork + Cyan BleedContour + Magenta CutContour
+      const effectiveFillMode = showBleedContour && bleedOffsetMm > 0 ? contourBleedFillMode : 'off';
+      drawContourBleedFillPreview(ctx, {
+        rawCanvas: renderedCanvas,
+        transparentCanvas: transparentArtworkCanvas,
+        sizeMm,
+        contoursMm,
+        padMm,
+        scale,
+        mode: effectiveFillMode,
+        solidColorHex: contourBleedColorHex,
+      });
 
       const drawContourLoop = (poly, strokeColor, lineW, dashed = false) => {
         if (!poly || poly.length < 2) return;
@@ -363,6 +1070,7 @@ export default function BleedAndContourStudio({
       const bleedList = contoursMm?.bleedContoursMm || [];
       if (showBleedContour && bleedList.length > 0) {
         for (const bPoly of bleedList) {
+          if (!bPoly || bPoly.invalid) continue;
           drawContourLoop(bPoly, '#0284c7', 1.35, true);
         }
       }
@@ -397,7 +1105,7 @@ export default function BleedAndContourStudio({
         }
       }
     }
-  }, [renderedCanvas, subMode, sizeMm, offsetMm, bleedOffsetMm, showBleedContour, contoursMm, bleedAllMm, bleedEdges, fillMode, solidColorHex, zoom, selectedStickerIdx]);
+  }, [renderedCanvas, transparentArtworkCanvas, subMode, sizeMm, offsetMm, bleedOffsetMm, showBleedContour, contourBleedFillMode, contourBleedColorHex, contoursMm, bleedAllMm, bleedEdges, fillMode, solidColorHex, zoom, selectedStickerIdx]);
 
   // Direct Mouse Wheel Zoom (up to 1000%)
   useEffect(() => {
@@ -464,8 +1172,15 @@ export default function BleedAndContourStudio({
       let bytes;
       if (subMode === 'contour') {
         const padExport = Math.max(5, Math.max(0, offsetMm) + (showBleedContour ? Math.max(0, bleedOffsetMm) : 0) + 3);
-        bytes = await exportContourTracedPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, padExport, {
-          sourceType,
+        const applyBleedFill = showBleedContour && bleedOffsetMm > 0 && contourBleedFillMode !== 'off';
+        const exportCanvas = applyBleedFill
+          ? buildBleedFilledExportCanvas(renderedCanvas, transparentArtworkCanvas, sizeMm, contoursMm, {
+            mode: contourBleedFillMode,
+            solidColorHex: contourBleedColorHex,
+          })
+          : renderedCanvas;
+        bytes = await exportContourTracedPdf(exportCanvas, sizeMm.w, sizeMm.h, contoursMm, padExport, {
+          sourceType: applyBleedFill ? 'image' : sourceType,
           sourceFile,
           activePdfPage,
           includeBleedContour: showBleedContour && bleedOffsetMm > 0,
@@ -491,7 +1206,7 @@ export default function BleedAndContourStudio({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const base = (sourceFile?.name || 'file').replace(/\.(pdf|png|jpg|jpeg)$/i, '');
+      const base = (sourceFile?.name || 'file').replace(/\.(pdf|png|jpg|jpeg|webp)$/i, '');
       a.download = subMode === 'contour' ? `CutContour_${base}.pdf` : `Bleed_${base}.pdf`;
       document.body.appendChild(a);
       a.click();
@@ -503,24 +1218,33 @@ export default function BleedAndContourStudio({
   };
 
   const handleSplitExport = async (sendToImpose = false, preferredLayout = 'nesting') => {
-    if (!renderedCanvas || contoursMm.length === 0) return;
+    if (!renderedCanvas || contoursMm.length === 0 || isTracing) return;
     setLoading(true);
+    setError('');
     try {
       const padMm = showBleedContour ? Math.max(0.5, bleedOffsetMm) : 1.5;
       let bytes;
       let outName;
-      const base = (sourceFile?.name || 'stickers').replace(/\.(pdf|png|jpg|jpeg)$/i, '');
+      const base = (sourceFile?.name || 'stickers').replace(/\.(pdf|png|jpg|jpeg|webp)$/i, '');
+
+      const applyBleedFill = showBleedContour && bleedOffsetMm > 0 && contourBleedFillMode !== 'off';
+      const exportCanvas = applyBleedFill
+        ? buildBleedFilledExportCanvas(renderedCanvas, transparentArtworkCanvas, sizeMm, contoursMm, {
+          mode: contourBleedFillMode,
+          solidColorHex: contourBleedColorHex,
+        })
+        : renderedCanvas;
 
       if (inputMode === 'single' || contoursMm.length === 1) {
-        bytes = await exportContourTracedPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, padMm + Math.max(1, offsetMm), {
-          sourceType,
+        bytes = await exportContourTracedPdf(exportCanvas, sizeMm.w, sizeMm.h, contoursMm, padMm + Math.max(1, offsetMm), {
+          sourceType: applyBleedFill ? 'image' : sourceType,
           sourceFile,
           activePdfPage,
           includeBleedContour: showBleedContour && bleedOffsetMm > 0,
         });
         outName = `CutContour_${base}.pdf`;
       } else {
-        bytes = await exportSplitStickersPdf(renderedCanvas, sizeMm.w, sizeMm.h, contoursMm, padMm);
+        bytes = await exportSplitStickersPdf(exportCanvas, sizeMm.w, sizeMm.h, contoursMm, padMm);
         outName = `Tach_${contoursMm.length}Tem_${base}.pdf`;
       }
 
@@ -539,6 +1263,9 @@ export default function BleedAndContourStudio({
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      setError(err?.message || 'Không thể xuất file PDF sản xuất.');
     } finally {
       setLoading(false);
     }
@@ -549,15 +1276,37 @@ export default function BleedAndContourStudio({
       {/* LEFT: CENTER DARK PASTEBOARD CANVAS */}
       <main className="flex-1 min-w-0 bg-[#52565E] flex flex-col justify-between overflow-hidden">
         <div className="w-full min-h-[40px] px-3 py-1 bg-[#F8FAFC] border-b border-[#E2E8F0] flex flex-wrap items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-2 text-xs font-mono">
+          <div className="flex items-center gap-2 text-xs font-mono flex-wrap">
             <span className="px-2 py-0.5 rounded bg-[#DDF5EC] text-[#064E3B] font-bold">
               {subMode === 'contour' ? `${contoursMm.length} tem nhận diện` : `Bleed +${bleedAllMm}mm`}
             </span>
+            {subMode === 'contour' && renderedCanvas && (
+              <span
+                title={
+                  contourProvenance.fallbackReason
+                    ? `Nguồn: ${contourProvenance.provenance} · Lý do: ${contourProvenance.fallbackReason} · ${actualDpi} DPI`
+                    : `Nguồn: ${contourProvenance.provenance}${contourProvenance.selectionMode ? ` (${contourProvenance.selectionMode})` : ''} · ${actualDpi} DPI`
+                }
+                className={`px-2 py-0.5 rounded font-bold text-[10px] border ${contourProvenance.badgeTone === 'emerald'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                  : contourProvenance.badgeTone === 'sky'
+                    ? 'bg-sky-50 border-sky-300 text-sky-800'
+                    : contourProvenance.badgeTone === 'amber'
+                      ? 'bg-amber-50 border-amber-300 text-amber-800'
+                      : contourProvenance.badgeTone === 'rose'
+                        ? 'bg-rose-50 border-rose-300 text-rose-800'
+                        : 'bg-indigo-50 border-indigo-200 text-indigo-800'
+                  }`}
+              >
+                {contourProvenance.badgeLabel}
+                {contourProvenance.provenance === CONTOUR_PROVENANCE.RASTER_DERIVED ? ` · ${actualDpi} DPI` : ''}
+              </span>
+            )}
             <span className="px-2 py-0.5 rounded bg-white border border-[#E2E8F0] text-[#17212F] font-semibold">
               {sizeMm.w} × {sizeMm.h} mm
             </span>
             {sourceType === 'pdf' && totalPdfPages > 1 && (
-              <div className="flex items-center gap-1 bg-white border border-[#E2E8F0] rounded px-1.5 py-0.5">
+              <div className="flex items-center gap-1.5 bg-white border border-[#E2E8F0] rounded px-1.5 py-0.5">
                 <button
                   disabled={activePdfPage <= 1 || loading}
                   onClick={() => pdfBytesRef.current && renderPdfPageAt(pdfBytesRef.current, activePdfPage - 1)}
@@ -575,6 +1324,25 @@ export default function BleedAndContourStudio({
                 >
                   ›
                 </button>
+                {(() => {
+                  const st = getEffectivePageStage(pageStates[activePdfPage], currentBleedSig);
+                  const meta = PAGE_STAGE_META[st] || PAGE_STAGE_META[PAGE_STAGE.PDF_LOADED];
+                  const cls =
+                    meta.tone === 'emerald'
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                      : meta.tone === 'amber'
+                        ? 'bg-amber-100 text-amber-800 border-amber-300'
+                        : meta.tone === 'sky'
+                          ? 'bg-sky-100 text-sky-800 border-sky-300'
+                          : meta.tone === 'rose'
+                            ? 'bg-rose-100 text-rose-800 border-rose-300'
+                            : 'bg-slate-100 text-slate-600 border-slate-300';
+                  return (
+                    <span className={`px-1.5 py-0.2 rounded border text-[10px] font-bold ${cls}`}>
+                      {meta.label}
+                    </span>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -612,9 +1380,8 @@ export default function BleedAndContourStudio({
           onMouseUp={stopPanning}
           onMouseLeave={stopPanning}
           title="Cuộn chuột để Zoom (tối đa 1000%) · Kéo chuột trái để di chuyển"
-          className={`relative flex-1 w-full flex overflow-auto p-6 select-none bg-[#52565E] ${
-            isPanning ? 'cursor-grabbing' : 'cursor-grab'
-          }`}
+          className={`relative flex-1 w-full flex overflow-auto p-6 select-none bg-[#52565E] ${isPanning ? 'cursor-grabbing' : 'cursor-grab'
+            }`}
         >
           {(loading || isTracing) && (
             <div className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-2xs flex items-center justify-center p-4 pointer-events-none">
@@ -695,7 +1462,11 @@ export default function BleedAndContourStudio({
               </button>
               <button
                 onClick={() => {
-                  setOffsetMm(0.5);
+                  const isValidVecPdf = sourceType === 'pdf' && vectorImportResult?.status === 'OK';
+                  setOffsetMm(isValidVecPdf ? 0 : 0.5);
+                  setShapeMode('auto');
+                  setPerStickerOverrides({});
+                  setForceRasterFallback(false);
                   setBleedOffsetMm(1.5);
                   setCornerAngleDeg(130);
                   setSmoothLevel(1);
@@ -734,11 +1505,11 @@ export default function BleedAndContourStudio({
                 setMergeGapMm(2.5);
                 setBleedCompleted(false);
               }}
-              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                inputMode === 'single'
-                  ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53] shadow-2xs'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }`}
+              title="Dùng cho file PDF đã chừa sẵn tràn lề (TrimBox + Bleed 2–3 mm) hoặc PNG 1 tem đã tách nền rõ. Giữ nguyên tràn lề gốc, không bù đúp."
+              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${inputMode === 'single'
+                ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53] shadow-2xs'
+                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
             >
               <span>📄</span>
               <span>PDF/PNG đã có biên</span>
@@ -749,16 +1520,60 @@ export default function BleedAndContourStudio({
                 setMergeGapMm(0.35);
                 setBleedCompleted(false);
               }}
-              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                inputMode === 'multi'
-                  ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53] shadow-2xs'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }`}
+              title="Dùng khi 1 trang chứa nhiều tem cần tách riêng từng tem để tạo đường bế và bù xén."
+              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${inputMode === 'multi'
+                ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53] shadow-2xs'
+                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
             >
               <span>🥞</span>
               <span>Tách nhiều tem</span>
             </button>
           </div>
+
+          {sourceType === 'pdf' && inputMode === 'single' && contourProvenance.selectionMode === 'SINGLE_MODE_NO_BOUNDARY' && (
+            <div className="rounded-xl bg-amber-50 border border-amber-300 px-2.5 py-2 text-[10px] text-amber-950 flex flex-col gap-1.5">
+              <div className="leading-snug">
+                <span className="font-bold">⚠️ File PDF này chưa có biên sẵn</span> (không có <span className="font-mono">TrimBox/Bleed</span> và không có layer <span className="font-mono">CutContour</span>).
+                {contourProvenance.fallbackReason ? ` ${contourProvenance.fallbackReason}` : ''}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setInputMode('multi');
+                  setMergeGapMm(0.35);
+                  setBleedCompleted(false);
+                }}
+                className="w-full py-1.5 px-2 rounded-lg bg-[#146C53] hover:bg-[#0f5440] text-white text-[11px] font-bold cursor-pointer"
+              >
+                🥞 Chuyển sang "Tách nhiều tem" để tự bóc đường cắt
+              </button>
+            </div>
+          )}
+
+          {sourceType === 'pdf' && pdfTrimBleedInfo?.hasExplicitTrimBox && (
+            <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-2.5 py-2 text-[10px] text-emerald-900 flex items-center justify-between gap-2">
+              <div className="leading-snug">
+                <span className="font-bold">📐 Phát hiện PDF có sẵn TrimBox</span>{' '}
+                ({pdfTrimBleedInfo.trimRectMm.w.toFixed(1)}×{pdfTrimBleedInfo.trimRectMm.h.toFixed(1)}mm
+                {pdfTrimBleedInfo.hasExistingBleed ? `, Bleed +${pdfTrimBleedInfo.existingBleedMm.min.toFixed(1)}mm` : ''})
+                {inputMode === 'single' ? ' — đang giữ nguyên tràn lề gốc, không bù đúp.' : '.'}
+              </div>
+              {inputMode !== 'single' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInputMode('single');
+                    setMergeGapMm(2.5);
+                    setBleedCompleted(false);
+                  }}
+                  className="px-2 py-1 rounded-lg bg-[#146C53] text-white font-bold shrink-0 cursor-pointer"
+                >
+                  Dùng TrimBox
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Row 2: Output Cut Type Cards (Bế tem nhãn vs Xén vuông góc) */}
           <div className="grid grid-cols-2 gap-2">
@@ -768,11 +1583,10 @@ export default function BleedAndContourStudio({
                 setShapeMode('auto');
                 setBleedCompleted(false);
               }}
-              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                subMode === 'contour' && shapeMode !== 'rect'
-                  ? 'bg-indigo-50 border-indigo-500 text-indigo-700 shadow-2xs'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }`}
+              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${subMode === 'contour' && shapeMode !== 'rect'
+                ? 'bg-indigo-50 border-indigo-500 text-indigo-700 shadow-2xs'
+                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
             >
               <span>🎯</span>
               <span>Bế tem nhãn</span>
@@ -787,11 +1601,10 @@ export default function BleedAndContourStudio({
                 }
                 setBleedCompleted(false);
               }}
-              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                subMode === 'bleed' || shapeMode === 'rect'
-                  ? 'bg-indigo-50 border-indigo-500 text-indigo-700 shadow-2xs'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }`}
+              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${subMode === 'bleed' || shapeMode === 'rect'
+                ? 'bg-indigo-50 border-indigo-500 text-indigo-700 shadow-2xs'
+                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
             >
               <span>{subMode === 'bleed' || shapeMode === 'rect' ? '☑️' : '☐'}</span>
               <span>Xén vuông góc</span>
@@ -802,7 +1615,7 @@ export default function BleedAndContourStudio({
           <div className="relative border border-dashed border-slate-300 hover:border-[#146C53] rounded-xl p-2.5 text-center cursor-pointer bg-[#FAFBF9]">
             <input
               type="file"
-              accept=".png,.jpg,.jpeg,.pdf"
+              accept=".png,.jpg,.jpeg,.webp,.pdf"
               onChange={(e) => {
                 handleUpload(e.target.files[0]);
                 setBleedCompleted(false);
@@ -821,6 +1634,443 @@ export default function BleedAndContourStudio({
             )}
           </div>
           {error && <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px]">⚠️ {error}</div>}
+
+          {/* Provenance & Confirmation Banner (Points A, B, E) */}
+          {subMode === 'contour' && renderedCanvas && (contourProvenance.requiresUserConfirmation || contourProvenance.fallbackReason || forceRasterFallback) && (
+            <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-[11px] flex flex-col gap-1.5">
+              <div className="font-bold flex items-center justify-between gap-1">
+                <span>{contourProvenance.badgeLabel}</span>
+                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/80 text-amber-900">
+                  {contourProvenance.provenance}
+                </span>
+              </div>
+              {contourProvenance.fallbackReason && (
+                <div className="font-mono text-[10px] text-amber-800">
+                  Lý do: {contourProvenance.fallbackReason} · Render: {actualDpi} DPI
+                </div>
+              )}
+              {contourProvenance.requiresUserConfirmation && (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {contourProvenance.confirmationKind === 'CONFIRM_RASTER_FOR_TRANSFORM' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOffsetMm(0);
+                        setShapeMode('auto');
+                        setPerStickerOverrides({});
+                        setForceRasterFallback(false);
+                      }}
+                      className="px-2 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold cursor-pointer"
+                    >
+                      Giữ PDF Vector gốc (Offset 0)
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDetailMode('high');
+                      setForceRasterFallback(true);
+                    }}
+                    className="px-2 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold cursor-pointer"
+                  >
+                    Xác nhận chuyển sang Raster (High Detail)
+                  </button>
+                </div>
+              )}
+              {forceRasterFallback && vectorImportResult?.status === 'OK' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOffsetMm(0);
+                    setShapeMode('auto');
+                    setPerStickerOverrides({});
+                    setForceRasterFallback(false);
+                  }}
+                  className="self-start px-2 py-1 rounded-lg bg-white border border-emerald-400 text-emerald-800 text-[10px] font-bold cursor-pointer"
+                >
+                  ↩ Quay lại PDF VECTOR — ORIGINAL
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* UNIFIED 1-STOP CARD: XEM VÀ CHỈNH ĐƯỜNG BẾ & BÙ XÉN */}
+          {subMode === 'contour' && renderedCanvas && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-3 flex flex-col gap-2.5 shadow-2xs">
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-[11px] font-extrabold text-slate-800 tracking-wide">CHỈNH ĐƯỜNG BẾ &amp; BÙ XÉN</span>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold shrink-0 whitespace-nowrap">
+                  {contoursMm.length} tem
+                </span>
+              </div>
+
+              {/* 4-Mode Dieline Selector */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-semibold text-slate-500">Chế độ đường cắt (Dieline)</label>
+                <div className="grid grid-cols-2 gap-1">
+                  {DIELINE_MODE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setDielineMode(opt.id)}
+                      className={`px-2 py-1.5 rounded-lg border text-[10px] font-bold text-left transition-all cursor-pointer ${dielineMode === opt.id
+                        ? 'bg-purple-50 border-purple-500 text-purple-800'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                        }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Compact 1-row Shape + Detail Mode */}
+              <div className={`grid gap-1.5 ${shapeMode === 'auto' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] text-slate-500">Hình dáng đường bế</label>
+                  <select
+                    value={shapeMode}
+                    onChange={(e) => setShapeMode(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-800"
+                  >
+                    <option value="auto">Tự do (Freeform)</option>
+                    <option value="circle">Ép Tròn chuẩn</option>
+                    <option value="oval">Ép Oval / Elip</option>
+                    <option value="rect">Ép Chữ nhật</option>
+                  </select>
+                </div>
+                {shapeMode === 'auto' && (
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] text-slate-500">Độ chi tiết (Raster)</label>
+                    <select
+                      value={detailMode}
+                      onChange={(e) => setDetailMode(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-800"
+                    >
+                      <option value="standard">Tiêu chuẩn</option>
+                      <option value="high">High Detail (Cánh hoa)</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {/* Offset đường CẮT */}
+              <div className="flex flex-col gap-0.5 pt-1 border-t border-slate-100">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-600 font-medium">Offset đường CẮT</span>
+                  <span className="font-mono font-bold text-pink-600">{offsetMm > 0 ? `+${offsetMm}` : offsetMm} mm</span>
+                </div>
+                <input
+                  type="range"
+                  min="-1.5"
+                  max="5"
+                  step="0.25"
+                  value={offsetMm}
+                  onChange={(e) => setOffsetMm(parseFloat(e.target.value))}
+                  className="w-full accent-pink-600"
+                />
+              </div>
+
+              {/* Offset đường BÙ XÉN (Bleed) */}
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <label className="flex items-center gap-1.5 text-slate-600 font-medium cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showBleedContour}
+                      onChange={(e) => setShowBleedContour(e.target.checked)}
+                      className="accent-sky-600"
+                    />
+                    <span>Bù xén (Bleed)</span>
+                  </label>
+                  <span className="font-mono font-bold text-sky-600">
+                    {showBleedContour ? `+${bleedOffsetMm} mm` : 'Tắt (0 mm)'}
+                  </span>
+                </div>
+                {showBleedContour && (
+                  <>
+                    <input
+                      type="range"
+                      min="0"
+                      max="5"
+                      step="0.25"
+                      value={bleedOffsetMm}
+                      onChange={(e) => setBleedOffsetMm(parseFloat(e.target.value))}
+                      className="w-full accent-sky-600"
+                    />
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-[10px] text-slate-500">Tô màu tràn viền:</span>
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={contourBleedFillMode}
+                          onChange={(e) => setContourBleedFillMode(e.target.value)}
+                          className="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-700"
+                        >
+                          <option value="auto">Tự động (màu mép)</option>
+                          <option value="solid">Màu tự chọn</option>
+                          <option value="off">Chỉ nét đứt</option>
+                        </select>
+                        {contourBleedFillMode === 'solid' && (
+                          <input
+                            type="color"
+                            value={contourBleedColorHex}
+                            onChange={(e) => setContourBleedColorHex(e.target.value)}
+                            className="w-5 h-5 rounded border border-slate-200 cursor-pointer"
+                            title="Chọn màu tràn viền"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Collapsible Advanced Edge Sliders (Khử bóng, Khử răng cưa, Bám sát, Bo cong, Lọc rác) */}
+              <button
+                type="button"
+                onClick={() => setShowAdvancedTrace((v) => !v)}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-600 cursor-pointer"
+              >
+                <span>⚙️ Tinh chỉnh biên nâng cao (Khử bóng · Bo cong · Lọc rác)</span>
+                <span>{showAdvancedTrace ? '⌃' : '⌄'}</span>
+              </button>
+
+              {showAdvancedTrace && (
+                <div className="flex flex-col gap-2 pt-1 pl-0.5">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] font-semibold text-slate-500">Khử bóng</span>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setShadowRemovalMode('keep')}
+                        className={`py-1 rounded-lg border text-[10px] font-bold transition-all cursor-pointer ${shadowRemovalMode === 'keep'
+                          ? 'bg-purple-50 border-purple-500 text-purple-700'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                      >
+                        Giữ nguyên
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShadowRemovalMode('auto')}
+                        className={`py-1 rounded-lg border text-[10px] font-bold transition-all cursor-pointer ${shadowRemovalMode === 'auto'
+                          ? 'bg-purple-50 border-purple-500 text-purple-700'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                      >
+                        Tự động
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-slate-700 font-medium">Khử răng cưa</span>
+                      <span className="font-mono font-bold text-purple-700">{antiAliasPct}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={antiAliasPct}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value, 10);
+                        setAntiAliasPct(v);
+                        setSmoothLevel(Math.round((v / 100) * 3));
+                      }}
+                      className="w-full accent-purple-600"
+                    />
+                    <div className="flex justify-between text-[9px] text-slate-400">
+                      <span>Giữ nguyên biên</span>
+                      <span>Mượt hơn</span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-slate-700 font-medium">Bám sát hình gốc</span>
+                      <span className="font-mono font-bold text-purple-700">{fidelityPct}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={fidelityPct}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value, 10);
+                        setFidelityPct(v);
+                        const mapped = mapSliderControlsToTracerParams({ antiAliasPct, fidelityPct: v, minAreaMm2 });
+                        setSimplifyMm(mapped.simplifyMm);
+                        setCornerAngleDeg(mapped.cornerAngleDeg);
+                      }}
+                      className="w-full accent-purple-600"
+                    />
+                    <div className="flex justify-between text-[9px] text-slate-400">
+                      <span>Mượt hơn</span>
+                      <span>Bám sát</span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-slate-700 font-medium">Độ bo cong</span>
+                      <span className="font-mono font-bold text-purple-700">{Number(cornerRadiusMm).toFixed(2)} mm</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="5"
+                      step="0.25"
+                      value={cornerRadiusMm}
+                      onChange={(e) => setCornerRadiusMm(parseFloat(e.target.value))}
+                      className="w-full accent-purple-600"
+                    />
+                    <div className="flex justify-between text-[9px] text-slate-400">
+                      <span>Ít bo (giữ vector gốc)</span>
+                      <span>Bo tròn</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex justify-between text-[10px]">
+                        <span className="text-slate-700 font-medium">Lọc rác</span>
+                        <span className="font-mono font-bold text-purple-700">{Number(minAreaMm2).toFixed(1)} mm²</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.5"
+                        max="10"
+                        step="0.5"
+                        value={Math.min(10, Math.max(0.5, minAreaMm2))}
+                        onChange={(e) => setMinAreaMm2(parseFloat(e.target.value))}
+                        className="w-full accent-purple-600"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      <label className="text-[10px] text-slate-600 font-medium" title="Gộp các chữ/chi tiết rời nằm gần nhau vào cùng 1 tem (mm)">
+                        Gộp chữ rời (mm)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="8"
+                        step="0.25"
+                        value={mergeGapMm}
+                        onChange={(e) => setMergeGapMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                        className="bg-white border border-slate-200 rounded-lg px-2 py-0.5 text-[11px] font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="text-[10px] text-slate-400 pt-0.5 border-t border-slate-100">
+                Đường màu tím là đường bế sẽ xuất.
+              </div>
+            </div>
+          )}
+
+          {/* SỬA NHANH VÙNG TEM Card (Matching reference screenshot #2) */}
+          {subMode === 'contour' && renderedCanvas && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-3 flex flex-col gap-2 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-extrabold text-slate-800 tracking-wide">SỬA NHANH VÙNG TEM</span>
+                {(manualMaskRevision > 0 || mergedGroups.length > 0 || manualEditTool !== MANUAL_EDIT_TOOLS.NONE) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualEditTool(MANUAL_EDIT_TOOLS.NONE);
+                      manualMaskCanvasRef.current = null;
+                      setManualMaskRevision(0);
+                      setMergedGroups([]);
+                    }}
+                    className="text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                  >
+                    Xóa sửa thủ công
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { id: MANUAL_EDIT_TOOLS.ERASE_SHADOW, label: 'Xóa bóng' },
+                  { id: MANUAL_EDIT_TOOLS.KEEP_REGION, label: 'Giữ lại' },
+                  { id: MANUAL_EDIT_TOOLS.MERGE_STICKER, label: 'Gộp với tem' },
+                ].map((tool) => {
+                  const active = manualEditTool === tool.id;
+                  return (
+                    <button
+                      key={tool.id}
+                      type="button"
+                      onClick={() => setManualEditTool(active ? MANUAL_EDIT_TOOLS.NONE : tool.id)}
+                      className={`py-1.5 px-1.5 rounded-lg border text-[11px] font-bold transition-all cursor-pointer ${active
+                        ? 'bg-purple-50 border-purple-500 text-purple-700 shadow-2xs'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                        }`}
+                    >
+                      {tool.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {isBrushToolActive && (
+                <div className="flex flex-col gap-1 bg-purple-50/60 border border-purple-200 rounded-lg p-2">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="font-semibold text-purple-800">
+                      {manualEditTool === MANUAL_EDIT_TOOLS.ERASE_SHADOW
+                        ? '🖌️ Quét đỏ lên vùng bóng cần loại bỏ'
+                        : '🖌️ Quét xanh lên vùng chi tiết cần giữ lại'}
+                    </span>
+                    <span className="font-mono font-bold text-purple-700">{brushRadiusMm} mm</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="10"
+                    step="0.5"
+                    value={brushRadiusMm}
+                    onChange={(e) => setBrushRadiusMm(parseFloat(e.target.value))}
+                    className="w-full accent-purple-600"
+                  />
+                </div>
+              )}
+
+              {manualEditTool === MANUAL_EDIT_TOOLS.MERGE_STICKER && (
+                <div className="flex flex-col gap-1.5 bg-purple-50/60 border border-purple-200 rounded-lg p-2">
+                  <div className="text-[10px] text-purple-800 font-medium">
+                    Click chọn từ 2 tem trở lên trên ảnh rồi bấm Gộp ({selectedStickerIndices.length} tem đang chọn).
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={selectedStickerIndices.length < 2}
+                      onClick={() => {
+                        if (selectedStickerIndices.length < 2) return;
+                        setMergedGroups((prev) => [...prev, [...selectedStickerIndices]]);
+                        setSelectedStickerIndices([selectedStickerIndices[0]]);
+                      }}
+                      className="flex-1 py-1 px-2 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-[10px] font-bold cursor-pointer"
+                    >
+                      Gộp {selectedStickerIndices.length} tem đã chọn
+                    </button>
+                    {mergedGroups.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setMergedGroups([])}
+                        className="py-1 px-2 rounded-lg bg-white border border-slate-300 text-slate-600 text-[10px] font-bold cursor-pointer"
+                      >
+                        Hủy gộp
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Accordion Header: THIẾT LẬP BÙ XÉN (Xem lại / chỉnh sửa ⌄) */}
           <button
@@ -858,375 +2108,326 @@ export default function BleedAndContourStudio({
                 </div>
               </div>
 
-          {subMode === 'contour' ? (
-            <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-800">Chỉnh đường bế (CutContour)</span>
-                {renderedCanvas && (
-                  <span className="px-2 py-0.5 rounded-full bg-[#E6F4EF] text-[#146C53] text-[10px] font-bold">
-                    Đã nhận diện {contoursMm.length} tem
-                  </span>
-                )}
-              </div>
-
-              {/* Per-Sticker Selector Chips: Chỉnh chung Tất cả vs Chỉnh riêng từng tem (#1..#N) */}
-              {contoursMm.length > 1 && (
-                <div className="flex flex-col gap-1.5 bg-slate-50 border border-slate-200 rounded-xl p-2">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className="font-bold text-slate-600">CHỌN TEM ĐỂ CHỈNH RIÊNG:</span>
-                    {Object.keys(perStickerOverrides).length > 0 && (
-                      <button
-                        onClick={() => {
-                          setPerStickerOverrides({});
-                          setSelectedStickerIdx(null);
-                        }}
-                        className="text-rose-600 hover:underline font-semibold cursor-pointer"
-                      >
-                        Reset riêng
-                      </button>
+              {subMode === 'contour' ? (
+                <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800">Chỉnh đường bế (CutContour)</span>
+                    {renderedCanvas && (
+                      <span className="px-2 py-0.5 rounded-full bg-[#E6F4EF] text-[#146C53] text-[10px] font-bold">
+                        Đã nhận diện {contoursMm.length} tem
+                      </span>
                     )}
                   </div>
-                  <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
-                    <button
-                      onClick={() => setSelectedStickerIdx(null)}
-                      className={`px-2 py-0.5 rounded-lg text-[10px] font-bold cursor-pointer ${
-                        selectedStickerIdx === null
-                          ? 'bg-[#146C53] text-white'
-                          : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                      }`}
-                    >
-                      Tất cả ({contoursMm.length})
-                    </button>
-                    {contoursMm.map((poly, idx) => {
-                      const cIdx = poly.compIdx !== undefined ? poly.compIdx : idx;
-                      const hasOvr = Boolean(perStickerOverrides[cIdx]);
-                      const isSel = selectedStickerIdx === cIdx;
-                      return (
+
+                  {/* Per-Sticker Selector Chips: Chỉnh chung Tất cả vs Chỉnh riêng từng tem (#1..#N) */}
+                  {contoursMm.length > 1 && (
+                    <div className="flex flex-col gap-1.5 bg-slate-50 border border-slate-200 rounded-xl p-2">
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className="font-bold text-slate-600">CHỌN TEM ĐỂ CHỈNH RIÊNG:</span>
+                        {Object.keys(perStickerOverrides).length > 0 && (
+                          <button
+                            onClick={() => {
+                              setPerStickerOverrides({});
+                              setSelectedStickerIdx(null);
+                            }}
+                            className="text-rose-600 hover:underline font-semibold cursor-pointer"
+                          >
+                            Reset riêng
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
                         <button
-                          key={cIdx}
-                          onClick={() => setSelectedStickerIdx(isSel ? null : cIdx)}
-                          className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold cursor-pointer ${
-                            isSel
-                              ? 'bg-purple-600 text-white shadow-2xs'
-                              : hasOvr
-                              ? 'bg-purple-50 border border-purple-300 text-purple-700'
-                              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
-                          }`}
+                          onClick={() => setSelectedStickerIdx(null)}
+                          className={`px-2 py-0.5 rounded-lg text-[10px] font-bold cursor-pointer ${selectedStickerIdx === null
+                            ? 'bg-[#146C53] text-white'
+                            : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                            }`}
                         >
-                          #{idx + 1}
+                          Tất cả ({contoursMm.length})
                         </button>
-                      );
-                    })}
+                        {contoursMm.map((poly, idx) => {
+                          const cIdx = poly.compIdx !== undefined ? poly.compIdx : idx;
+                          const hasOvr = Boolean(perStickerOverrides[cIdx]);
+                          const isSel = selectedStickerIdx === cIdx;
+                          return (
+                            <button
+                              key={cIdx}
+                              onClick={() => setSelectedStickerIdx(isSel ? null : cIdx)}
+                              className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold cursor-pointer ${isSel
+                                ? 'bg-purple-600 text-white shadow-2xs'
+                                : hasOvr
+                                  ? 'bg-purple-50 border border-purple-300 text-purple-700'
+                                  : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                                }`}
+                            >
+                              #{idx + 1}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {selectedStickerIdx !== null && (
+                        <div className="mt-1 pt-1.5 border-t border-purple-200/80 bg-purple-50/60 rounded-lg p-2 flex flex-col gap-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-extrabold text-purple-800">
+                              🎯 Đang chỉnh riêng Tem #{contoursMm.findIndex((p, i) => (p.compIdx ?? i) === selectedStickerIdx) + 1}
+                            </span>
+                            <button
+                              onClick={() => {
+                                setPerStickerOverrides((prev) => ({
+                                  ...prev,
+                                  [selectedStickerIdx]: { ...(prev[selectedStickerIdx] || {}), hidden: true },
+                                }));
+                                setSelectedStickerIdx(null);
+                              }}
+                              className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-[10px] font-bold cursor-pointer"
+                            >
+                              🗑️ Ẩn tem này
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <div className="flex flex-col gap-0.5">
+                              <label className="text-[10px] text-purple-700 font-semibold">Khung riêng tem này</label>
+                              <select
+                                value={perStickerOverrides[selectedStickerIdx]?.shapeMode || 'default'}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setPerStickerOverrides((prev) => ({
+                                    ...prev,
+                                    [selectedStickerIdx]: { ...(prev[selectedStickerIdx] || {}), shapeMode: val },
+                                  }));
+                                }}
+                                className="bg-white border border-purple-300 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-800"
+                              >
+                                <option value="default">Theo mặc định chung</option>
+                                <option value="auto">Tự do (Freeform)</option>
+                                <option value="rect">Chữ nhật vuông</option>
+                                <option value="circle">Hình tròn</option>
+                                <option value="oval">Hình Oval</option>
+                              </select>
+                            </div>
+                            <div className="flex flex-col gap-0.5">
+                              <label className="text-[10px] text-purple-700 font-semibold">Offset riêng (mm)</label>
+                              <input
+                                type="number"
+                                min="-1.5"
+                                max="6"
+                                step="0.25"
+                                placeholder={`${offsetMm}`}
+                                value={
+                                  perStickerOverrides[selectedStickerIdx]?.offsetMm !== undefined
+                                    ? perStickerOverrides[selectedStickerIdx].offsetMm
+                                    : ''
+                                }
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setPerStickerOverrides((prev) => ({
+                                    ...prev,
+                                    [selectedStickerIdx]: {
+                                      ...(prev[selectedStickerIdx] || {}),
+                                      offsetMm: val === '' ? undefined : parseFloat(val),
+                                    },
+                                  }));
+                                }}
+                                className="bg-white border border-purple-300 rounded-lg px-2 py-1 text-[11px] font-mono text-slate-800"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Controls unified above in CHỈNH ĐƯỜNG BẾ & BÙ XÉN — keep only geometry verification below */}
+
+                  {contoursMm.validation && contoursMm.length > 0 && (() => {
+                    const v = contoursMm.validation;
+                    const ps = v.precisionSummary;
+                    const geomOk = v.geometryValid !== undefined ? v.geometryValid : v.valid;
+                    const tolOk = v.offsetWithinTolerance !== undefined ? v.offsetWithinTolerance : true;
+                    const prodReady = v.productionReady !== undefined ? v.productionReady : (geomOk && tolOk);
+                    const bleedActive = Boolean(showBleedContour && ps?.enabled);
+                    const failedList = ps?.failedStickers || v.offsetToleranceIssues || [];
+                    const cardClass = prodReady
+                      ? 'bg-[#E6F4EF]/70 border-emerald-300 text-[#112A24]'
+                      : geomOk && !tolOk
+                        ? 'bg-amber-50 border-amber-300 text-amber-950'
+                        : 'bg-rose-50 border-rose-300 text-rose-950';
+                    const headerTitle = prodReady
+                      ? '✓ Kiểm tra hình học đạt chuẩn'
+                      : geomOk && !tolOk
+                        ? '⚠ BLEED cần kiểm tra'
+                        : '⚠️ Cảnh báo hình học';
+
+                    return (
+                      <div className={`rounded-xl p-2.5 border text-[11px] flex flex-col gap-1.5 ${cardClass}`}>
+                        <div className="font-bold flex items-center justify-between">
+                          <span>{headerTitle}</span>
+                          <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/80 font-bold text-slate-700">
+                            {actualDpi} DPI
+                          </span>
+                        </div>
+
+                        {prodReady ? (
+                          <>
+                            <div className="font-mono text-[10px] text-slate-700 leading-relaxed">
+                              • {v.closedCount}/{v.stickerCount} CUT khép kín
+                              {bleedActive ? (
+                                <>
+                                  <br />• {v.bleedPathCount}/{v.stickerCount} BLEED khép kín
+                                </>
+                              ) : null}
+                              <br />• Tự giao: {v.selfIntersections + (v.bleedSelfIntersections || 0)} · Va chạm:{' '}
+                              {v.collisions.length === 0 ? '0' : `${v.collisions.length} cặp`}
+                            </div>
+
+                            {bleedActive && ps && (
+                              <div className="pt-1.5 border-t border-emerald-200/80 font-mono text-[10px] text-slate-700 leading-relaxed">
+                                <div className="font-sans font-bold text-[10px] text-[#146C53] mb-0.5">
+                                  Precision BLEED ({ps.passedCount}/{ps.totalCount} đạt):
+                                </div>
+                                • Mục tiêu: +{Number(ps.targetMm).toFixed(2)} mm (dung sai {Number(ps.toleranceUnderMm).toFixed(2)} mm)
+                                <br />• Nhỏ nhất: {ps.minDistMm != null ? Number(ps.minDistMm).toFixed(2) : '—'} mm · TB:{' '}
+                                {ps.avgDistMm != null ? Number(ps.avgDistMm).toFixed(2) : '—'} mm
+                                <br />• Sai lệch lớn nhất: {ps.maxDeficitMm > 0 ? `-${Number(ps.maxDeficitMm).toFixed(2)} mm` : '0.00 mm'}
+                              </div>
+                            )}
+
+                            <div className="pt-1 border-t border-emerald-200/80 text-[11px] font-extrabold text-[#146C53]">
+                              ✓ Sẵn sàng sản xuất
+                            </div>
+                          </>
+                        ) : geomOk && !tolOk ? (
+                          <>
+                            <div className="font-mono text-[10px] text-amber-900 font-semibold">
+                              {ps?.passedCount ?? 0}/{ps?.totalCount ?? v.stickerCount} đạt dung sai (≤ {Number(ps?.toleranceUnderMm ?? 0.15).toFixed(2)} mm)
+                            </div>
+                            {failedList.length > 0 && (
+                              <div className="flex flex-col gap-1 bg-white/75 rounded-lg p-1.5 border border-amber-200 font-mono text-[10px] text-amber-950">
+                                {failedList.slice(0, 4).map((item) => (
+                                  <div key={item.sticker} className="leading-snug">
+                                    <span className="font-bold">Tem #{item.sticker}</span>: Mục tiêu {Number(item.targetMm).toFixed(2)} mm · Thực tế nhỏ nhất{' '}
+                                    <span className="font-bold text-rose-700">{Number(item.minDistMm).toFixed(2)} mm</span> · Thiếu{' '}
+                                    <span className="font-bold text-rose-700">{Number(item.deficitMm).toFixed(2)} mm</span>
+                                  </div>
+                                ))}
+                                {failedList.length > 4 && (
+                                  <div className="text-[9px] text-amber-700">+{failedList.length - 4} tem khác chưa đạt dung sai</div>
+                                )}
+                              </div>
+                            )}
+                            <div className="pt-1 border-t border-amber-200/80 font-mono text-[10px] leading-relaxed">
+                              • Hình học: <span className="font-bold text-emerald-700">hợp lệ</span>
+                              <br />• Precision: <span className="font-bold text-rose-700">không đạt</span>
+                              <br />• Sẵn sàng sản xuất: <span className="font-extrabold text-rose-700">KHÔNG</span>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="font-mono text-[10px] text-rose-900 leading-relaxed">
+                              • {v.closedCount}/{v.stickerCount} CUT khép kín
+                              {bleedActive ? ` · ${v.bleedPathCount}/${v.stickerCount} BLEED` : ''}
+                              <br />• Tự giao: {v.selfIntersections + (v.bleedSelfIntersections || 0)} · Va chạm:{' '}
+                              {v.collisions.length === 0 ? '0' : `${v.collisions.length} cặp`}
+                            </div>
+                            {v.errors?.length > 0 && (
+                              <div className="bg-white/75 rounded-lg p-1.5 border border-rose-200 text-[10px] text-rose-900 leading-snug">
+                                {v.errors.slice(0, 3).map((msg, i) => (
+                                  <div key={i}>• {msg}</div>
+                                ))}
+                              </div>
+                            )}
+                            <div className="pt-1 border-t border-rose-200/80 font-mono text-[10px] leading-relaxed">
+                              • Hình học: <span className="font-bold text-rose-700">không hợp lệ</span>
+                              <br />• Sẵn sàng sản xuất: <span className="font-extrabold text-rose-700">KHÔNG</span>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-[#146C53]"
+                      checked={ignoreCornerMarks}
+                      onChange={(e) => setIgnoreCornerMarks(e.target.checked)}
+                    />
+                    Bỏ qua 4 boong góc khi dò tem
+                  </label>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
+                  <span className="text-xs font-bold text-slate-800">Thiết lập bù tràn lề 4 cạnh</span>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px]">
+                      <span className="text-slate-600">Độ rộng bù xén (Bleed)</span>
+                      <span className="font-mono font-bold text-[#146C53]">{bleedAllMm} mm</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="6"
+                      step="0.5"
+                      value={bleedAllMm}
+                      onChange={(e) => setBleedAllMm(parseFloat(e.target.value))}
+                      className="w-full accent-[#146C53]"
+                    />
                   </div>
 
-                  {selectedStickerIdx !== null && (
-                    <div className="mt-1 pt-1.5 border-t border-purple-200/80 bg-purple-50/60 rounded-lg p-2 flex flex-col gap-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-extrabold text-purple-800">
-                          🎯 Đang chỉnh riêng Tem #{contoursMm.findIndex((p, i) => (p.compIdx ?? i) === selectedStickerIdx) + 1}
-                        </span>
-                        <button
-                          onClick={() => {
-                            setPerStickerOverrides((prev) => ({
-                              ...prev,
-                              [selectedStickerIdx]: { ...(prev[selectedStickerIdx] || {}), hidden: true },
-                            }));
-                            setSelectedStickerIdx(null);
-                          }}
-                          className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-[10px] font-bold cursor-pointer"
-                        >
-                          🗑️ Ẩn tem này
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-2 gap-1.5">
-                        <div className="flex flex-col gap-0.5">
-                          <label className="text-[10px] text-purple-700 font-semibold">Khung riêng tem này</label>
-                          <select
-                            value={perStickerOverrides[selectedStickerIdx]?.shapeMode || 'default'}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setPerStickerOverrides((prev) => ({
-                                ...prev,
-                                [selectedStickerIdx]: { ...(prev[selectedStickerIdx] || {}), shapeMode: val },
-                              }));
-                            }}
-                            className="bg-white border border-purple-300 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-800"
-                          >
-                            <option value="default">Theo mặc định chung</option>
-                            <option value="auto">Tự do (Freeform)</option>
-                            <option value="rect">Chữ nhật vuông</option>
-                            <option value="circle">Hình tròn</option>
-                            <option value="oval">Hình Oval</option>
-                          </select>
-                        </div>
-                        <div className="flex flex-col gap-0.5">
-                          <label className="text-[10px] text-purple-700 font-semibold">Offset riêng (mm)</label>
-                          <input
-                            type="number"
-                            min="-1.5"
-                            max="6"
-                            step="0.25"
-                            placeholder={`${offsetMm}`}
-                            value={
-                              perStickerOverrides[selectedStickerIdx]?.offsetMm !== undefined
-                                ? perStickerOverrides[selectedStickerIdx].offsetMm
-                                : ''
-                            }
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setPerStickerOverrides((prev) => ({
-                                ...prev,
-                                [selectedStickerIdx]: {
-                                  ...(prev[selectedStickerIdx] || {}),
-                                  offsetMm: val === '' ? undefined : parseFloat(val),
-                                },
-                              }));
-                            }}
-                            className="bg-white border border-purple-300 rounded-lg px-2 py-1 text-[11px] font-mono text-slate-800"
-                          />
-                        </div>
-                      </div>
+                  <div className="grid grid-cols-4 gap-1.5 text-[11px]">
+                    {[
+                      ['top', '↑ Trên'],
+                      ['bottom', '↓ Dưới'],
+                      ['left', '← Trái'],
+                      ['right', '→ Phải'],
+                    ].map(([k, lbl]) => (
+                      <button
+                        key={k}
+                        onClick={() => setBleedEdges((prev) => ({ ...prev, [k]: !prev[k] }))}
+                        className={`py-1.5 rounded-lg border font-semibold cursor-pointer ${bleedEdges[k]
+                          ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53]'
+                          : 'bg-slate-50 border-slate-200 text-slate-400'
+                          }`}
+                      >
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-slate-500">Thuật toán bù mép</label>
+                    <select
+                      value={fillMode}
+                      onChange={(e) => setFillMode(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
+                    >
+                      <option value="mirror">Phản chiếu mép (Mirror — Đẹp nhất cho ảnh)</option>
+                      <option value="stretch">Kéo giãn mép (Edge Stretch)</option>
+                      <option value="solid">Đổ màu trơn</option>
+                    </select>
+                  </div>
+
+                  {fillMode === 'solid' && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-slate-600">Màu nền bù:</span>
+                      <input
+                        type="color"
+                        value={solidColorHex}
+                        onChange={(e) => setSolidColorHex(e.target.value)}
+                        className="w-10 h-7 rounded border border-slate-200 cursor-pointer"
+                      />
                     </div>
                   )}
                 </div>
               )}
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-slate-500">Hình dáng đường bế</label>
-                <select
-                  value={shapeMode}
-                  onChange={(e) => setShapeMode(e.target.value)}
-                  className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-800"
-                >
-                  <option value="auto">Tự do theo hình (Freeform)</option>
-                  <option value="circle">Ép Tròn chuẩn (Circle đều 100%)</option>
-                  <option value="oval">Ép Oval / Elip chuẩn</option>
-                  <option value="rect">Ép Chữ nhật vuông</option>
-                </select>
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between text-[11px]">
-                  <span className="text-slate-600">Offset đường CẮT (CutContour)</span>
-                  <span className="font-mono font-bold text-pink-600">{offsetMm > 0 ? `+${offsetMm}` : offsetMm} mm</span>
-                </div>
-                <input
-                  type="range"
-                  min="-1.5"
-                  max="5"
-                  step="0.25"
-                  value={offsetMm}
-                  onChange={(e) => setOffsetMm(parseFloat(e.target.value))}
-                  className="w-full accent-pink-600"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between text-[11px]">
-                  <label className="flex items-center gap-1.5 text-slate-600 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={showBleedContour}
-                      onChange={(e) => setShowBleedContour(e.target.checked)}
-                      className="accent-sky-600"
-                    />
-                    <span>Offset đường BÙ XÉN (Bleed)</span>
-                  </label>
-                  <span className="font-mono font-bold text-sky-600">
-                    {showBleedContour ? `+${bleedOffsetMm} mm` : 'Tắt (0 mm)'}
-                  </span>
-                </div>
-                {showBleedContour && (
-                  <input
-                    type="range"
-                    min="0"
-                    max="5"
-                    step="0.25"
-                    value={bleedOffsetMm}
-                    onChange={(e) => setBleedOffsetMm(parseFloat(e.target.value))}
-                    className="w-full accent-sky-600"
-                  />
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-500">Bảo toàn góc nhọn (&le; °)</label>
-                  <input
-                    type="number"
-                    min="60"
-                    max="165"
-                    step="5"
-                    value={cornerAngleDeg}
-                    onChange={(e) => setCornerAngleDeg(Math.max(60, Math.min(165, parseInt(e.target.value, 10) || 130)))}
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                  />
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-500">Khử răng cưa (0-3)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="3"
-                    step="1"
-                    value={smoothLevel}
-                    onChange={(e) => setSmoothLevel(Math.max(0, Math.min(3, parseInt(e.target.value, 10) || 0)))}
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-1.5">
-                <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-500">Độ bám (~0.18)</label>
-                  <input
-                    type="number"
-                    min="0.05"
-                    max="2"
-                    step="0.05"
-                    value={simplifyMm}
-                    onChange={(e) => setSimplifyMm(Math.max(0.05, parseFloat(e.target.value) || 0.18))}
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                  />
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-500" title="Gộp các chữ/chi tiết rời nằm gần nhau vào cùng 1 tem (mm)">
-                    Gộp chữ (mm)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="8"
-                    step="0.25"
-                    value={mergeGapMm}
-                    onChange={(e) => setMergeGapMm(Math.max(0, parseFloat(e.target.value) || 0))}
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                  />
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-500">Lọc nhiễu (mm²)</label>
-                  <input
-                    type="number"
-                    min="0.5"
-                    step="0.5"
-                    value={minAreaMm2}
-                    onChange={(e) => setMinAreaMm2(Math.max(0.5, parseFloat(e.target.value) || 4))}
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono"
-                  />
-                </div>
-              </div>
-
-              {contoursMm.validation && contoursMm.length > 0 && (
-                <div
-                  className={`rounded-xl p-2.5 border text-[11px] flex flex-col gap-1 ${
-                    contoursMm.validation.valid
-                      ? 'bg-[#E6F4EF]/70 border-emerald-300 text-[#112A24]'
-                      : 'bg-amber-50 border-amber-300 text-amber-900'
-                  }`}
-                >
-                  <div className="font-bold flex items-center justify-between">
-                    <span>
-                      {contoursMm.validation.valid ? '✓ Kiểm tra hình học đạt chuẩn' : '⚠️ Cảnh báo hình học'}
-                    </span>
-                    <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/80 font-bold">
-                      {actualDpi} DPI
-                    </span>
-                  </div>
-                  <div className="font-mono text-[10px] text-slate-600 leading-relaxed">
-                    • {contoursMm.validation.closedCount}/{contoursMm.validation.stickerCount} Path Bézier CUT khép kín
-                    {showBleedContour && contoursMm.validation.bleedPathCount > 0
-                      ? ` + ${contoursMm.validation.bleedPathCount} Path BLEED`
-                      : ''}
-                    <br />• {contoursMm.validation.totalBezierSegments} đoạn Cubic Bézier · {contoursMm.validation.totalSharpCorners} góc nhọn (&le;{cornerAngleDeg}°)
-                    <br />• Tự giao: {contoursMm.validation.selfIntersections} · Va chạm giữa các tem:{' '}
-                    {contoursMm.validation.collisions.length === 0
-                      ? '0'
-                      : `${contoursMm.validation.collisions.length} cặp`}
-                  </div>
-                </div>
-              )}
-
-              <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="accent-[#146C53]"
-                  checked={ignoreCornerMarks}
-                  onChange={(e) => setIgnoreCornerMarks(e.target.checked)}
-                />
-                Bỏ qua 4 boong góc khi dò tem
-              </label>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
-              <span className="text-xs font-bold text-slate-800">Thiết lập bù tràn lề 4 cạnh</span>
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between text-[11px]">
-                  <span className="text-slate-600">Độ rộng bù xén (Bleed)</span>
-                  <span className="font-mono font-bold text-[#146C53]">{bleedAllMm} mm</span>
-                </div>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="6"
-                  step="0.5"
-                  value={bleedAllMm}
-                  onChange={(e) => setBleedAllMm(parseFloat(e.target.value))}
-                  className="w-full accent-[#146C53]"
-                />
-              </div>
-
-              <div className="grid grid-cols-4 gap-1.5 text-[11px]">
-                {[
-                  ['top', '↑ Trên'],
-                  ['bottom', '↓ Dưới'],
-                  ['left', '← Trái'],
-                  ['right', '→ Phải'],
-                ].map(([k, lbl]) => (
-                  <button
-                    key={k}
-                    onClick={() => setBleedEdges((prev) => ({ ...prev, [k]: !prev[k] }))}
-                    className={`py-1.5 rounded-lg border font-semibold cursor-pointer ${
-                      bleedEdges[k]
-                        ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53]'
-                        : 'bg-slate-50 border-slate-200 text-slate-400'
-                    }`}
-                  >
-                    {lbl}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-slate-500">Thuật toán bù mép</label>
-                <select
-                  value={fillMode}
-                  onChange={(e) => setFillMode(e.target.value)}
-                  className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold"
-                >
-                  <option value="mirror">Phản chiếu mép (Mirror — Đẹp nhất cho ảnh)</option>
-                  <option value="stretch">Kéo giãn mép (Edge Stretch)</option>
-                  <option value="solid">Đổ màu trơn</option>
-                </select>
-              </div>
-
-              {fillMode === 'solid' && (
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-slate-600">Màu nền bù:</span>
-                  <input
-                    type="color"
-                    value={solidColorHex}
-                    onChange={(e) => setSolidColorHex(e.target.value)}
-                    className="w-10 h-7 rounded border border-slate-200 cursor-pointer"
-                  />
-                </div>
-              )}
-            </div>
-          )}
             </div>
           )}
 
           {/* Phase 2 Green Handoff Card (Exact Image 1 UX: Đã tạo bù xén thành công -> Chọn kiểu dàn trang) */}
-          {renderedCanvas && (
+          {renderedCanvas && contoursMm.length > 0 && !contourProvenance.requiresUserConfirmation && (
             <div className="rounded-2xl border border-emerald-200 bg-[#E6F4EF]/55 p-3 flex flex-col gap-2.5 mt-1">
               <div className="flex items-start gap-2">
                 <span className="w-6 h-6 rounded-full bg-emerald-100 text-[#146C53] flex items-center justify-center text-xs font-bold shrink-0">
@@ -1242,8 +2443,239 @@ export default function BleedAndContourStudio({
                 </div>
               </div>
 
+              {sourceType === 'pdf' && totalPdfPages > 1 && (() => {
+                const allPageNums = Array.from({ length: totalPdfPages }, (_, i) => i + 1);
+                const counts = { ready: 0, cutOnly: 0, loaded: 0, invalid: 0 };
+                for (const p of allPageNums) {
+                  const st = getEffectivePageStage(pageStates[p], currentBleedSig);
+                  if (st === PAGE_STAGE.BLEED_READY) counts.ready++;
+                  else if (st === PAGE_STAGE.CUT_READY) counts.cutOnly++;
+                  else if (st === PAGE_STAGE.NO_CUT || st === PAGE_STAGE.ERROR) counts.invalid++;
+                  else counts.loaded++;
+                }
+                const needBatchCount = counts.loaded + counts.cutOnly;
+                const batchBtnLabel =
+                  counts.loaded === 0 && counts.cutOnly > 0
+                    ? `Cập nhật BLEED (${counts.cutOnly} trang)`
+                    : `Bóc tách tất cả (${totalPdfPages} trang)`;
+                return (
+                  <div className="flex flex-col gap-2 text-[11px] bg-white/90 border border-emerald-200 rounded-lg px-2.5 py-2">
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="font-bold text-slate-700">
+                        Trạng thái từng trang ({counts.ready}/{totalPdfPages} BLEED Ready)
+                      </span>
+                      {batchProgress ? (
+                        <button
+                          type="button"
+                          onClick={() => { batchCancelRef.current = true; }}
+                          className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-800 text-[10px] font-bold cursor-pointer"
+                        >
+                          Dừng
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={loading || needBatchCount === 0}
+                          onClick={() => runBatchProcessPages(allPageNums)}
+                          className="px-2 py-0.5 rounded bg-[#146C53] hover:bg-[#0f5440] disabled:bg-slate-200 disabled:text-slate-500 text-white text-[10px] font-bold cursor-pointer"
+                        >
+                          {needBatchCount === 0 ? 'Đã bóc đủ' : batchBtnLabel}
+                        </button>
+                      )}
+                    </div>
+
+                    {batchProgress && (
+                      <div className="flex flex-col gap-1">
+                        <div className="flex justify-between text-[10px] text-emerald-800 font-semibold">
+                          <span>{batchProgress.stageText}</span>
+                          <span>{batchProgress.current}/{batchProgress.total}</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-emerald-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-[#146C53] transition-all"
+                            style={{ width: `${Math.round((batchProgress.current / Math.max(1, batchProgress.total)) * 100)}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-4 gap-1">
+                      {allPageNums.map((p) => {
+                        const rec = pageStates[p];
+                        const st = getEffectivePageStage(rec, currentBleedSig);
+                        const meta = PAGE_STAGE_META[st] || PAGE_STAGE_META[PAGE_STAGE.PDF_LOADED];
+                        const isActive = p === activePdfPage;
+                        const pillCls =
+                          meta.tone === 'emerald'
+                            ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                            : meta.tone === 'amber'
+                              ? 'bg-amber-50 border-amber-300 text-amber-800'
+                              : meta.tone === 'sky'
+                                ? 'bg-sky-50 border-sky-300 text-sky-800'
+                                : meta.tone === 'rose'
+                                  ? 'bg-rose-50 border-rose-300 text-rose-700'
+                                  : 'bg-slate-50 border-slate-200 text-slate-500';
+                        return (
+                          <button
+                            key={p}
+                            type="button"
+                            disabled={loading}
+                            title={`Trang ${p}: ${meta.label}${rec?.contourCount ? ` (${rec.contourCount} tem)` : ''}${rec?.errorMessage ? ` — ${rec.errorMessage}` : ''}`}
+                            onClick={() => pdfBytesRef.current && renderPdfPageAt(pdfBytesRef.current, p)}
+                            className={`px-1.5 py-1 rounded border text-[10px] text-left transition-all cursor-pointer ${pillCls} ${isActive ? 'ring-2 ring-[#146C53] font-bold' : ''}`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold">T{p}</span>
+                              {rec?.contourCount > 0 && <span className="text-[9px] opacity-80">{rec.contourCount}</span>}
+                            </div>
+                            <div className="text-[9px] truncate">{meta.shortLabel}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-100">
+                      <span className="font-semibold text-slate-700">Trang chuyển (1–{totalPdfPages}):</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setHandoffPageExpr(String(activePdfPage))}
+                          className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold cursor-pointer"
+                        >
+                          Trang {activePdfPage}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setHandoffPageExpr(`1-${totalPdfPages}`)}
+                          className="px-1.5 py-0.5 rounded bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-[10px] font-bold cursor-pointer"
+                        >
+                          Tất cả
+                        </button>
+                      </div>
+                    </div>
+                    <input
+                      type="text"
+                      value={handoffPageExpr}
+                      onChange={(e) => setHandoffPageExpr(e.target.value)}
+                      placeholder={`VD: 1-7, 1,3,5 (để trống = trang ${activePdfPage})`}
+                      className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-[11px] font-mono text-slate-800 focus:outline-none focus:border-[#146C53]"
+                    />
+
+                    {handoffWarning && (
+                      <div className="rounded bg-amber-50 border border-amber-300 px-2 py-1.5 text-[10px] text-amber-900 leading-snug">
+                        <span className="font-bold">Cảnh báo trang chưa xử lý / bỏ qua:</span> {handoffWarning}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               <button
-                onClick={() => handleSplitExport(true, 'optimal')}
+                onClick={async () => {
+                  if (!renderedCanvas || contoursMm.length === 0) return;
+                  setLoading(true);
+                  setError('');
+                  setHandoffWarning('');
+                  try {
+                    const applyBleedFill = showBleedContour && bleedOffsetMm > 0 && contourBleedFillMode !== 'off';
+                    const effBleedMm = showBleedContour ? bleedOffsetMm : 0;
+
+                    // Parse flexible page expression: '', 'all', '1', '1-7', '1,3,5-7'
+                    const parsePageExpr = (expr, maxP, curP) => {
+                      const raw = String(expr || '').trim().toLowerCase();
+                      if (!raw) return [curP];
+                      if (raw === 'all' || raw === '*') return Array.from({ length: maxP }, (_, i) => i + 1);
+                      const set = new Set();
+                      for (const part of raw.split(/[,;\s]+/).filter(Boolean)) {
+                        const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
+                        if (range) {
+                          const a = Math.max(1, Math.min(maxP, parseInt(range[1], 10)));
+                          const b = Math.max(1, Math.min(maxP, parseInt(range[2], 10)));
+                          const lo = Math.min(a, b), hi = Math.max(a, b);
+                          for (let p = lo; p <= hi; p++) set.add(p);
+                        } else if (/^\d+$/.test(part)) {
+                          const p = parseInt(part, 10);
+                          if (p >= 1 && p <= maxP) set.add(p);
+                        }
+                      }
+                      const arr = Array.from(set).sort((a, b) => a - b);
+                      if (arr.length === 0) throw new Error(`Dải trang "${expr}" không hợp lệ (chỉ nhận từ 1 đến ${maxP}).`);
+                      return arr;
+                    };
+
+                    const targetPages =
+                      sourceType === 'pdf' && totalPdfPages > 1
+                        ? parsePageExpr(handoffPageExpr, totalPdfPages, activePdfPage)
+                        : [activePdfPage];
+
+                    if (
+                      sourceType === 'pdf' &&
+                      totalPdfPages > 1 &&
+                      (targetPages.length > 1 || targetPages[0] !== activePdfPage) &&
+                      pdfBytesRef.current &&
+                      typeof onSendV1StickersToImpose === 'function'
+                    ) {
+                      const part = partitionPagesForHandoff({
+                        targetPages,
+                        pageStates,
+                        pageCacheMap: pdfPageCacheRef.current,
+                        currentBleedSignature: currentBleedSig,
+                        fileSignature: pdfFileSigRef.current,
+                      });
+
+                      if (part.warningMessage) {
+                        setHandoffWarning(part.warningMessage);
+                      }
+
+                      if (part.readyPages.length === 0) {
+                        throw new Error(
+                          `Chưa có trang nào trong dải [${targetPages.join(', ')}] đạt BLEED Ready. Hãy bấm "Bóc tách tất cả (${totalPdfPages} trang)" trước khi chuyển sang Bình Tem.`
+                        );
+                      }
+
+                      onSendV1StickersToImpose({
+                        pages: part.readyPages,
+                        cleanArtworkCanvas: part.readyPages[0].cleanArtworkCanvas,
+                        cleanArtworkBytes: part.readyPages[0].cleanArtworkBytes,
+                        sourceSizeMm: part.readyPages[0].sourceSizeMm,
+                        contoursMm: part.readyPages[0].contoursMm,
+                        bleedOffsetMm: effBleedMm,
+                        contourProvenance: part.readyPages[0].contourProvenance,
+                        sourceFileName: sourceFile?.name || 'tem',
+                        handoffWarning: part.warningMessage || null,
+                      });
+                      return;
+                    }
+
+                    const cleanCanvas = applyBleedFill
+                      ? buildBleedFilledExportCanvas(renderedCanvas, transparentArtworkCanvas, sizeMm, contoursMm, {
+                        mode: contourBleedFillMode,
+                        solidColorHex: contourBleedColorHex,
+                      })
+                      : renderedCanvas;
+                    const blob = await new Promise((resolve) => cleanCanvas.toBlob(resolve, 'image/png'));
+                    if (!blob) throw new Error('Không thể xuất PNG artwork sạch để chuyển sang Bình Tem V1.');
+                    const cleanArtworkBytes = new Uint8Array(await blob.arrayBuffer());
+                    if (typeof onSendV1StickersToImpose === 'function') {
+                      onSendV1StickersToImpose({
+                        cleanArtworkCanvas: cleanCanvas,
+                        cleanArtworkBytes,
+                        sourceSizeMm: { w: sizeMm.w, h: sizeMm.h },
+                        contoursMm,
+                        bleedOffsetMm: effBleedMm,
+                        contourProvenance,
+                        sourceFileName: sourceFile?.name || 'tem',
+                      });
+                    } else {
+                      throw new Error('Không tìm thấy luồng Bình Tem Bế V1 (Single Pipeline).');
+                    }
+                  } catch (err) {
+                    console.error(err);
+                    setError(err?.message || 'Không thể chuyển dữ liệu sang Bình Tem Bế V1.');
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
                 disabled={loading || contoursMm.length === 0}
                 className="w-full p-2.5 rounded-xl bg-white hover:bg-emerald-50/60 border border-slate-200 hover:border-[#146C53] flex items-center justify-between gap-2 text-left transition-all cursor-pointer shadow-2xs"
               >
@@ -1251,28 +2683,29 @@ export default function BleedAndContourStudio({
                   <span className="text-lg shrink-0">✂️</span>
                   <div className="min-w-0">
                     <div className="text-xs font-bold text-slate-800">Bình bài Bế Tem</div>
-                    <div className="text-[11px] text-slate-500 truncate">Xếp tem bế so le / lưới tiêu chuẩn</div>
+                    <div className="text-[11px] text-slate-500 truncate">Chuyển sang tab Bình Tem V1 · Giữ nguyên Bézier gốc</div>
                   </div>
                 </div>
-                <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9px] font-extrabold shrink-0">
-                  PRO
+                <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[9px] font-extrabold shrink-0">
+                  V1
                 </span>
               </button>
 
               <button
-                onClick={() => handleSplitExport(true, 'nesting')}
-                disabled={loading || contoursMm.length === 0}
-                className="w-full p-2.5 rounded-xl bg-white hover:bg-emerald-50/60 border border-slate-200 hover:border-[#146C53] flex items-center justify-between gap-2 text-left transition-all cursor-pointer shadow-2xs"
+                onClick={() => { }}
+                disabled
+                title="Tạm khóa trong Single Pipeline V1 — dùng Bình bài Bế Tem (V1) để bảo toàn đường bế Bézier gốc"
+                className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2 text-left opacity-55 cursor-not-allowed"
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <span className="text-lg shrink-0">🔗</span>
                   <div className="min-w-0">
-                    <div className="text-xs font-bold text-slate-800">Bình lồng ghép tự do</div>
-                    <div className="text-[11px] text-slate-500 truncate">Xếp nhiều loại khuôn, xoay tự do mọi góc</div>
+                    <div className="text-xs font-bold text-slate-600">Bình lồng ghép tự do</div>
+                    <div className="text-[11px] text-slate-400 truncate">Chưa hỗ trợ trong V1 · Không fallback Legacy</div>
                   </div>
                 </div>
-                <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9px] font-extrabold shrink-0">
-                  PRO
+                <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 text-[9px] font-extrabold shrink-0">
+                  V1 KHÓA
                 </span>
               </button>
 
@@ -1293,11 +2726,10 @@ export default function BleedAndContourStudio({
             <button
               onClick={handleExportPdf}
               disabled={loading || !renderedCanvas}
-              className={`py-2 px-2 rounded-xl text-[11px] font-bold transition-colors cursor-pointer ${
-                loading || !renderedCanvas
-                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                  : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
-              }`}
+              className={`py-2 px-2 rounded-xl text-[11px] font-bold transition-colors cursor-pointer ${loading || !renderedCanvas
+                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
+                }`}
             >
               {loading ? 'Đang xử lý...' : '✂️ Tải PDF nguyên tờ'}
             </button>

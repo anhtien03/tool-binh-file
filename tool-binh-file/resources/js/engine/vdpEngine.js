@@ -244,3 +244,137 @@ export function parseTabularData(rawText) {
 
   return { headers, rows };
 }
+
+// --- Zero-dependency 1D Vector Barcode Encoder (Code 128B, EAN-13, Code 39) ---
+
+// Standard ISO/IEC 15417 Code 128 bar/space width patterns (indices 0..106)
+const CODE128_PATTERNS = [
+  '212222','222122','222221','121223','121322','131222','122213','122312','132212','221213',
+  '221312','231212','112232','122132','122231','113222','123122','123221','223211','221132',
+  '221231','213212','223112','312131','311222','321122','321221','312212','322112','322211',
+  '212123','212321','232121','111323','131123','131321','112313','132113','132311','211313',
+  '231113','231311','112133','112331','132131','113123','113321','133121','313121','211331',
+  '231131','213113','213311','213131','311123','311321','331121','312113','312311','332111',
+  '314111','221411','431111','111224','111422','121124','121421','141122','141221','112214',
+  '112412','122114','122411','142112','142211','241211','221114','413111','241112','134111',
+  '111242','121142','121241','114212','124112','124211','411212','421112','421211','212141',
+  '214121','412121','111143','111341','131141','114113','114311','411113','411311','113141',
+  '114131','311141','411131','211412','211214','211232','2331112',
+];
+
+// Standard ISO/IEC 15420 EAN-13 tables
+const EAN_L = ['0001101','0011001','0010011','0111101','0100011','0110001','0101111','0111011','0110111','0001011'];
+const EAN_G = ['0100111','0110011','0011011','0100001','0011101','0111001','0000101','0010001','0001001','0010111'];
+const EAN_R = ['1110010','1100110','1101100','1000010','1011100','1001110','1010000','1000100','1001000','1110100'];
+const EAN_PARITY = ['LLLLLL','LLGLGG','LLGGLG','LLGGGL','LGLLGG','LGGLLG','LGGGLL','LGLGLG','LGLGGL','LGGLGL'];
+
+// Standard ISO/IEC 16388 Code 39 patterns (n=narrow, w=wide; alternating bar/space)
+const CODE39_MAP = {
+  '0': 'nnnwwnwnn', '1': 'wnnwnnnnw', '2': 'nnwwnnnnw', '3': 'wnwwnnnnn', '4': 'nnnwwnnnw',
+  '5': 'wnnwwnnnn', '6': 'nnwwwnnnn', '7': 'nnnwnnwnw', '8': 'wnnwnnwnn', '9': 'nnwwnnwnn',
+  'A': 'wnnnnwnnw', 'B': 'nnwnnwnnw', 'C': 'wnwnnwnnn', 'D': 'nnnnwwnnw', 'E': 'wnnnwwnnn',
+  'F': 'nnwnwwnnn', 'G': 'nnnnnwwnw', 'H': 'wnnnnwwnn', 'I': 'nnwnnwwnn', 'J': 'nnnnwwwnn',
+  'K': 'wnnnnnnww', 'L': 'nnwnnnnww', 'M': 'wnwnnnnwn', 'N': 'nnnnwnnww', 'O': 'wnnnwnnwn',
+  'P': 'nnwnwnnwn', 'Q': 'nnnnnnwww', 'R': 'wnnnnnwwn', 'S': 'nnwnnnwwn', 'T': 'nnnnwnwwn',
+  'U': 'wwnnnnnnw', 'V': 'nwwnnnnnw', 'W': 'wwwnnnnnn', 'X': 'nwnnwnnnw', 'Y': 'wwnnwnnnn',
+  'Z': 'nwwnwnnnn', '-': 'nwnnnnwnw', '.': 'wwnnnnwnn', ' ': 'nwwnnnwnn', '$': 'nwnwnwnnn',
+  '/': 'nwnwnnnwn', '+': 'nwnnnwnwn', '%': 'nnnwnwnwn', '*': 'nwnnwnwnn',
+};
+
+function modulesToRuns(bits) {
+  const runs = [];
+  let i = 0;
+  while (i < bits.length) {
+    if (bits[i] === 1) {
+      const start = i;
+      while (i < bits.length && bits[i] === 1) i++;
+      runs.push([start, i - start]);
+    } else {
+      i++;
+    }
+  }
+  return { runs, totalCols: bits.length };
+}
+
+function encodeCode128B(raw) {
+  const clean = String(raw || '0001')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x20-\x7e]/g, '') || '0001';
+
+  const codes = [104]; // Start Code B
+  let checksum = 104;
+  for (let i = 0; i < clean.length; i++) {
+    const val = clean.charCodeAt(i) - 32;
+    codes.push(val);
+    checksum += val * (i + 1);
+  }
+  codes.push(checksum % 103);
+  codes.push(106); // Stop
+
+  const bits = [];
+  for (const code of codes) {
+    const pat = CODE128_PATTERNS[code];
+    for (let i = 0; i < pat.length; i++) {
+      const w = Number(pat[i]);
+      const bit = i % 2 === 0 ? 1 : 0;
+      for (let k = 0; k < w; k++) bits.push(bit);
+    }
+  }
+  const { runs, totalCols } = modulesToRuns(bits);
+  return { runs, totalCols, text: clean, symbology: 'code128' };
+}
+
+function encodeEan13(raw) {
+  const digitsOnly = String(raw || '').replace(/\D/g, '');
+  const base12 = (digitsOnly.length >= 12 ? digitsOnly.slice(0, 12) : digitsOnly.padStart(12, '0'));
+  let sum = 0;
+  for (let i = 0; i < 12; i++) {
+    sum += Number(base12[i]) * (i % 2 === 0 ? 1 : 3);
+  }
+  const check = (10 - (sum % 10)) % 10;
+  const full13 = base12 + String(check);
+
+  const parity = EAN_PARITY[Number(full13[0])];
+  let bitStr = '101'; // Left guard
+  for (let i = 1; i <= 6; i++) {
+    const d = Number(full13[i]);
+    bitStr += parity[i - 1] === 'L' ? EAN_L[d] : EAN_G[d];
+  }
+  bitStr += '01010'; // Center guard
+  for (let i = 7; i <= 12; i++) {
+    bitStr += EAN_R[Number(full13[i])];
+  }
+  bitStr += '101'; // Right guard
+
+  const bits = Array.from(bitStr, (c) => (c === '1' ? 1 : 0));
+  const { runs, totalCols } = modulesToRuns(bits);
+  return { runs, totalCols, text: full13, symbology: 'ean13' };
+}
+
+function encodeCode39(raw) {
+  const clean = String(raw || '0001')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^0-9A-Z\-. $/+%]/g, '') || '0001';
+  const wrapped = `*${clean}*`;
+  const bits = [];
+  for (let c = 0; c < wrapped.length; c++) {
+    const pat = CODE39_MAP[wrapped[c]] || CODE39_MAP['0'];
+    for (let i = 0; i < pat.length; i++) {
+      const w = pat[i] === 'w' ? 2 : 1;
+      const bit = i % 2 === 0 ? 1 : 0;
+      for (let k = 0; k < w; k++) bits.push(bit);
+    }
+    if (c < wrapped.length - 1) bits.push(0); // inter-character narrow space
+  }
+  const { runs, totalCols } = modulesToRuns(bits);
+  return { runs, totalCols, text: clean, symbology: 'code39' };
+}
+
+export function encodeBarcode1D(value, symbology = 'code128') {
+  if (symbology === 'ean13') return encodeEan13(value);
+  if (symbology === 'code39') return encodeCode39(value);
+  return encodeCode128B(value);
+}

@@ -72,3 +72,58 @@ button:focus-visible {
   outline: 2px solid rgba(8, 127, 91, 0.35);
   outline-offset: 1px;
 }
+
+/*
+ * Side settings panels (<aside>): prevent horizontal overflow.
+ * Grid/flex children default to `min-width: auto`, so <select> (sized by its longest option) and
+ * <input type=number> (default ~20ch intrinsic width) pushed columns wider than the 288–320px panel,
+ * producing a horizontal scrollbar and clipping the right-hand controls (checkboxes, "Phải" margin...).
+ */
+aside {
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+/* Prevent flex-col inside scrollable <aside> from vertically squishing/clipping sections */
+aside.overflow-y-auto {
+  padding-bottom: 1.5rem;
+}
+
+aside.overflow-y-auto > * {
+  flex-shrink: 0;
+}
+
+aside .grid > *,
+aside .flex > * {
+  min-width: 0;
+}
+
+aside input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']),
+aside select,
+aside textarea {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+aside .grid > input:not([type='checkbox']):not([type='radio']),
+aside .grid > select,
+aside .flex-col > input:not([type='checkbox']):not([type='radio']):not([type='range']),
+aside .flex-col > select {
+  width: 100%;
+}
+
+aside select {
+  text-overflow: ellipsis;
+}
+
+aside label,
+aside span,
+aside p {
+  overflow-wrap: anywhere;
+}
+
+aside input[type='checkbox'],
+aside input[type='radio'] {
+  flex-shrink: 0;
+}

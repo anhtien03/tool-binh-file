@@ -289,9 +289,8 @@ export function PrepressRulerBar({
           >
             {t.isMajor && (
               <span
-                className={`absolute -top-2 left-1 text-[9px] font-mono leading-none ${
-                  t.mm === 0 ? 'text-[#087F5B] font-bold' : 'text-[#475569]'
-                }`}
+                className={`absolute -top-2 left-1 text-[9px] font-mono leading-none ${t.mm === 0 ? 'text-[#087F5B] font-bold' : 'text-[#475569]'
+                  }`}
               >
                 {t.mm}
               </span>
@@ -318,9 +317,8 @@ export function PrepressRulerBar({
         >
           {t.isMajor && (
             <span
-              className={`absolute right-2.5 top-0.5 text-[9px] font-mono leading-none origin-top-right -rotate-90 whitespace-nowrap ${
-                t.mm === 0 ? 'text-[#087F5B] font-bold' : 'text-[#475569]'
-              }`}
+              className={`absolute right-2.5 top-0.5 text-[9px] font-mono leading-none origin-top-right -rotate-90 whitespace-nowrap ${t.mm === 0 ? 'text-[#087F5B] font-bold' : 'text-[#475569]'
+                }`}
             >
               {t.mm}
             </span>
