@@ -8,7 +8,7 @@
  *      hygiene (closed, stroke-only, no duplicates, Spot CutContour), media & software compat.
  */
 
-import { PDFDocument, PDFName } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFArray } from 'pdf-lib';
 import {
   getMachineProfile,
   inferMachineProfileFromPontType,
@@ -58,7 +58,7 @@ function isStreamFlateEncoded(streamObj) {
 async function extractPageStreamText(doc, page) {
   const contents = page.node.Contents();
   if (!contents) return '';
-  if (contents.constructor.name === 'PDFArray') {
+  if (contents instanceof PDFArray || (typeof contents.size === 'function' && typeof contents.get === 'function')) {
     let out = '';
     for (let i = 0; i < contents.size(); i++) {
       const s = doc.context.lookup(contents.get(i));

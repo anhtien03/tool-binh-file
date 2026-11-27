@@ -13,7 +13,7 @@
  *  - Preserves 100% of CanonicalCutV1 cubic Bézier geometry and runs post-export CUT.pdf verification.
  */
 
-import { PDFDocument, PDFName, PDFRawStream, PDFNumber, StandardFonts, cmyk, rgb } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFArray, PDFRawStream, PDFNumber, StandardFonts, cmyk, rgb } from 'pdf-lib';
 import { PAPER_SIZES } from './impositionEngine.js';
 import { createResourceStore } from './resourceStore.js';
 import { PRODUCTION_PROFILES } from './batchImpositionAdapter.js';
@@ -35,17 +35,6 @@ import {
 } from './machineCompatibilityProfiles.js';
 import { validateMachineCompatibility } from './machineCompatibilityValidator.js';
 import { ensureSpotCutContourColorSpace, exportLayeredAiFiles } from './layeredAiExporter.js';
-import {
-  computePreviewPlanParitySignature,
-  checkPreviewVsExportParity,
-  analyzeArtworkCutOverlay,
-} from './pairPreviewEngine.js';
-import {
-  ROTATION_MODES,
-  CLUSTER_MODES,
-  generateSmartImpositionOptions,
-  computeImpositionMetrics,
-} from './smartImpositionPlanner.js';
 
 const EXTRA_V1_PAPER_SIZES = {
   D320x330: { width: 320, height: 330 },
@@ -92,9 +81,9 @@ export function checkV1StickerConfigCompatibility(config = {}) {
     );
   }
 
-  if (config.stickerTrimMarks && config.stickerTrimMarks !== 'none' && config.stickerTrimMarks !== 'guillotine') {
+  if (config.stickerTrimMarks && config.stickerTrimMarks !== 'none') {
     unsupportedReasons.push(
-      `Kiểu dấu xén "${config.stickerTrimMarks}" chưa được hỗ trợ trong PrintKit V1/H.2. Hãy chọn "Không" hoặc "Xén thành phẩm (guillotine)".`
+      'Đường cắt xén rời (Guillotine trim marks) chưa được hỗ trợ trong PrintKit V1/H.2. Hãy đặt về "Không".'
     );
   }
 
@@ -142,120 +131,6 @@ function getBoundsWH(contour) {
   };
 }
 
-const r4 = (v) => (Number.isFinite(v) ? Math.round(v * 10000) / 10000 : 0);
-
-/**
- * Shared slug-line formatter used by BOTH Preview (PdfCanvasPreview) and PRINT PDF (stampShopMarksAndSlugOnPage)
- * so Preview and PRINT PDF match 1:1.
- */
-export function formatV1SlugText({
-  baseName = 'tem',
-  sheetWidthMm,
-  sheetHeightMm,
-  placementCount,
-  runCount = 1,
-  sheetIndex = 1,
-  totalSheets = 1,
-}) {
-  const safeBase = toWinAnsiAscii((baseName || 'tem').replace(/\.[^.]+$/, '')) || 'tem';
-  return `${safeBase} - ${sheetWidthMm}x${sheetHeightMm}mm - ${placementCount} tem/to - ${runCount} copy - ${totalSheets}/ ${sheetIndex}`;
-}
-
-function lineIntersectsAnyRect(x1, y1, x2, y2, rects) {
-  if (!Array.isArray(rects) || rects.length === 0) return false;
-  const lx0 = Math.min(x1, x2);
-  const lx1 = Math.max(x1, x2);
-  const ly0 = Math.min(y1, y2);
-  const ly1 = Math.max(y1, y2);
-  for (const rc of rects) {
-    if (lx1 >= rc.x - 0.5 && lx0 <= rc.x + rc.w + 0.5 && ly1 >= rc.y - 0.5 && ly0 <= rc.y + rc.h + 0.5) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Generate outer guillotine trim marks (mm, sheet Y-down) along grid column/row edges.
- * Shared identically by Preview and PRINT PDF.
- */
-export function buildV1TrimMarksMm({ sheetWidthMm, sheetHeightMm, placements = [], quietZoneRectsMm = [] }) {
-  if (!Array.isArray(placements) || placements.length === 0) return [];
-  const xSet = new Set();
-  const ySet = new Set();
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-
-  for (const p of placements) {
-    const x0 = Number(p.x) || 0;
-    const y0 = Number(p.y) || 0;
-    const x1 = x0 + (Number(p.trimW) || 0);
-    const y1 = y0 + (Number(p.trimH) || 0);
-    if (x0 < minX) minX = x0;
-    if (x1 > maxX) maxX = x1;
-    if (y0 < minY) minY = y0;
-    if (y1 > maxY) maxY = y1;
-    xSet.add(Math.round(x0 * 100) / 100);
-    xSet.add(Math.round(x1 * 100) / 100);
-    ySet.add(Math.round(y0 * 100) / 100);
-    ySet.add(Math.round(y1 * 100) / 100);
-  }
-
-  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return [];
-
-  const tickLen = 4.0;
-  const tickGap = 1.5;
-  const lines = [];
-  const pushIfValid = (x1, y1, x2, y2, side) => {
-    const cx1 = r4(Math.max(0.5, Math.min(sheetWidthMm - 0.5, x1)));
-    const cy1 = r4(Math.max(0.5, Math.min(sheetHeightMm - 0.5, y1)));
-    const cx2 = r4(Math.max(0.5, Math.min(sheetWidthMm - 0.5, x2)));
-    const cy2 = r4(Math.max(0.5, Math.min(sheetHeightMm - 0.5, y2)));
-    if (Math.hypot(cx2 - cx1, cy2 - cy1) < 0.8) return;
-    if (lineIntersectsAnyRect(cx1, cy1, cx2, cy2, quietZoneRectsMm)) return;
-    lines.push({ x1: cx1, y1: cy1, x2: cx2, y2: cy2, thicknessMm: 0.2, side });
-  };
-
-  for (const x of Array.from(xSet).sort((a, b) => a - b)) {
-    pushIfValid(x, minY - tickGap - tickLen, x, minY - tickGap, 'top');
-    pushIfValid(x, maxY + tickGap, x, maxY + tickGap + tickLen, 'bottom');
-  }
-  for (const y of Array.from(ySet).sort((a, b) => a - b)) {
-    pushIfValid(minX - tickGap - tickLen, y, minX - tickGap, y, 'left');
-    pushIfValid(maxX + tickGap, y, maxX + tickGap + tickLen, y, 'right');
-  }
-
-  return lines;
-}
-
-/**
- * Generate sheet-edge Paper Guides (Thanh canh giấy, mm Y-down) centered on all 4 sheet edges,
- * clear of corner mark quiet zones. Shared identically by Preview and PRINT PDF.
- */
-export function buildPaperGuidesMm({ sheetWidthMm, sheetHeightMm }) {
-  const w = Number(sheetWidthMm) || 0;
-  const h = Number(sheetHeightMm) || 0;
-  if (w < 40 || h < 40) return [];
-  const halfBar = Math.min(15, Math.max(6, Math.min(w, h) * 0.05));
-  const edgeOffset = 3.0;
-  const tickOuter = 0.5;
-  const tickInner = 5.5;
-  const cx = r4(w / 2);
-  const cy = r4(h / 2);
-  return [
-    { x1: r4(cx - halfBar), y1: edgeOffset, x2: r4(cx + halfBar), y2: edgeOffset, thicknessMm: 0.35, kind: 'top_bar' },
-    { x1: cx, y1: tickOuter, x2: cx, y2: tickInner, thicknessMm: 0.35, kind: 'top_tick' },
-    { x1: r4(cx - halfBar), y1: r4(h - edgeOffset), x2: r4(cx + halfBar), y2: r4(h - edgeOffset), thicknessMm: 0.35, kind: 'bottom_bar' },
-    { x1: cx, y1: r4(h - tickInner), x2: cx, y2: r4(h - tickOuter), thicknessMm: 0.35, kind: 'bottom_tick' },
-    { x1: edgeOffset, y1: r4(cy - halfBar), x2: edgeOffset, y2: r4(cy + halfBar), thicknessMm: 0.35, kind: 'left_bar' },
-    { x1: tickOuter, y1: cy, x2: tickInner, y2: cy, thicknessMm: 0.35, kind: 'left_tick' },
-    { x1: r4(w - edgeOffset), y1: r4(cy - halfBar), x2: r4(w - edgeOffset), y2: r4(cy + halfBar), thicknessMm: 0.35, kind: 'right_bar' },
-    { x1: r4(w - tickInner), y1: cy, x2: r4(w - tickOuter), y2: cy, thicknessMm: 0.35, kind: 'right_tick' },
-  ];
-}
-
 /**
  * Convert an authoritative H.2 ImpositionPlanV1 into the exact previewPlan format consumed by
  * PdfCanvasPreview.jsx — guaranteeing 100% shared geometry between Preview and PRINT/CUT export.
@@ -263,16 +138,7 @@ export function buildPaperGuidesMm({ sheetWidthMm, sheetHeightMm }) {
 export function buildPreviewPlanFromH2Batch(
   batchPlan,
   jobs,
-  {
-    pontType = 'graphtec',
-    machineProfileId = null,
-    provenanceBadge = '',
-    assetIdToPageIdx = null,
-    baseName = 'tem',
-    showSlugLine = true,
-    stickerTrimMarks = 'none',
-    showPaperGuides = false,
-  } = {}
+  { pontType = 'graphtec', machineProfileId = null, provenanceBadge = '', assetIdToPageIdx = null } = {}
 ) {
   const imp = batchPlan.impositionPlan;
   const jobMap = new Map(jobs.map((j) => [j.jobId, j]));
@@ -294,26 +160,16 @@ export function buildPreviewPlanFromH2Batch(
         : null;
 
       const rm = pl.rigidMatrixMm;
+      const xMm = Array.isArray(rm) ? rm[4] : Number(rm?.tx) || 0;
+      const yMm = Array.isArray(rm) ? rm[5] : Number(rm?.ty) || 0;
+      const wMm = pl.targetSizeMm.w;
+      const hMm = pl.targetSizeMm.h;
       const rot = Number.isFinite(pl.rotationDeg)
         ? pl.rotationDeg
         : Array.isArray(rm)
-        ? Math.round((Math.atan2(rm[1], rm[0]) * 180) / Math.PI)
-        : Number(rm?.rotationDeg) || 0;
-      const normRot = ((rot % 360) + 360) % 360;
-      const isRot90 = normRot === 90 || normRot === 270;
-      const xMm = Number.isFinite(pl.xMm)
-        ? pl.xMm
-        : Array.isArray(rm)
-        ? rm[4]
-        : Number(rm?.tx) || 0;
-      const yMm = Number.isFinite(pl.yMm)
-        ? pl.yMm
-        : Array.isArray(rm)
-        ? rm[5]
-        : Number(rm?.ty) || 0;
-      const wMm = isRot90 ? pl.targetSizeMm.h : pl.targetSizeMm.w;
-      const hMm = isRot90 ? pl.targetSizeMm.w : pl.targetSizeMm.h;
-      const crop = job?.artworkRef?.cropBoxMm || { x: 0, y: 0, w: pl.targetSizeMm.w, h: pl.targetSizeMm.h };
+          ? Math.round((Math.atan2(rm[1], rm[0]) * 180) / Math.PI)
+          : Number(rm?.rotationDeg) || 0;
+      const crop = job?.artworkRef?.cropBoxMm || { x: 0, y: 0, w: wMm, h: hMm };
       const assetId = job?.origin?.sourceAssetId;
       const artworkPageIdx = assetIdToPageIdx && assetIdToPageIdx.has(assetId) ? assetIdToPageIdx.get(assetId) : 0;
 
@@ -326,7 +182,7 @@ export function buildPreviewPlanFromH2Batch(
         y: yMm,
         trimW: wMm,
         trimH: hMm,
-        rotate: normRot,
+        rotate: rot,
         block: 'primary',
         clipBleed: {
           top: job?.bleedConfig?.bleedOffsetMm || 0,
@@ -390,40 +246,13 @@ export function buildPreviewPlanFromH2Batch(
     const quietZoneRectsMm =
       profile && profile.includeMarksInCut && pontType !== 'none' && machineProf
         ? getMarkQuietZoneRectsMm({
-            sheetWidthMm: sh.widthMm,
-            sheetHeightMm: sh.heightMm,
-            markInsetMm: profile.markInsetMm || 10,
-            markSizeMm: profile.markSizeMm || 5,
-            quietZoneMm: machineProf.quietZoneMm || 5,
-          })
-        : [];
-
-    const v1TrimMarks =
-      stickerTrimMarks === 'guillotine'
-        ? buildV1TrimMarksMm({
-            sheetWidthMm: sh.widthMm,
-            sheetHeightMm: sh.heightMm,
-            placements,
-            quietZoneRectsMm,
-          })
-        : [];
-
-    const paperGuides = showPaperGuides
-      ? buildPaperGuidesMm({ sheetWidthMm: sh.widthMm, sheetHeightMm: sh.heightMm })
-      : [];
-
-    const insetMm = Number(profile?.markInsetMm) || 10;
-    const slugText = showSlugLine
-      ? formatV1SlugText({
-          baseName,
           sheetWidthMm: sh.widthMm,
           sheetHeightMm: sh.heightMm,
-          placementCount: placements.length,
-          runCount: sheetRunCount,
-          sheetIndex: sIdx + 1,
-          totalSheets: imp.sheets.length,
+          markInsetMm: profile.markInsetMm || 10,
+          markSizeMm: profile.markSizeMm || 5,
+          quietZoneMm: machineProf.quietZoneMm || 5,
         })
-      : '';
+        : [];
 
     return {
       sheetNumber: sIdx + 1,
@@ -436,15 +265,11 @@ export function buildPreviewPlanFromH2Batch(
       marks: { lines: [], registrations: [] },
       pontMarks,
       quietZoneRectsMm,
-      v1TrimMarks,
-      paperGuides,
       stickerCutPaths,
       stickerBleedPaths,
       stickerPontMarks: pontMarks,
       isV1Authoritative: true,
-      provenanceBadge: provenanceBadge || 'V1',
-      slugText,
-      slugYmm: showSlugLine ? Math.max(8, insetMm * 0.85) : null,
+      slugText: `PrintKit V1 (${provenanceBadge || 'V1'}) | Tờ ${sIdx + 1}/${imp.sheets.length} (×${sheetRunCount} tờ) | ${placements.length} tem/tờ | Khổ ${sh.widthMm}×${sh.heightMm}mm`,
     };
   });
 
@@ -521,129 +346,15 @@ function fingerprintBytes(bytes) {
   return `${len}:${bytes[0]}:${bytes[mid]}:${bytes[len - 1]}`;
 }
 
-function fnv1aUpdate(h, str) {
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
-/**
- * Hash ALL contours in contoursMm using exact cmd.to / cmd.c1 / cmd.c2 coordinates
- * (never samples only first/last and never reads nonexistent .p0).
- */
-export function fingerprintContours(contoursMm) {
+function fingerprintContours(contoursMm) {
   if (!Array.isArray(contoursMm) || contoursMm.length === 0) return '0';
-  let h1 = 0x811c9dc5;
-  let h2 = 0x9e3779b9;
-  let totalSegs = 0;
-  for (let i = 0; i < contoursMm.length; i++) {
-    const c = contoursMm[i];
-    const bez = Array.isArray(c?.beziersMm) ? c.beziersMm : null;
-    if (bez && bez.length > 0) {
-      totalSegs += bez.length;
-      h1 = fnv1aUpdate(h1, `B:${i}:${bez.length}:`);
-      h2 = fnv1aUpdate(h2, `B:${bez.length}:${i}:`);
-      for (let j = 0; j < bez.length; j++) {
-        const cmd = bez[j];
-        const parts = [cmd?.type || ''];
-        if (cmd?.c1) parts.push(`${cmd.c1[0]},${cmd.c1[1]}`);
-        if (cmd?.c2) parts.push(`${cmd.c2[0]},${cmd.c2[1]}`);
-        if (cmd?.to) parts.push(`${cmd.to[0]},${cmd.to[1]}`);
-        const token = `${parts.join(';')}|`;
-        h1 = fnv1aUpdate(h1, token);
-        h2 = fnv1aUpdate(h2, token);
-      }
-    } else if (Array.isArray(c) && c.length > 0) {
-      totalSegs += c.length;
-      h1 = fnv1aUpdate(h1, `P:${i}:${c.length}:`);
-      h2 = fnv1aUpdate(h2, `P:${c.length}:${i}:`);
-      for (let j = 0; j < c.length; j++) {
-        const pt = c[j];
-        const token = Array.isArray(pt) ? `${pt[0]},${pt[1]}|` : `${pt}|`;
-        h1 = fnv1aUpdate(h1, token);
-        h2 = fnv1aUpdate(h2, token);
-      }
-    } else {
-      h1 = fnv1aUpdate(h1, `E:${i}|`);
-      h2 = fnv1aUpdate(h2, `E:${i}|`);
-    }
-  }
-  return `${contoursMm.length}:${totalSegs}:${h1.toString(16)}:${h2.toString(16)}`;
-}
-
-function serializeNumMap(obj) {
-  if (!obj || typeof obj !== 'object') return '';
-  return Object.keys(obj)
-    .sort((a, b) => Number(a) - Number(b))
-    .map((k) => `${k}=${obj[k]}`)
-    .join(',');
-}
-
-function chooseGridOrientation({ cellW, cellH, safeW, safeH, cutGapXMm, cutGapYMm, stickerLayout, allowRotationMode = ROTATION_MODES.ROT_90_180 }) {
-  const fits0 = cellW <= safeW + 1e-6 && cellH <= safeH + 1e-6;
-  const cols0 = fits0 ? Math.max(1, Math.floor((safeW + cutGapXMm + 1e-6) / Math.max(0.1, cellW + cutGapXMm))) : 0;
-  const rows0 = fits0 ? Math.max(1, Math.floor((safeH + cutGapYMm + 1e-6) / Math.max(0.1, cellH + cutGapYMm))) : 0;
-  const cap0 = cols0 * rows0;
-
-  const allowRot90 =
-    allowRotationMode === ROTATION_MODES.ROT_90 ||
-    allowRotationMode === ROTATION_MODES.ROT_90_180;
-
-  if (allowRot90 && stickerLayout === 'optimal' && Math.abs(cellW - cellH) > 0.05) {
-    const fits90 = cellH <= safeW + 1e-6 && cellW <= safeH + 1e-6;
-    const cols90 = fits90 ? Math.max(1, Math.floor((safeW + cutGapXMm + 1e-6) / Math.max(0.1, cellH + cutGapXMm))) : 0;
-    const rows90 = fits90 ? Math.max(1, Math.floor((safeH + cutGapYMm + 1e-6) / Math.max(0.1, cellW + cutGapYMm))) : 0;
-    const cap90 = cols90 * rows90;
-    if ((!fits0 && fits90) || (fits90 && cap90 > cap0)) {
-      return {
-        rotationDeg: 90,
-        maxFitCols: Math.max(1, cols90),
-        maxFitRows: Math.max(1, rows90),
-        effW: cellH,
-        effH: cellW,
-        cap: cap90,
-        fits: true,
-      };
-    }
-  }
-
-  return {
-    rotationDeg: 0,
-    maxFitCols: Math.max(1, cols0),
-    maxFitRows: Math.max(1, rows0),
-    effW: cellW,
-    effH: cellH,
-    cap: cap0,
-    fits: fits0,
-  };
-}
-
-function buildGridSpecForSheet({ rows, columns, effW, effH, cutGapXMm, cutGapYMm, rotationDeg, align, marginsMm, sheetHeightMm }) {
-  const pitchX = r4(effW + cutGapXMm);
-  const pitchY = r4(effH + cutGapYMm);
-  const gridTotalH = r4((rows - 1) * pitchY + effH);
-  const gridSpec = {
-    rows,
-    columns,
-    pitchXmm: pitchX,
-    pitchYmm: pitchY,
-    rotationDeg,
-    allowRotate: rotationDeg === 90,
-    centerX: true,
-    centerY: align === 'center',
-    centerInSafeArea: true,
-  };
-  if (align === 'top') {
-    gridSpec.centerY = false;
-    gridSpec.originYmm = Math.ceil(marginsMm.top * 10000) / 10000;
-  } else if (align === 'bottom') {
-    gridSpec.centerY = false;
-    const rawBottomOrigin = Math.max(marginsMm.top, sheetHeightMm - marginsMm.bottom - gridTotalH);
-    gridSpec.originYmm = Math.max(marginsMm.top, Math.floor(rawBottomOrigin * 1000) / 1000);
-  }
-  return gridSpec;
+  const first = contoursMm[0];
+  const last = contoursMm[contoursMm.length - 1];
+  const fSegs = first?.beziersMm?.length || first?.length || 0;
+  const lSegs = last?.beziersMm?.length || last?.length || 0;
+  const fPt = first?.beziersMm?.[0]?.p0 || first?.[0] || [0, 0];
+  const lPt = last?.beziersMm?.[0]?.p0 || last?.[0] || [0, 0];
+  return `${contoursMm.length}:${fSegs}:${lSegs}:${fPt[0]},${fPt[1]}:${lPt[0]},${lPt[1]}`;
 }
 
 function computeSourceBatchKey(payloadPages, baseName) {
@@ -670,8 +381,7 @@ function computeSourceBatchKey(payloadPages, baseName) {
  * (1 page OR N pages such as 7-page L0110.063) and current PdfEditor sticker UI config.
  *
  * Uses versioned `pipelineCache` so layout-only changes (sheet size, margins, cutGap, boong,
- * bleedPolicy, runCount) reuse ProductionGeometryCacheV1 & StickerJobs with ZERO precisionBleedFromCut calls,
- * and identical layout requests return directly from `cache.getBatchPlan()`.
+ * bleedPolicy, runCount) reuse ProductionGeometryCacheV1 & StickerJobs with ZERO precisionBleedFromCut calls.
  */
 export async function buildV1StickerTabPlan({
   v1Payload,
@@ -710,32 +420,16 @@ export async function buildV1StickerTabPlan({
   const cache = pipelineCache || createStickerPipelineCache();
   const { sheetWidthMm, sheetHeightMm } = resolveSheetDimensionsMm(config);
   const profile = compat.productionProfile;
-  const pontType = config.pontType || 'graphtec';
-  const machineProfileId = config.machineProfileId || null;
-  const requireSpotCutContour = config.requireSpotCutContour !== false;
-  const activeMachineProf = getMachineProfile(machineProfileId);
-  const quietZoneMm =
-    Number.isFinite(Number(activeMachineProf?.quietZoneMm)) && Number(activeMachineProf.quietZoneMm) > 0
-      ? Number(activeMachineProf.quietZoneMm)
-      : 2;
   const markClearance =
     profile.markMode !== 'none' && profile.markSizeMm > 0
-      ? Number(profile.markInsetMm || 8) + Number(profile.markSizeMm) / 2 + quietZoneMm
+      ? Number(profile.markInsetMm || 8) + Number(profile.markSizeMm) / 2 + 2
       : 0;
 
-  // marginIncludesMarks === true (or omitted for backward compatibility): Math.max(markClearance, margin)
-  // marginIncludesMarks === false: markClearance + margin
-  const marginIncludesMarks = config.marginIncludesMarks !== false;
-  const resolveEdgeMargin = (raw) => {
-    const m = Math.max(0, Number(raw) || 0);
-    if (markClearance <= 0) return m;
-    return marginIncludesMarks ? Math.max(markClearance, m) : r4(markClearance + m);
-  };
   const marginsMm = {
-    top: resolveEdgeMargin(config.marginTop),
-    right: resolveEdgeMargin(config.marginRight),
-    bottom: resolveEdgeMargin(config.marginBottom),
-    left: resolveEdgeMargin(config.marginLeft),
+    top: Math.max(markClearance, Number(config.marginTop) || 0),
+    right: Math.max(markClearance, Number(config.marginRight) || 0),
+    bottom: Math.max(markClearance, Number(config.marginBottom) || 0),
+    left: Math.max(markClearance, Number(config.marginLeft) || 0),
   };
 
   const cutGapXMm = Math.max(0, Number(config.gutterX) || 0);
@@ -744,65 +438,12 @@ export async function buildV1StickerTabPlan({
   const safeRunCount = Math.max(1, Math.round(Number(runCount) || 1));
   const align = config.alignment || config.stickerAlignment || 'center';
   const autoFillSheet = config.stickerAutoFillSheet !== false;
-  const stickerUnit = config.stickerUnit === 'sheet' ? 'sheet' : 'single';
-  const collation =
-    config.collation === 'mixed'
-      ? 'mixed'
-      : config.collation === 'sequential'
-      ? 'sequential'
-      : 'stepAndRepeat';
-  const stickerLayout = config.stickerLayout || 'optimal';
-  const allowRotationMode =
-    config.allowRotationMode ||
-    (stickerLayout === 'simple' ? ROTATION_MODES.NONE : ROTATION_MODES.ROT_90_180);
-  const smartClusterMode = config.smartClusterMode || CLUSTER_MODES.NONE;
-  const selectedImpositionOptionId = config.selectedImpositionOptionId || null;
-  const orderIdByPage = config.orderIdByPage || null;
-  const stickerTrimMarks = config.stickerTrimMarks || 'none';
-  const showPaperGuides = Boolean(config.showPaperGuides);
-  const showSlugLine = config.showSlugLine !== false;
   const baseName = (v1Payload.sourceFileName || 'tem').replace(/\.[^.]+$/, '');
   const safeW = Math.max(0, sheetWidthMm - marginsMm.left - marginsMm.right);
   const safeH = Math.max(0, sheetHeightMm - marginsMm.top - marginsMm.bottom);
 
-  const sourceBatchKey = computeSourceBatchKey(payloadPages, baseName);
-  const layoutKey = [
-    sourceBatchKey,
-    `${sheetWidthMm}x${sheetHeightMm}`,
-    `m=${marginsMm.top},${marginsMm.right},${marginsMm.bottom},${marginsMm.left}`,
-    `mim=${marginIncludesMarks ? 1 : 0}`,
-    `g=${cutGapXMm},${cutGapYMm}`,
-    `rc=${safeRunCount}`,
-    `rcp=${serializeNumMap(runCountByPage)}`,
-    `qp=${serializeNumMap(quantityByPage)}`,
-    `oid=${orderIdByPage ? Object.keys(orderIdByPage).sort().map((k) => `${k}=${orderIdByPage[k]}`).join(',') : ''}`,
-    `al=${align}`,
-    `af=${autoFillSheet ? 1 : 0}`,
-    `su=${stickerUnit}`,
-    `co=${collation}`,
-    `sl=${stickerLayout}`,
-    `rotm=${allowRotationMode}`,
-    `scm=${smartClusterMode}`,
-    `opt=${selectedImpositionOptionId || ''}`,
-    `tm=${stickerTrimMarks}`,
-    `pg=${showPaperGuides ? 1 : 0}`,
-    `slug=${showSlugLine ? 1 : 0}`,
-    `pt=${pontType}`,
-    `mp=${machineProfileId || ''}`,
-    `mk=${profile.markMode}:${profile.markInsetMm}:${profile.markSizeMm}`,
-    `spot=${requireSpotCutContour ? 1 : 0}`,
-    `bp=${bleedPolicy}:${bleedOverlapConfirmed ? 1 : 0}:${bleedOverlapJustification || ''}`,
-  ].join('::');
-
-  const cachedBatch = cache.getBatchPlan(layoutKey);
-  if (cachedBatch?.planState) {
-    return {
-      ...cachedBatch.planState,
-      cacheStats: cache.getStatsSnapshot(),
-    };
-  }
-
   // 1. Resolve or build immutable StickerJobs + ProductionGeometryCacheV1 (cached per sourceBatchKey)
+  const sourceBatchKey = computeSourceBatchKey(payloadPages, baseName);
   let jobSetEntry = cache.getJobSet(sourceBatchKey);
 
   if (!jobSetEntry) {
@@ -850,9 +491,9 @@ export async function buildV1StickerTabPlan({
       const pageJobs = built.jobs.map((j) =>
         pagePrefix
           ? Object.freeze({
-              ...j,
-              jobId: `${pagePrefix}${j.jobId}`,
-            })
+            ...j,
+            jobId: `${pagePrefix}${j.jobId}`,
+          })
           : j
       );
 
@@ -877,282 +518,26 @@ export async function buildV1StickerTabPlan({
     cache.setJobSet(sourceBatchKey, jobSetEntry);
   }
 
-  // 2. Compute Smart Imposition Options (Phase 4) from actual sticker contour dimensions
+  // 2. Compute H.2 layout templates (fast layout-only stage: 0 precisionBleedFromCut calls on cache hit!)
   const tLayoutStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const { pageEntries, resourceStore: store, assetIdToPageIdx, maxBleedOutset } = jobSetEntry;
   const allJobs = [];
   const allAssets = [];
   const sheetTemplates = [];
-  const templateClusterMeta = new Map();
 
-  const smartPlannerItems = pageEntries.map((entry, idx) => {
-    const rawQty = quantityByPage?.[entry.pageNum];
-    const rawRun = runCountByPage?.[entry.pageNum];
-    const resolvedQty =
-      Number.isFinite(Number(rawQty)) && Number(rawQty) >= 1
-        ? Math.round(Number(rawQty))
-        : null;
-    const resolvedRun =
-      Number.isFinite(Number(rawRun)) && Number(rawRun) >= 1
-        ? Math.round(Number(rawRun))
-        : safeRunCount;
-    return {
-      id: `PG-${entry.pageNum}`,
-      pageNum: entry.pageNum,
-      jobId: entry.pageJobs[0]?.jobId || `JOB-P${entry.pageNum}`,
-      modelKey: `Trang ${entry.pageNum}`,
-      label: `Trang ${entry.pageNum}`,
-      orderId: orderIdByPage?.[entry.pageNum] || `DON-01`,
-      widthMm: entry.maxW,
-      heightMm: entry.maxH,
-      quantity: resolvedQty,
-      runCount: resolvedRun,
-      isMultiDistinct: entry.isMultiDistinct,
-      contourCount: entry.contourCount,
-      allowRotate: allowRotationMode !== ROTATION_MODES.NONE,
-      entryIndex: idx,
-    };
-  });
+  for (const entry of pageEntries) {
+    const maxFitCols = Math.max(1, Math.floor((safeW + cutGapXMm + 1e-6) / Math.max(0.1, entry.maxW + cutGapXMm)));
+    const maxFitRows = Math.max(1, Math.floor((safeH + cutGapYMm + 1e-6) / Math.max(0.1, entry.maxH + cutGapYMm)));
 
-  const smartPlanResult = generateSmartImpositionOptions({
-    items: smartPlannerItems,
-    sheetWidthMm,
-    sheetHeightMm,
-    marginsMm,
-    cutGapXMm,
-    cutGapYMm,
-    allowRotationMode,
-    clusterMode: smartClusterMode,
-    autoFillSheet,
-    defaultRunCount: safeRunCount,
-  });
+    let columns = maxFitCols;
+    let rows = maxFitRows;
 
-  const activeSmartOption =
-    (selectedImpositionOptionId &&
-      smartPlanResult.options.find((o) => o.optionId === selectedImpositionOptionId)) ||
-    smartPlanResult.options[0] ||
-    null;
-
-  const useSmartBlueprintPath =
-    Boolean(activeSmartOption) &&
-    stickerUnit === 'single' &&
-    pageEntries.every((e) => !e.isMultiDistinct && e.pageJobs.length === 1) &&
-    (Boolean(selectedImpositionOptionId) ||
-      collation === 'mixed' ||
-      smartClusterMode !== CLUSTER_MODES.NONE ||
-      allowRotationMode === ROTATION_MODES.ROT_180);
-
-  const canPackMultiSkuNup =
-    !useSmartBlueprintPath &&
-    collation === 'sequential' &&
-    stickerUnit === 'single' &&
-    pageEntries.length > 1 &&
-    pageEntries.every((e) => !e.isMultiDistinct && e.pageJobs.length === 1);
-
-  if (useSmartBlueprintPath && activeSmartOption) {
-    const entryByPageNum = new Map(pageEntries.map((e) => [e.pageNum, e]));
-    const totalProducedByJobId = new Map();
-
-    for (const bp of activeSmartOption.sheetTemplateBlueprints) {
-      const tplRunCount = Math.max(1, Number(bp.runCount) || 1);
-      const tplItems = bp.items.map((it) => {
-        const entry = entryByPageNum.get(it.pageNum);
-        const jobId = entry.pageJobs[0].jobId;
-        const produced = it.copiesPerRun * tplRunCount;
-        totalProducedByJobId.set(jobId, (totalProducedByJobId.get(jobId) || 0) + produced);
-        return { jobId, copiesPerRun: it.copiesPerRun };
-      });
-
-      const gridSpec = buildGridSpecForSheet({
-        rows: bp.rows,
-        columns: bp.columns,
-        effW: bp.effW,
-        effH: bp.effH,
-        cutGapXMm,
-        cutGapYMm,
-        rotationDeg: bp.rotationDeg,
-        align,
-        marginsMm,
-        sheetHeightMm,
-      });
-
-      templateClusterMeta.set(bp.templateId, {
-        clusterId: bp.clusterId,
-        clusterLabel: bp.clusterLabel,
-        packType: bp.packType,
-      });
-
-      sheetTemplates.push({
-        templateId: bp.templateId,
-        sheetWidthMm,
-        sheetHeightMm,
-        marginsMm,
-        runCount: tplRunCount,
-        gridSpec,
-        items: tplItems,
-      });
-    }
-
-    for (const entry of pageEntries) {
-      const baseJob = entry.pageJobs[0];
-      const totalQty = totalProducedByJobId.get(baseJob.jobId) || 1;
-      const adjusted =
-        baseJob.order.quantity === totalQty ? baseJob : updateStickerJobOrder(baseJob, { quantity: totalQty });
-      allJobs.push(adjusted);
-      allAssets.push(...entry.assets);
-    }
-  } else if (canPackMultiSkuNup) {
-    let maxW = 0;
-    let maxH = 0;
-    for (const entry of pageEntries) {
-      if (entry.maxW > maxW) maxW = entry.maxW;
-      if (entry.maxH > maxH) maxH = entry.maxH;
-    }
-
-    const orient = chooseGridOrientation({
-      cellW: maxW,
-      cellH: maxH,
-      safeW,
-      safeH,
-      cutGapXMm,
-      cutGapYMm,
-      stickerLayout,
-      allowRotationMode,
-    });
-    if (!orient.fits || orient.cap < 1) {
-      return {
-        supported: false,
-        unsupportedReasons: [
-          `Khổ giấy ${sheetWidthMm}×${sheetHeightMm}mm với lề ${marginsMm.left}mm không đủ xếp mẫu kích thước ${maxW.toFixed(1)}×${maxH.toFixed(1)}mm.`,
-        ],
-        warnings: compat.warnings,
-        checkpoint: null,
-        previewPlan: null,
-        cacheStats: cache.getStatsSnapshot(),
-      };
-    }
-
-    const columns = orient.maxFitCols;
-    const rows = orient.maxFitRows;
-    const cap = columns * rows;
-
-    const skuRequests = pageEntries.map((entry) => {
-      const rawQty = quantityByPage?.[entry.pageNum];
-      const rawRun = runCountByPage?.[entry.pageNum];
-      let qty = 0;
-      if (Number.isFinite(Number(rawQty)) && Number(rawQty) >= 1) {
-        qty = Math.round(Number(rawQty));
-      } else if (Number.isFinite(Number(rawRun)) && Number(rawRun) >= 1) {
-        qty = Math.round(Number(rawRun));
-      } else if (safeRunCount > 1) {
-        qty = safeRunCount;
-      } else {
-        qty = autoFillSheet ? Math.max(1, Math.floor(cap / pageEntries.length)) : 1;
-      }
-      return { entry, qty };
-    });
-
-    const totalPlacedByJobId = new Map();
-    const chunks = [];
-    let currentChunk = [];
-    let currentUsed = 0;
-
-    for (const { entry, qty } of skuRequests) {
-      const jobId = entry.pageJobs[0].jobId;
-      let remaining = qty;
-      while (remaining > 0) {
-        const space = cap - currentUsed;
-        if (space <= 0) {
-          chunks.push(currentChunk);
-          currentChunk = [];
-          currentUsed = 0;
-          continue;
-        }
-        const take = Math.min(remaining, space);
-        currentChunk.push({ jobId, copiesPerRun: take });
-        currentUsed += take;
-        remaining -= take;
-        totalPlacedByJobId.set(jobId, (totalPlacedByJobId.get(jobId) || 0) + take);
-      }
-    }
-    if (currentChunk.length > 0) chunks.push(currentChunk);
-
-    for (const entry of pageEntries) {
-      const baseJob = entry.pageJobs[0];
-      const totalQty = totalPlacedByJobId.get(baseJob.jobId) || 1;
-      const adjusted =
-        baseJob.order.quantity === totalQty ? baseJob : updateStickerJobOrder(baseJob, { quantity: totalQty });
-      allJobs.push(adjusted);
-      allAssets.push(...entry.assets);
-    }
-
-    const gridSpec = buildGridSpecForSheet({
-      rows,
-      columns,
-      effW: orient.effW,
-      effH: orient.effH,
-      cutGapXMm,
-      cutGapYMm,
-      rotationDeg: orient.rotationDeg,
-      align,
-      marginsMm,
-      sheetHeightMm,
-    });
-
-    for (let cIdx = 0; cIdx < chunks.length; cIdx++) {
-      sheetTemplates.push({
-        templateId: `TPL-STICKER-V1-NUP-${cIdx + 1}`,
-        sheetWidthMm,
-        sheetHeightMm,
-        marginsMm,
-        runCount: 1,
-        gridSpec,
-        items: chunks[cIdx],
-      });
-    }
-  } else {
-    for (const entry of pageEntries) {
-      const orient = chooseGridOrientation({
-        cellW: entry.maxW,
-        cellH: entry.maxH,
-        safeW,
-        safeH,
-        cutGapXMm,
-        cutGapYMm,
-        stickerLayout,
-        allowRotationMode,
-      });
-
-      const maxFitCols = orient.maxFitCols;
-      const maxFitRows = orient.maxFitRows;
-      let columns = maxFitCols;
-      let rows = maxFitRows;
-
-      if (entry.isMultiDistinct) {
-        if (!orient.fits || maxFitCols * maxFitRows < entry.contourCount) {
-          return {
-            supported: false,
-            unsupportedReasons: [
-              `Trang ${entry.pageNum}: Khổ giấy ${sheetWidthMm}×${sheetHeightMm}mm với lề ${marginsMm.left}mm và khoảng cách ngang ${cutGapXMm}mm / dọc ${cutGapYMm}mm chỉ chứa tối đa ${maxFitCols}×${maxFitRows} = ${maxFitCols * maxFitRows} tem/tờ, không đủ xếp ${entry.contourCount} tem trên 1 tờ. Hãy giảm khoảng cách tem hoặc chọn khổ giấy lớn hơn.`,
-            ],
-            warnings: compat.warnings,
-            checkpoint: null,
-            previewPlan: null,
-            cacheStats: cache.getStatsSnapshot(),
-          };
-        }
-        if (entry.contourCount === 99 && maxFitCols >= 9 && maxFitRows >= 11) {
-          columns = 9;
-          rows = 11;
-        } else {
-          columns = Math.min(maxFitCols, Math.max(1, Math.ceil(entry.contourCount / maxFitRows)));
-          rows = Math.min(maxFitRows, Math.ceil(entry.contourCount / columns));
-        }
-      } else if (!orient.fits || orient.cap < 1) {
+    if (entry.isMultiDistinct) {
+      if (maxFitCols * maxFitRows < entry.contourCount) {
         return {
           supported: false,
           unsupportedReasons: [
-            `Trang ${entry.pageNum}: Khổ giấy ${sheetWidthMm}×${sheetHeightMm}mm với lề hiệu dụng ${marginsMm.left}mm không đủ xếp mẫu kích thước ${entry.maxW.toFixed(1)}×${entry.maxH.toFixed(1)}mm. Hãy giảm lề hoặc chọn khổ giấy lớn hơn.`,
+            `Trang ${entry.pageNum}: Khổ giấy ${sheetWidthMm}×${sheetHeightMm}mm với lề ${marginsMm.left}mm và khoảng cách ngang ${cutGapXMm}mm / dọc ${cutGapYMm}mm chỉ chứa tối đa ${maxFitCols}×${maxFitRows} = ${maxFitCols * maxFitRows} tem/tờ, không đủ xếp ${entry.contourCount} tem trên 1 tờ. Hãy giảm khoảng cách tem hoặc chọn khổ giấy lớn hơn.`,
           ],
           warnings: compat.warnings,
           checkpoint: null,
@@ -1160,71 +545,87 @@ export async function buildV1StickerTabPlan({
           cacheStats: cache.getStatsSnapshot(),
         };
       }
-
-      const rawPageRun = runCountByPage?.[entry.pageNum];
-      const rawPageQty = quantityByPage?.[entry.pageNum];
-      let tplRunCount = safeRunCount;
-      let placedPerSheet = entry.isMultiDistinct ? entry.contourCount : columns * rows;
-
-      if (entry.isMultiDistinct || stickerUnit === 'sheet') {
-        if (Number.isFinite(Number(rawPageRun)) && Number(rawPageRun) >= 1) {
-          tplRunCount = Math.max(1, Math.round(Number(rawPageRun)));
-        } else if (Number.isFinite(Number(rawPageQty)) && Number(rawPageQty) >= 1) {
-          tplRunCount = Math.max(1, Math.round(Number(rawPageQty)));
-        }
+      if (entry.contourCount === 99 && maxFitCols >= 9 && maxFitRows >= 11) {
+        columns = 9;
+        rows = 11;
       } else {
-        const cap = columns * rows;
-        if (Number.isFinite(Number(rawPageQty)) && Number(rawPageQty) >= 1) {
-          const reqQty = Math.round(Number(rawPageQty));
-          if (!autoFillSheet && reqQty < cap) {
-            placedPerSheet = reqQty;
-            tplRunCount = 1;
-          } else {
-            placedPerSheet = cap;
-            tplRunCount = Math.max(1, Math.ceil(reqQty / cap));
-          }
-        } else if (Number.isFinite(Number(rawPageRun)) && Number(rawPageRun) >= 1) {
-          placedPerSheet = cap;
-          tplRunCount = Math.max(1, Math.round(Number(rawPageRun)));
-        }
+        columns = Math.min(maxFitCols, Math.max(1, Math.ceil(entry.contourCount / maxFitRows)));
+        rows = Math.min(maxFitRows, Math.ceil(entry.contourCount / columns));
       }
-
-      const copiesPerSticker = entry.isMultiDistinct ? tplRunCount : placedPerSheet * tplRunCount;
-      const adjustedJobs = entry.pageJobs.map((j) =>
-        j.order.quantity === copiesPerSticker ? j : updateStickerJobOrder(j, { quantity: copiesPerSticker })
-      );
-
-      allJobs.push(...adjustedJobs);
-      allAssets.push(...entry.assets);
-
-      const tplId = `TPL-STICKER-V1-P${entry.pageNum}`;
-      const items = entry.isMultiDistinct
-        ? adjustedJobs.map((j) => ({ jobId: j.jobId, copiesPerRun: 1 }))
-        : [{ jobId: adjustedJobs[0].jobId, copiesPerRun: placedPerSheet }];
-
-      const gridSpec = buildGridSpecForSheet({
-        rows,
-        columns,
-        effW: orient.effW,
-        effH: orient.effH,
-        cutGapXMm,
-        cutGapYMm,
-        rotationDeg: orient.rotationDeg,
-        align,
-        marginsMm,
-        sheetHeightMm,
-      });
-
-      sheetTemplates.push({
-        templateId: tplId,
-        sheetWidthMm,
-        sheetHeightMm,
-        marginsMm,
-        runCount: tplRunCount,
-        gridSpec,
-        items,
-      });
     }
+
+    const rawPageRun = runCountByPage?.[entry.pageNum];
+    const rawPageQty = quantityByPage?.[entry.pageNum];
+    let tplRunCount = safeRunCount;
+    let placedPerSheet = entry.isMultiDistinct ? entry.contourCount : columns * rows;
+
+    if (entry.isMultiDistinct) {
+      if (Number.isFinite(Number(rawPageRun)) && Number(rawPageRun) >= 1) {
+        tplRunCount = Math.max(1, Math.round(Number(rawPageRun)));
+      } else if (Number.isFinite(Number(rawPageQty)) && Number(rawPageQty) >= 1) {
+        tplRunCount = Math.max(1, Math.round(Number(rawPageQty)));
+      }
+    } else {
+      const cap = columns * rows;
+      if (Number.isFinite(Number(rawPageQty)) && Number(rawPageQty) >= 1) {
+        const reqQty = Math.round(Number(rawPageQty));
+        if (!autoFillSheet && reqQty < cap) {
+          placedPerSheet = reqQty;
+          tplRunCount = 1;
+        } else {
+          placedPerSheet = cap;
+          tplRunCount = Math.max(1, Math.ceil(reqQty / cap));
+        }
+      } else if (Number.isFinite(Number(rawPageRun)) && Number(rawPageRun) >= 1) {
+        placedPerSheet = cap;
+        tplRunCount = Math.max(1, Math.round(Number(rawPageRun)));
+      }
+    }
+
+    const copiesPerSticker = entry.isMultiDistinct ? tplRunCount : placedPerSheet * tplRunCount;
+    const adjustedJobs = entry.pageJobs.map((j) =>
+      j.order.quantity === copiesPerSticker ? j : updateStickerJobOrder(j, { quantity: copiesPerSticker })
+    );
+
+    allJobs.push(...adjustedJobs);
+    allAssets.push(...entry.assets);
+
+    const tplId = `TPL-STICKER-V1-P${entry.pageNum}`;
+    const items = entry.isMultiDistinct
+      ? adjustedJobs.map((j) => ({ jobId: j.jobId, copiesPerRun: 1 }))
+      : [{ jobId: adjustedJobs[0].jobId, copiesPerRun: placedPerSheet }];
+
+    const r4 = (v) => Math.round(v * 10000) / 10000;
+    const pitchX = r4(entry.maxW + cutGapXMm);
+    const pitchY = r4(entry.maxH + cutGapYMm);
+    const gridTotalH = r4((rows - 1) * pitchY + entry.maxH);
+    const gridSpec = {
+      rows,
+      columns,
+      pitchXmm: pitchX,
+      pitchYmm: pitchY,
+      centerX: true,
+      centerY: align === 'center',
+      centerInSafeArea: true,
+    };
+    if (align === 'top') {
+      gridSpec.centerY = false;
+      gridSpec.originYmm = Math.ceil(marginsMm.top * 10000) / 10000;
+    } else if (align === 'bottom') {
+      gridSpec.centerY = false;
+      const rawBottomOrigin = Math.max(marginsMm.top, sheetHeightMm - marginsMm.bottom - gridTotalH);
+      gridSpec.originYmm = Math.max(marginsMm.top, Math.floor(rawBottomOrigin * 1000) / 1000);
+    }
+
+    sheetTemplates.push({
+      templateId: tplId,
+      sheetWidthMm,
+      sheetHeightMm,
+      marginsMm,
+      runCount: tplRunCount,
+      gridSpec,
+      items,
+    });
   }
 
   const uiParams = {
@@ -1247,76 +648,23 @@ export async function buildV1StickerTabPlan({
     allowWarnings: true,
   });
 
+  const machineProfileId = config.machineProfileId || null;
+  const requireSpotCutContour = config.requireSpotCutContour !== false;
+
   const previewPlan = buildPreviewPlanFromH2Batch(checkpoint.batchPlan, allJobs, {
-    pontType,
+    pontType: config.pontType || 'graphtec',
     machineProfileId,
     provenanceBadge: v1Payload.contourProvenance?.badge || payloadPages[0]?.contourProvenance?.badge || 'V1',
     assetIdToPageIdx,
-    baseName,
-    showSlugLine,
-    stickerTrimMarks,
-    showPaperGuides,
-  });
-
-  // Attach cluster metadata onto preview sheets so Pair Thumbnails & Overlay Inspector display cluster tags
-  for (let sIdx = 0; sIdx < previewPlan.sheets.length; sIdx++) {
-    const tplId = checkpoint.batchPlan.impositionPlan.sheets[sIdx]?.templateId;
-    const cm = tplId ? templateClusterMeta.get(tplId) : null;
-    if (cm) {
-      previewPlan.sheets[sIdx].clusterId = cm.clusterId;
-      previewPlan.sheets[sIdx].clusterLabel = cm.clusterLabel;
-      previewPlan.sheets[sIdx].packType = cm.packType;
-    }
-  }
-
-  // Compute exact Phase 4 waste & utilization metrics on the active authoritative BatchPlan
-  const activeBlueprintsForMetrics = checkpoint.batchPlan.impositionPlan.sheets.map((sh) => {
-    const rc = Math.max(1, Number(checkpoint.batchPlan.productionOrderManifest?.runCountsByTemplateId?.[sh.templateId]) || 1);
-    const byJob = new Map();
-    for (const pl of sh.placements) {
-      const cur = byJob.get(pl.jobId) || {
-        id: pl.jobId,
-        widthMm: pl.targetSizeMm?.w || 0,
-        heightMm: pl.targetSizeMm?.h || 0,
-        copiesPerRun: 0,
-      };
-      cur.copiesPerRun += 1;
-      byJob.set(pl.jobId, cur);
-    }
-    return { runCount: rc, items: Array.from(byJob.values()) };
-  });
-  const totalRequestedForMetrics = smartPlannerItems.reduce((sum, it) => {
-    if (it.isMultiDistinct) return sum + (it.contourCount || 1) * Math.max(1, it.runCount || 1);
-    return sum + Math.max(1, it.quantity || 1);
-  }, 0);
-  const wasteMetrics = computeImpositionMetrics({
-    sheetWidthMm,
-    sheetHeightMm,
-    blueprints: activeBlueprintsForMetrics,
-    totalRequestedStickers: totalRequestedForMetrics,
   });
 
   const tLayoutEnd = typeof performance !== 'undefined' ? performance.now() : Date.now();
   cache.recordLayoutDurationMs(tLayoutEnd - tLayoutStart);
+  const layoutEntry = cache.setBatchPlan(`${sourceBatchKey}::${sheetWidthMm}x${sheetHeightMm}::${cutGapMm}::${safeRunCount}::${bleedPolicy}`, null);
 
   const firstTpl = sheetTemplates[0];
   const totalPhysicalSheets = sheetTemplates.reduce((sum, t) => sum + (t.runCount || 1), 0);
   const totalProducedStickers = previewPlan.summary.totalPlacedItems;
-  const activeRot = firstTpl?.gridSpec?.rotationDeg || 0;
-  const matchedOptionWhenNotSmartPath = !useSmartBlueprintPath
-    ? smartPlanResult.options.find(
-        (o) =>
-          o.metrics.physicalSheetsNeeded === totalPhysicalSheets &&
-          o.metrics.uniqueTemplatesCount === sheetTemplates.length &&
-          o.metrics.totalProducedStickers === totalProducedStickers &&
-          Array.isArray(o.rotationsUsed) &&
-          o.rotationsUsed.includes(activeRot)
-      ) || null
-    : null;
-  const resolvedSelectedOptionId = useSmartBlueprintPath
-    ? activeSmartOption?.optionId || null
-    : matchedOptionWhenNotSmartPath?.optionId || null;
-  const overlayBySheet = previewPlan.sheets.map((sh) => analyzeArtworkCutOverlay(sh));
   const planObj = {
     supported: true,
     unsupportedReasons: [],
@@ -1324,36 +672,21 @@ export async function buildV1StickerTabPlan({
       ...compat.warnings,
       ...(checkpoint.batchPlan.productionOrderManifest.warnings || []),
     ],
-    batchVersion: null,
+    batchVersion: layoutEntry.batchVersion,
     checkpoint,
     previewPlan,
     jobs: allJobs,
     assets: allAssets,
     resourceStore: store,
     uiParams,
-    pontType,
+    pontType: config.pontType || 'graphtec',
     machineProfileId,
     requireSpotCutContour,
-    showSlugLine,
-    stickerUnit,
-    collation,
-    stickerLayout,
-    allowRotationMode,
-    smartClusterMode,
-    selectedOptionId: resolvedSelectedOptionId,
-    smartOptions: smartPlanResult.options,
-    clusters: activeSmartOption?.clusters || smartPlanResult.clusters || [],
-    wasteMetrics,
-    overlayBySheet,
-    previewParitySignature: null,
-    stickerTrimMarks,
-    showPaperGuides,
-    marginIncludesMarks,
-    effectiveMarginsMm: { ...marginsMm },
+    showSlugLine: config.showSlugLine !== false,
     runCount: safeRunCount,
     runCountsByTemplateId: { ...checkpoint.batchPlan.productionOrderManifest.runCountsByTemplateId },
     pipelineCache: cache,
-    cacheStats: null,
+    cacheStats: cache.getStatsSnapshot(),
     summary: {
       sheetWidthMm,
       sheetHeightMm,
@@ -1361,26 +694,11 @@ export async function buildV1StickerTabPlan({
       cutGapYMm,
       columns: firstTpl?.gridSpec?.columns || 0,
       rows: firstTpl?.gridSpec?.rows || 0,
-      rotationDeg: firstTpl?.gridSpec?.rotationDeg || 0,
       stickersPerSheet: previewPlan.stats.pagesPerSheet,
       totalSheets: previewPlan.totalSheets,
       physicalSheets: totalPhysicalSheets,
       totalStickers: totalProducedStickers,
-      utilizationPct: wasteMetrics.utilizationPct,
-      wastePct: wasteMetrics.wastePct,
-      wasteAreaCm2: wasteMetrics.wasteAreaCm2,
-      overrunStickers: wasteMetrics.overrunStickers,
       alignment: align,
-      stickerUnit,
-      collation,
-      stickerLayout,
-      allowRotationMode,
-      smartClusterMode,
-      stickerTrimMarks,
-      showPaperGuides,
-      marginIncludesMarks,
-      quietZoneMm,
-      markClearanceMm: markClearance,
       markInsetMm: profile.markInsetMm,
       markSizeMm: profile.markSizeMm,
       geometryStatus: checkpoint.batchPlan.productionOrderManifest.bleedPolicy.geometryStatus,
@@ -1388,7 +706,6 @@ export async function buildV1StickerTabPlan({
       provenance: v1Payload.contourProvenance || payloadPages[0]?.contourProvenance || null,
     },
   };
-  planObj.previewParitySignature = computePreviewPlanParitySignature(planObj);
 
   const preReports = await validateMachineCompatibility({
     v1PlanState: planObj,
@@ -1399,10 +716,6 @@ export async function buildV1StickerTabPlan({
   });
   planObj.geometryReport = preReports.geometryReport;
   planObj.machineReport = preReports.machineReport;
-
-  const layoutEntry = cache.setBatchPlan(layoutKey, planObj);
-  planObj.batchVersion = layoutEntry.batchVersion;
-  planObj.cacheStats = cache.getStatsSnapshot();
   return planObj;
 }
 
@@ -1468,8 +781,6 @@ function toWinAnsiAscii(str) {
  * Pure additive post-stamp helper (ZERO edits to LOCKED productionOutput.js / cutVectorExporter.js):
  *  - Replaces the default LOCKED 5x5mm corner squares with exact shop Graphtec L-marks (┌ ┐ └ ┘)
  *    or circle5mm / circleHollow marks matching Preview 1:1.
- *  - Draws outer guillotine trim marks (`v1TrimMarks`) and Paper Guides (`paperGuides`) on PRINT pages
- *    using the exact same sheet-mm coordinates as Preview.
  *  - Draws centered top Slug Line on PRINT pages (matching shop L0110.063 header style).
  */
 function stampShopMarksAndSlugOnPage({
@@ -1479,8 +790,6 @@ function stampShopMarksAndSlugOnPage({
   pontType = 'graphtec',
   showSlugLine = true,
   slugText = '',
-  v1TrimMarks = [],
-  paperGuides = [],
   font = null,
   isCut = false,
 }) {
@@ -1500,6 +809,7 @@ function stampShopMarksAndSlugOnPage({
     ];
 
     const maskHalfPt = ((sizeMm + 1.0) / 2) * MM_TO_PT;
+    const armPt = Math.max(8, sizeMm * 2) * MM_TO_PT;
     const strokePt = 0.6 * MM_TO_PT; // ~1.7pt crisp Graphtec registration bracket
 
     for (const c of corners) {
@@ -1556,30 +866,6 @@ function stampShopMarksAndSlugOnPage({
     }
   }
 
-  // Stamp outer guillotine trim marks on PRINT PDF (exact 1:1 with Preview v1TrimMarks)
-  if (!isCut && Array.isArray(v1TrimMarks) && v1TrimMarks.length > 0) {
-    for (const tm of v1TrimMarks) {
-      page.drawLine({
-        start: { x: tm.x1 * MM_TO_PT, y: (hMm - tm.y1) * MM_TO_PT },
-        end: { x: tm.x2 * MM_TO_PT, y: (hMm - tm.y2) * MM_TO_PT },
-        thickness: Math.max(0.15, Number(tm.thicknessMm) || 0.2) * MM_TO_PT,
-        color: black,
-      });
-    }
-  }
-
-  // Stamp Paper Guides (Thanh canh giấy) on PRINT PDF (exact 1:1 with Preview paperGuides)
-  if (!isCut && Array.isArray(paperGuides) && paperGuides.length > 0) {
-    for (const g of paperGuides) {
-      page.drawLine({
-        start: { x: g.x1 * MM_TO_PT, y: (hMm - g.y1) * MM_TO_PT },
-        end: { x: g.x2 * MM_TO_PT, y: (hMm - g.y2) * MM_TO_PT },
-        thickness: Math.max(0.25, Number(g.thicknessMm) || 0.35) * MM_TO_PT,
-        color: black,
-      });
-    }
-  }
-
   if (!isCut && showSlugLine && font && slugText) {
     const cleanText = toWinAnsiAscii(slugText);
     if (cleanText) {
@@ -1609,11 +895,14 @@ async function applySpotCutContourToCutPage(doc, page, spotName = 'CutContour') 
   const csTag = ensureSpotCutContourColorSpace(doc, page, spotName);
   // Rewrite only the CUT stroke color command (e.g. "0 1 0 0 K" or "1 0 0 RG") to "/CS_CutContour CS 1 SCN"
   // without altering a single Bézier coordinate or command.
-  const contents = page.node.Contents();
-  if (!contents) return;
-  const refs = contents.constructor.name === 'PDFArray'
-    ? Array.from({ length: contents.size() }, (_, i) => contents.get(i))
-    : [contents];
+  const rawContents = page.node.get(PDFName.of('Contents'));
+  if (!rawContents) return;
+  const resolvedContents = doc.context.lookup(rawContents);
+  const refs =
+    resolvedContents instanceof PDFArray ||
+    (resolvedContents && typeof resolvedContents.size === 'function' && typeof resolvedContents.get === 'function')
+      ? Array.from({ length: resolvedContents.size() }, (_, i) => resolvedContents.get(i))
+      : [rawContents];
 
   const inflateBytes = async (raw, isFlate) => {
     if (!isFlate) return new TextDecoder('latin1').decode(raw);
@@ -1621,7 +910,7 @@ async function applySpotCutContourToCutPage(doc, page, spotName = 'CutContour') 
       try {
         const ds = new globalThis.DecompressionStream('deflate');
         const w = ds.writable.getWriter();
-        const wp = w.write(raw).then(() => w.close()).catch(() => {});
+        const wp = w.write(raw).then(() => w.close()).catch(() => { });
         const chunks = [];
         const r = ds.readable.getReader();
         while (true) {
@@ -1690,25 +979,13 @@ export async function exportV1StickerBatchBundle({
     const runCountsByTpl = v1PlanState.checkpoint.batchPlan.productionOrderManifest?.runCountsByTemplateId || {};
     const expectedSheets = imp.sheets.length;
 
-    // Stamp Graphtec L-marks (or selected pontType) + v1TrimMarks + paperGuides + top Slug Line onto PRINT.pdf
+    // Stamp Graphtec L-marks (or selected pontType) + top Slug Line onto PRINT.pdf
     const printDoc = await PDFDocument.load(rawPrintBytes);
     const helvetica = showSlugLine ? await printDoc.embedFont(StandardFonts.Helvetica) : null;
-    const previewSheets = v1PlanState.previewPlan?.sheets || [];
     for (let sIdx = 0; sIdx < Math.min(expectedSheets, printDoc.getPageCount()); sIdx++) {
       const sheet = imp.sheets[sIdx];
-      const prevSh = previewSheets[sIdx] || null;
       const runCnt = Math.max(1, Number(runCountsByTpl[sheet.templateId]) || 1);
-      const slugText = showSlugLine
-        ? formatV1SlugText({
-            baseName: safeBase,
-            sheetWidthMm: sheet.widthMm,
-            sheetHeightMm: sheet.heightMm,
-            placementCount: sheet.placements.length,
-            runCount: runCnt,
-            sheetIndex: sIdx + 1,
-            totalSheets: expectedSheets,
-          })
-        : '';
+      const slugText = `${safeBase} - ${sheet.widthMm}x${sheet.heightMm}mm - ${sheet.placements.length} tem/to - ${runCnt} copy - ${expectedSheets}/ ${sIdx + 1}`;
       stampShopMarksAndSlugOnPage({
         page: printDoc.getPage(sIdx),
         sheet,
@@ -1716,8 +993,6 @@ export async function exportV1StickerBatchBundle({
         pontType,
         showSlugLine,
         slugText,
-        v1TrimMarks: prevSh?.v1TrimMarks || [],
-        paperGuides: prevSh?.paperGuides || [],
         font: helvetica,
         isCut: false,
       });
@@ -1808,13 +1083,13 @@ export async function exportV1StickerBatchBundle({
 
     const aiFiles = includeLayeredAi
       ? await exportLayeredAiFiles({
-          v1PlanState,
-          printPdfBytes,
-          pontType,
-          requireSpotCutContour: true,
-          spotColorName: 'CutContour',
-          baseFileName: safeBase,
-        })
+        v1PlanState,
+        printPdfBytes,
+        pontType,
+        requireSpotCutContour: true,
+        spotColorName: 'CutContour',
+        baseFileName: safeBase,
+      })
       : [];
 
     const dualReports = await validateMachineCompatibility({
@@ -1823,20 +1098,6 @@ export async function exportV1StickerBatchBundle({
       machineProfileId,
       pontType,
       requireSpotCutContour,
-    });
-
-    const previewParitySignature =
-      v1PlanState.previewParitySignature || computePreviewPlanParitySignature(v1PlanState);
-    const previewParity = await checkPreviewVsExportParity({
-      v1PlanState,
-      lastExport: {
-        status: res.finalCheck?.status || 'PASS',
-        finalCheck: res.finalCheck,
-        postExportVerification: res.postExportVerification,
-        previewParitySignature,
-      },
-      exportedPrintPdfBytes: printPdfBytes,
-      exportedCutPageFiles: cutPageFiles,
     });
 
     return {
@@ -1848,78 +1109,10 @@ export async function exportV1StickerBatchBundle({
       machineReport: dualReports.machineReport,
       finalCheck: res.finalCheck,
       postExportVerification: res.postExportVerification,
-      previewParitySignature,
-      previewParity,
     };
   } finally {
     if (res?.output && store) {
       releaseCheckpointKOutput(store, res.output);
     }
   }
-}
-
-/**
- * Build a JSON-safe Production Report (V1) combining layout summary, per-sheet manifest,
- * geometry/machine compatibility reports, post-export CUT.pdf verification, and cache telemetry.
- */
-export function buildProductionReportV1(v1PlanState, exportResult = null) {
-  if (!v1PlanState) return null;
-  const imp = v1PlanState.checkpoint?.batchPlan?.impositionPlan || null;
-  const manifest = v1PlanState.checkpoint?.batchPlan?.productionOrderManifest || null;
-  const sheets = (v1PlanState.previewPlan?.sheets || []).map((sh, idx) => ({
-    sheetNumber: sh.sheetNumber || idx + 1,
-    templateId: imp?.sheets?.[idx]?.templateId || `SHEET-${idx + 1}`,
-    clusterId: sh.clusterId || null,
-    clusterLabel: sh.clusterLabel || null,
-    widthMm: sh.widthMm,
-    heightMm: sh.heightMm,
-    placementsPerSheet: sh.placements?.length || 0,
-    runCount: sh.runCount || 1,
-    totalProducedOnSheet: (sh.placements?.length || 0) * (sh.runCount || 1),
-    trimMarksCount: sh.v1TrimMarks?.length || 0,
-    paperGuidesCount: sh.paperGuides?.length || 0,
-    slugText: sh.slugText || '',
-  }));
-
-  return {
-    schemaVersion: 'PrintKitProductionReportV1.0',
-    generatedAt: new Date().toISOString(),
-    supported: Boolean(v1PlanState.supported),
-    batchVersion: v1PlanState.batchVersion ?? null,
-    planId: imp?.planId || null,
-    planHash: imp?.planHash || null,
-    batchFreshnessHash: manifest?.batchFreshnessHash || null,
-    previewParitySignature: v1PlanState.previewParitySignature || null,
-    selectedOptionId: v1PlanState.selectedOptionId || null,
-    smartOptionsCount: v1PlanState.smartOptions?.length || 0,
-    summary: {
-      ...(v1PlanState.summary || {}),
-      stickerUnit: v1PlanState.stickerUnit || 'single',
-      collation: v1PlanState.collation || 'stepAndRepeat',
-      stickerLayout: v1PlanState.stickerLayout || 'optimal',
-      allowRotationMode: v1PlanState.allowRotationMode || 'rot90_180',
-      smartClusterMode: v1PlanState.smartClusterMode || 'none',
-      stickerTrimMarks: v1PlanState.stickerTrimMarks || 'none',
-      showPaperGuides: Boolean(v1PlanState.showPaperGuides),
-      showSlugLine: v1PlanState.showSlugLine !== false,
-      marginIncludesMarks: v1PlanState.marginIncludesMarks !== false,
-      pontType: v1PlanState.pontType || 'graphtec',
-      machineProfileId: v1PlanState.machineProfileId || null,
-      requireSpotCutContour: Boolean(v1PlanState.requireSpotCutContour),
-    },
-    wasteMetrics: v1PlanState.wasteMetrics || null,
-    clusters: v1PlanState.clusters || [],
-    sheets,
-    runCountsByTemplateId: { ...(v1PlanState.runCountsByTemplateId || {}) },
-    geometryReport: exportResult?.geometryReport || v1PlanState.geometryReport || null,
-    machineReport: exportResult?.machineReport || v1PlanState.machineReport || null,
-    postExportVerification: exportResult?.postExportVerification || null,
-    previewParity: exportResult?.previewParity || null,
-    finalCheckStatus: exportResult?.finalCheck?.status || exportResult?.status || null,
-    warnings: [
-      ...(v1PlanState.warnings || []),
-      ...(exportResult?.warnings || []),
-    ],
-    cacheStats: v1PlanState.cacheStats || null,
-  };
 }
