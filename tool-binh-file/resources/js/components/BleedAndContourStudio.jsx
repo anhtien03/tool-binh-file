@@ -239,7 +239,7 @@ export default function BleedAndContourStudio({
     c.width = Math.round(vp.width);
     c.height = Math.round(vp.height);
     // Pass transparent background so PDFs without a full-page white rect preserve their native vector/SMask Alpha channel!
-    await page.render({ canvasContext: c.getContext('2d'), viewport: vp, background: 'rgba(0,0,0,0)' }).promise;
+    await page.render({ canvasContext: c.getContext('2d', { willReadFrequently: true }), viewport: vp, background: 'rgba(0,0,0,0)' }).promise;
     updatePageStateRecord(safePage, {
       fileSignature: activeSig,
       stage: PAGE_STAGE.PREVIEW_READY,
@@ -402,7 +402,7 @@ export default function BleedAndContourStudio({
             pgCanvas.width = Math.round(vp.width);
             pgCanvas.height = Math.round(vp.height);
             await pdfPage.render({
-              canvasContext: pgCanvas.getContext('2d'),
+              canvasContext: pgCanvas.getContext('2d', { willReadFrequently: true }),
               viewport: vp,
               background: 'rgba(0,0,0,0)',
             }).promise;

@@ -49,7 +49,7 @@ export function buildPaperTransparentCanvas(sourceCanvas, whiteThreshold = 242) 
   if (!sourceCanvas || !sourceCanvas.width || !sourceCanvas.height) return sourceCanvas;
   const w = sourceCanvas.width;
   const h = sourceCanvas.height;
-  const srcCtx = sourceCanvas.getContext('2d');
+  const srcCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
   const imgData = srcCtx.getImageData(0, 0, w, h);
   const d = imgData.data;
 
@@ -191,7 +191,7 @@ export function sampleStickerEdgeColor(sourceCanvas, cutPolyMm, totalWmm, totalH
   const bh = by1 - by0 + 1;
   if (bw <= 0 || bh <= 0) return fallbackHex;
 
-  const data = sourceCanvas.getContext('2d').getImageData(bx0, by0, bw, bh).data;
+  const data = sourceCanvas.getContext('2d', { willReadFrequently: true }).getImageData(bx0, by0, bw, bh).data;
   const rs = [];
   const gs = [];
   const bs = [];
