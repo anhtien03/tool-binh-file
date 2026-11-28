@@ -25,6 +25,20 @@ import {
   checkPreviewVsExportParity,
 } from '../engine/pairPreviewEngine';
 import { ROTATION_MODES, CLUSTER_MODES } from '../engine/smartImpositionPlanner';
+import {
+  buildDuplexMirrorStickerPdf,
+  DUPLEX_MIRROR_AXES,
+} from '../engine/duplexStickerExtension';
+import {
+  QUICK_IMPOSITION_PRESETS,
+  splitSheetwisePlatesPdf,
+} from '../engine/quickImpositionPresets';
+import {
+  calculateSpineThicknessMm,
+  computeSmythSewnSignatures,
+  exportBookletCoverSpreadPdf,
+  exportBackToBack180Pdf,
+} from '../engine/bookletCoverExtension';
 
 export default function PdfEditor() {
   // --- Top-Level Navigation ('viewer' | 'library' | 'dieline' | 'namecard' | 'sticker' | 'booklet' | 'bleed' | 'resize' | 'organizer' | 'crop' | 'trimShift') ---
@@ -119,6 +133,14 @@ export default function PdfEditor() {
   const [bookletCreep, setBookletCreep] = useState(0.2);
   const [pagesPerSignature, setPagesPerSignature] = useState(8);
   const [coverPagesAtEnd, setCoverPagesAtEnd] = useState(0);
+  // Wave 1 Card 15: Smyth-Sewn, Perfect Bound Cover Spread & Back-to-Back 180°
+  const [bookletPaperThicknessMm, setBookletPaperThicknessMm] = useState(0.1);
+  const [bookletGlueMm, setBookletGlueMm] = useState(0.6);
+  const [bookletBackToBack180, setBookletBackToBack180] = useState(false);
+
+  // Wave 1 Card 13: Duplex Mirror Sticker (Bế rớt 2 mặt lật gương)
+  const [stickerDuplexMirror, setStickerDuplexMirror] = useState(false);
+  const [stickerMirrorAxis, setStickerMirrorAxis] = useState(DUPLEX_MIRROR_AXES.HORIZONTAL);
 
   // --- Sticker Die-Cut Settings ('sticker' mode) ---
   const [stickerUnit, setStickerUnit] = useState('single'); // 'single' (Từng tem) | 'sheet' (Nguyên tấm decal)
@@ -1018,11 +1040,21 @@ export default function PdfEditor() {
             warnings: bundle.finalCheck?.warnings || [],
           });
         } else {
-          const blob = new Blob([bundle.printPdfBytes], { type: 'application/pdf' });
+          let finalPrintBytes = bundle.printPdfBytes;
+          let printFileName = `PrintKitV1_FileIn_${base}.pdf`;
+          if (stickerDuplexMirror) {
+            const duplexRes = await buildDuplexMirrorStickerPdf({
+              frontPdfBytes: bundle.printPdfBytes,
+              mirrorAxis: stickerMirrorAxis,
+            });
+            finalPrintBytes = duplexRes.pdfBytes;
+            printFileName = `PrintKitV1_FileIn_2MatLatGuong_${base}.pdf`;
+          }
+          const blob = new Blob([finalPrintBytes], { type: 'application/pdf' });
           const url = window.URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = `PrintKitV1_FileIn_${base}.pdf`;
+          a.download = printFileName;
           document.body.appendChild(a);
           a.click();
           a.remove();
@@ -1073,33 +1105,132 @@ export default function PdfEditor() {
           a.remove();
           window.URL.revokeObjectURL(url);
         } else {
-          const pdfBytesOutput = await exportStickerPdf(sourceFiles, plan, legacyConfig, stickerRole);
+          let pdfBytesOutput = await exportStickerPdf(sourceFiles, plan, legacyConfig, stickerRole);
+          let outName = `${stickerRole === 'cut' ? 'FileBe' : 'FileIn'}_${baseName}`;
+          if (stickerRole === 'print' && stickerDuplexMirror) {
+            const duplexRes = await buildDuplexMirrorStickerPdf({
+              frontPdfBytes: pdfBytesOutput,
+              mirrorAxis: stickerMirrorAxis,
+            });
+            pdfBytesOutput = duplexRes.pdfBytes;
+            outName = `FileIn_2MatLatGuong_${baseName}`;
+          }
           const blob = new Blob([pdfBytesOutput], { type: 'application/pdf' });
           const url = window.URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = `${stickerRole === 'cut' ? 'FileBe' : 'FileIn'}_${baseName}`;
+          a.download = outName;
           document.body.appendChild(a);
           a.click();
           a.remove();
           window.URL.revokeObjectURL(url);
         }
       } else {
-        const pdfBytesOutput = await exportImposedPdf(sourceFiles, plan, legacyConfig);
-        const blob = new Blob([pdfBytesOutput], { type: 'application/pdf' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `Imposed_${baseName}`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
+        const effectiveConfig =
+          duplexMode === 'sheetwise' ? { ...legacyConfig, duplexMode: 'workAndTurn' } : legacyConfig;
+        let pdfBytesOutput = await exportImposedPdf(sourceFiles, plan, effectiveConfig);
+        if (mode === 'grid' && duplexMode === 'sheetwise') {
+          const plates = await splitSheetwisePlatesPdf(pdfBytesOutput);
+          const pairs = [
+            { bytes: plates.plateABytes, name: `Sheetwise_KemA_MatTruoc_${baseName}` },
+            { bytes: plates.plateBBytes, name: `Sheetwise_KemB_MatSau_${baseName}` },
+          ];
+          for (const item of pairs) {
+            const blob = new Blob([item.bytes], { type: 'application/pdf' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = item.name;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => window.URL.revokeObjectURL(url), 5000);
+          }
+        } else {
+          let outName = `Imposed_${baseName}`;
+          if (mode === 'booklet' && bookletBackToBack180) {
+            const rotRes = await exportBackToBack180Pdf(pdfBytesOutput);
+            pdfBytesOutput = rotRes.pdfBytes;
+            outName = `Booklet_DoiLung180_${baseName}`;
+          }
+          const blob = new Blob([pdfBytesOutput], { type: 'application/pdf' });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = outName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.URL.revokeObjectURL(url);
+        }
       }
       setSuccess(true);
     } catch (err) {
       console.error(err);
       setError(err.message || 'Đã xảy ra lỗi khi xuất file.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Wave 1 Card 14: Apply 1-click Quick Imposition Preset (R4 / Lưới cắt xén)
+  const handleApplyQuickPreset = (preset) => {
+    const s = preset?.settings;
+    if (!s) return;
+    if (s.paperSizeKey) setPaperSizeKey(s.paperSizeKey);
+    if (s.orientation) setOrientation(s.orientation);
+    if (s.layoutType) setLayoutType(s.layoutType);
+    if (s.cols != null) setCols(s.cols);
+    if (s.rows != null) setRows(s.rows);
+    if (s.gutterX != null) setGutterX(s.gutterX);
+    if (s.gutterY != null) setGutterY(s.gutterY);
+    if (s.bleedMm != null) setBleedMm(s.bleedMm);
+    if (s.marginTop != null) setMarginTop(s.marginTop);
+    if (s.marginBottom != null) setMarginBottom(s.marginBottom);
+    if (s.marginLeft != null) setMarginLeft(s.marginLeft);
+    if (s.marginRight != null) setMarginRight(s.marginRight);
+    if (s.finishedSizePreset) setFinishedSizePreset(s.finishedSizePreset);
+    if (s.targetTrimW != null) setTargetTrimW(s.targetTrimW);
+    if (s.targetTrimH != null) setTargetTrimH(s.targetTrimH);
+    if (s.collation) setCollation(s.collation);
+    setCurrentSheetIndex(0);
+  };
+
+  // Wave 1 Card 15: Export 1:1 Perfect Bound Cover Spread PDF (Back + Spine + Front + 4 Crease Marks)
+  const handleExportBookletCoverSpread = async () => {
+    if (!sourceFiles.length) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const srcBytes = new Uint8Array(await sourceFiles[0].file.arrayBuffer());
+      const interiorPages = Math.max(4, pdfPages.length - 4);
+      const { spineMm } = calculateSpineThicknessMm({
+        interiorPageCount: interiorPages,
+        paperThicknessMm: bookletPaperThicknessMm,
+        glueAllowanceMm: bookletGlueMm,
+      });
+      const res = await exportBookletCoverSpreadPdf({
+        sourcePdfBytes: srcBytes,
+        frontCoverPageIdx: 0,
+        backCoverPageIdx: -1,
+        spineMm,
+        bleedMm: Math.max(2, bleedMm),
+        hingeOffsetMm: 6,
+      });
+      const blob = new Blob([res.pdfBytes], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const base = (sourceFiles[0].file.name || 'book').replace(/\.pdf$/i, '');
+      a.download = `SpreadBia_Gay${res.spineMm}mm_${base}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => window.URL.revokeObjectURL(url), 5000);
+      setSuccess(true);
+    } catch (err) {
+      console.error(err);
+      setError(err?.message || 'Không thể tách Spread Bìa.');
     } finally {
       setLoading(false);
     }
@@ -2695,6 +2826,26 @@ export default function PdfEditor() {
                   </div>
                 )}
 
+                {/* Wave 1 Card 14: Bình nhanh R4 & Lưới cắt xén 1 chạm */}
+                <div className="flex flex-col gap-1.5 bg-[#F8FAFC] border border-[#E2E8F0] rounded-lg p-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
+                    Bình nhanh R4 &amp; Lưới cắt xén
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {QUICK_IMPOSITION_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        title={preset.description}
+                        onClick={() => handleApplyQuickPreset(preset)}
+                        className="px-2 py-1.5 rounded-md bg-white hover:bg-[#DDF5EC] border border-[#E2E8F0] hover:border-[#087F5B] text-[10.5px] font-semibold text-[#17212F] hover:text-[#064E3B] text-left truncate transition-colors cursor-pointer"
+                      >
+                        {preset.shortLabel}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex flex-col gap-1">
                     <label className="text-[10px] text-slate-500">Số mặt &amp; Lật gương</label>
@@ -2704,8 +2855,9 @@ export default function PdfEditor() {
                       className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
                     >
                       <option value="simplex">1 Mặt (Simplex)</option>
-                      <option value="workAndTurn">2 Mặt — Trở nhíp</option>
-                      <option value="workAndTumble">2 Mặt — Trở đít</option>
+                      <option value="workAndTurn">2 Mặt — Trở nhíp (W&amp;T)</option>
+                      <option value="workAndTumble">2 Mặt — Trở đít (Tumble)</option>
+                      <option value="sheetwise">2 Mặt — Sheetwise (2 kẽm)</option>
                     </select>
                   </div>
                   <div className="flex flex-col gap-1">
@@ -3747,19 +3899,84 @@ export default function PdfEditor() {
                   </select>
                 </div>
 
-                {bookletStyle === 'perfectBound' && (
-                  <div className="flex items-center justify-between gap-2 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200">
-                    <label className="text-[11px] text-slate-600">Số trang / tay sách:</label>
-                    <select
-                      value={pagesPerSignature}
-                      onChange={(e) => setPagesPerSignature(Number(e.target.value))}
-                      className="bg-white border border-slate-200 rounded px-2 py-0.5 text-xs font-mono font-bold text-[#146C53]"
-                    >
-                      <option value={4}>4 trang (1 tờ)</option>
-                      <option value={8}>8 trang (2 tờ)</option>
-                      <option value={16}>16 trang (4 tờ)</option>
-                    </select>
-                  </div>
+                {bookletStyle === 'perfectBound' && (() => {
+                  const sigInfo = computeSmythSewnSignatures(Math.max(4, pdfPages.length), pagesPerSignature);
+                  const spineInfo = calculateSpineThicknessMm({
+                    interiorPageCount: Math.max(4, pdfPages.length - 4),
+                    paperThicknessMm: bookletPaperThicknessMm,
+                    glueAllowanceMm: bookletGlueMm,
+                  });
+                  return (
+                    <div className="flex flex-col gap-2 bg-[#F8FAFC] p-2.5 rounded-lg border border-[#E2E8F0]">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-[11px] font-semibold text-[#17212F]">Khâu chỉ chia tép:</label>
+                        <select
+                          value={pagesPerSignature}
+                          onChange={(e) => setPagesPerSignature(Number(e.target.value))}
+                          className="bg-white border border-[#CBD5E1] rounded px-2 py-0.5 text-xs font-mono font-bold text-[#087F5B]"
+                        >
+                          <option value={4}>4 trang / tép</option>
+                          <option value={8}>8 trang / tép</option>
+                          <option value={16}>16 trang / tép</option>
+                          <option value={32}>32 trang / tép</option>
+                        </select>
+                      </div>
+                      <div className="text-[10px] font-mono text-[#64748B]">
+                        Tổng: <b className="text-[#17212F]">{sigInfo.signatureCount} tép</b> ({sigInfo.paddedPages} trang) · Có dấu bắt tay gáy
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5 pt-1.5 border-t border-[#E2E8F0]">
+                        <div className="flex flex-col gap-0.5">
+                          <label className="text-[10px] text-[#64748B]">Độ dày tờ (mm)</label>
+                          <input
+                            type="number"
+                            min="0.05"
+                            max="0.5"
+                            step="0.01"
+                            value={bookletPaperThicknessMm}
+                            onChange={(e) => setBookletPaperThicknessMm(Math.max(0.05, parseFloat(e.target.value) || 0.1))}
+                            className="bg-white border border-[#CBD5E1] rounded px-2 py-1 text-xs font-mono"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <label className="text-[10px] text-[#64748B]">Cộng keo (mm)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="3"
+                            step="0.1"
+                            value={bookletGlueMm}
+                            onChange={(e) => setBookletGlueMm(Math.max(0, parseFloat(e.target.value) || 0))}
+                            className="bg-white border border-[#CBD5E1] rounded px-2 py-1 text-xs font-mono"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] bg-[#DDF5EC]/60 border border-[#087F5B]/30 rounded px-2 py-1">
+                        <span className="font-semibold text-[#064E3B]">Độ dày gáy dự kiến:</span>
+                        <span className="font-mono font-extrabold text-[#087F5B]">{spineInfo.spineMm} mm</span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={loading || sourceFiles.length === 0}
+                        onClick={handleExportBookletCoverSpread}
+                        className="w-full py-1.5 px-2.5 rounded-md bg-white hover:bg-[#DDF5EC] border border-[#087F5B] text-[#064E3B] text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
+                      >
+                        <PkIcon name="book" className="w-3.5 h-3.5 text-[#087F5B]" />
+                        <span>Xuất riêng Spread Bìa (4 đường cấn)</span>
+                      </button>
+                    </div>
+                  );
+                })()}
+
+                {(bookletStyle === 'saddleStitch' || bookletStyle === 'perfectBound') && (
+                  <label className="flex items-center justify-between gap-2 text-[11px] text-[#475569] cursor-pointer">
+                    <span>Dán đối lưng 180° (xoay mặt sau 180°)</span>
+                    <input
+                      type="checkbox"
+                      className="accent-[#087F5B]"
+                      checked={bookletBackToBack180}
+                      onChange={(e) => setBookletBackToBack180(e.target.checked)}
+                    />
+                  </label>
                 )}
 
                 <div className="grid grid-cols-2 gap-2">
@@ -3993,6 +4210,31 @@ export default function PdfEditor() {
                   )}
                   {mode === 'sticker' ? (
                     <>
+                      {/* Wave 1 Card 13: Bình 2 mặt (Bế rớt lật gương mặt sau) */}
+                      <div className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-2 flex flex-col gap-1.5">
+                        <label className="flex items-center justify-between gap-2 text-[11px] font-semibold text-[#17212F] cursor-pointer">
+                          <span>Bình 2 mặt (Bế rớt lật gương)</span>
+                          <input
+                            type="checkbox"
+                            className="accent-[#087F5B]"
+                            checked={stickerDuplexMirror}
+                            onChange={(e) => setStickerDuplexMirror(e.target.checked)}
+                          />
+                        </label>
+                        {stickerDuplexMirror && (
+                          <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#E2E8F0]">
+                            <span className="text-[10px] text-[#64748B]">Trục lật mặt sau:</span>
+                            <select
+                              value={stickerMirrorAxis}
+                              onChange={(e) => setStickerMirrorAxis(e.target.value)}
+                              className="bg-white border border-[#CBD5E1] rounded px-1.5 py-0.5 text-[10.5px] font-semibold text-[#17212F]"
+                            >
+                              <option value={DUPLEX_MIRROR_AXES.HORIZONTAL}>Lật ngang (Trái ↔ Phải)</option>
+                              <option value={DUPLEX_MIRROR_AXES.VERTICAL}>Lật dọc (Đầu ↔ Chân)</option>
+                            </select>
+                          </div>
+                        )}
+                      </div>
                       <button
                         type="button"
                         onClick={() => handleDownload('print')}

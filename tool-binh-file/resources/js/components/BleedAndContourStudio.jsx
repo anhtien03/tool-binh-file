@@ -93,10 +93,13 @@ export default function BleedAndContourStudio({
   const [cornerRadiusMm, setCornerRadiusMm] = useState(0);
   const [manualEditTool, setManualEditTool] = useState(MANUAL_EDIT_TOOLS.NONE);
   const [brushRadiusMm, setBrushRadiusMm] = useState(2.5);
+  const [whiteBgThreshold, setWhiteBgThreshold] = useState(255); // 255 = tắt, 200..254 = ngưỡng xóa nền trắng thủ công
   const [manualMaskRevision, setManualMaskRevision] = useState(0);
   const [mergedGroups, setMergedGroups] = useState([]);
   const [selectedStickerIndices, setSelectedStickerIndices] = useState([]);
   const manualMaskCanvasRef = useRef(null);
+  const brushUndoStackRef = useRef([]);
+  const brushStrokeRef = useRef({ active: false, lastX: 0, lastY: 0 });
   const isBrushToolActive =
     manualEditTool === MANUAL_EDIT_TOOLS.ERASE_SHADOW || manualEditTool === MANUAL_EDIT_TOOLS.KEEP_REGION;
   const [cornerAngleDeg, setCornerAngleDeg] = useState(130); // Preserve sharp corners <= 130°
@@ -838,7 +841,13 @@ export default function BleedAndContourStudio({
           // Otherwise resolved.mode === 'FALLBACK_RASTER' (e.g. raster-only PDF) -> fall through to raster tracer
         }
 
-        const traced = extractStickerContoursFromImage(renderedCanvas, sizeMm.w, sizeMm.h, {
+        const traceInputCanvas = preprocessCanvasForTracing(renderedCanvas, {
+          shadowRemovalMode,
+          forcePngAlpha: dielineMode === DIELINE_MODES.PNG_ALPHA,
+          manualMaskCanvas: manualMaskCanvasRef.current,
+          whiteThreshold: whiteBgThreshold,
+        });
+        const traced = extractStickerContoursFromImage(traceInputCanvas, sizeMm.w, sizeMm.h, {
           offsetMm,
           bleedOffsetMm: showBleedContour ? bleedOffsetMm : 0,
           smoothLevel,
@@ -913,6 +922,10 @@ export default function BleedAndContourStudio({
     imagePlacementsMm,
     perStickerOverrides,
     contourBleedFillMode,
+    shadowRemovalMode,
+    dielineMode,
+    manualMaskRevision,
+    whiteBgThreshold,
     contourBleedColorHex,
     currentBleedSig,
     activePdfPage,
@@ -1145,7 +1158,119 @@ export default function BleedAndContourStudio({
     };
   }, []);
 
+  const ensureManualMaskCanvas = () => {
+    if (!renderedCanvas) return null;
+    if (
+      !manualMaskCanvasRef.current ||
+      manualMaskCanvasRef.current.width !== renderedCanvas.width ||
+      manualMaskCanvasRef.current.height !== renderedCanvas.height
+    ) {
+      const m = document.createElement('canvas');
+      m.width = renderedCanvas.width;
+      m.height = renderedCanvas.height;
+      manualMaskCanvasRef.current = m;
+    }
+    return manualMaskCanvasRef.current;
+  };
+
+  const paintBrushAtClientPoint = (clientX, clientY, isStart) => {
+    const prevCanvas = previewCanvasRef.current;
+    const maskCanvas = ensureManualMaskCanvas();
+    if (!prevCanvas || !maskCanvas || !renderedCanvas) return;
+    const rect = prevCanvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const normX = (clientX - rect.left) / rect.width;
+    const normY = (clientY - rect.top) / rect.height;
+    const mx = normX * maskCanvas.width;
+    const my = normY * maskCanvas.height;
+    const pxPerMm = maskCanvas.width / Math.max(1, sizeMm.w);
+    const radiusPx = Math.max(2, brushRadiusMm * pxPerMm);
+    const color = manualEditTool === MANUAL_EDIT_TOOLS.ERASE_SHADOW ? '#ef4444' : '#22c55e';
+
+    const mCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+    mCtx.save();
+    mCtx.strokeStyle = color;
+    mCtx.fillStyle = color;
+    mCtx.lineWidth = radiusPx * 2;
+    mCtx.lineCap = 'round';
+    mCtx.lineJoin = 'round';
+    if (isStart) {
+      mCtx.beginPath();
+      mCtx.arc(mx, my, radiusPx, 0, Math.PI * 2);
+      mCtx.fill();
+    } else {
+      mCtx.beginPath();
+      mCtx.moveTo(brushStrokeRef.current.lastX, brushStrokeRef.current.lastY);
+      mCtx.lineTo(mx, my);
+      mCtx.stroke();
+    }
+    mCtx.restore();
+
+    // Live translucent visual feedback directly on preview canvas
+    const pCtx = prevCanvas.getContext('2d', { willReadFrequently: true });
+    if (pCtx) {
+      const px = normX * prevCanvas.width;
+      const py = normY * prevCanvas.height;
+      const prevRadius = Math.max(2, brushRadiusMm * (prevCanvas.width / Math.max(1, sizeMm.w)));
+      pCtx.save();
+      pCtx.globalAlpha = 0.35;
+      pCtx.fillStyle = color;
+      pCtx.beginPath();
+      pCtx.arc(px, py, prevRadius, 0, Math.PI * 2);
+      pCtx.fill();
+      pCtx.restore();
+    }
+
+    brushStrokeRef.current.lastX = mx;
+    brushStrokeRef.current.lastY = my;
+  };
+
+  const handleCanvasPointerDown = (e) => {
+    if (!isBrushToolActive || e.button !== 0 || !renderedCanvas) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const maskCanvas = ensureManualMaskCanvas();
+    if (maskCanvas) {
+      const snap = document.createElement('canvas');
+      snap.width = maskCanvas.width;
+      snap.height = maskCanvas.height;
+      snap.getContext('2d').drawImage(maskCanvas, 0, 0);
+      brushUndoStackRef.current = [...brushUndoStackRef.current.slice(-14), snap];
+    }
+    brushStrokeRef.current.active = true;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    paintBrushAtClientPoint(e.clientX, e.clientY, true);
+  };
+
+  const handleCanvasPointerMove = (e) => {
+    if (!brushStrokeRef.current.active || !isBrushToolActive) return;
+    e.stopPropagation();
+    paintBrushAtClientPoint(e.clientX, e.clientY, false);
+  };
+
+  const handleCanvasPointerUp = (e) => {
+    if (!brushStrokeRef.current.active) return;
+    e.stopPropagation();
+    brushStrokeRef.current.active = false;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    setManualMaskRevision((r) => r + 1);
+  };
+
+  const handleUndoBrushStroke = () => {
+    if (brushUndoStackRef.current.length === 0) return;
+    const prevSnap = brushUndoStackRef.current.pop();
+    const maskCanvas = ensureManualMaskCanvas();
+    if (maskCanvas && prevSnap) {
+      const ctx = maskCanvas.getContext('2d', { willReadFrequently: true });
+      ctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+      ctx.drawImage(prevSnap, 0, 0);
+      setManualMaskRevision((r) => r + 1);
+    }
+  };
+
   const handleMouseDown = (e) => {
+    if (isBrushToolActive) return;
     if (e.button !== 0 || !viewportRef.current) return;
     panStateRef.current = {
       active: true,
@@ -1437,7 +1562,11 @@ export default function BleedAndContourStudio({
           <div className="m-auto shrink-0">
             <canvas
               ref={previewCanvasRef}
-              className="bg-white block"
+              onPointerDown={handleCanvasPointerDown}
+              onPointerMove={handleCanvasPointerMove}
+              onPointerUp={handleCanvasPointerUp}
+              onPointerCancel={handleCanvasPointerUp}
+              className={`bg-white block ${isBrushToolActive ? 'cursor-crosshair touch-none' : ''}`}
               style={{ boxShadow: '0 14px 36px rgba(0,0,0,0.4)' }}
             />
           </div>
@@ -2092,10 +2221,42 @@ export default function BleedAndContourStudio({
                     step="0.5"
                     value={brushRadiusMm}
                     onChange={(e) => setBrushRadiusMm(parseFloat(e.target.value))}
-                    className="w-full accent-purple-600"
+                    className="w-full accent-[#087F5B]"
                   />
+                  <div className="flex items-center justify-between gap-1.5 pt-0.5">
+                    <button
+                      type="button"
+                      disabled={brushUndoStackRef.current.length === 0}
+                      onClick={handleUndoBrushStroke}
+                      className="px-2 py-0.5 rounded bg-white border border-[#CBD5E1] hover:border-[#087F5B] text-[10px] font-semibold text-[#17212F] disabled:opacity-40 cursor-pointer"
+                    >
+                      Hoàn tác nét cọ
+                    </button>
+                    <span className="text-[10px] font-mono text-[#64748B]">
+                      {manualMaskRevision > 0 ? `Đã vẽ ${manualMaskRevision} nét` : 'Kéo chuột trên ảnh để vẽ'}
+                    </span>
+                  </div>
                 </div>
               )}
+
+              {/* White Background Threshold Slider (Card 12) */}
+              <div className="flex flex-col gap-1 pt-1.5 border-t border-[#F1F5F9]">
+                <div className="flex items-center justify-between text-[10.5px]">
+                  <span className="font-semibold text-[#475569]">Ngưỡng xóa nền trắng</span>
+                  <span className="font-mono font-bold text-[#087F5B]">
+                    {whiteBgThreshold >= 255 ? 'Tự động' : `≥ ${whiteBgThreshold}`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="200"
+                  max="255"
+                  step="1"
+                  value={whiteBgThreshold}
+                  onChange={(e) => setWhiteBgThreshold(parseInt(e.target.value, 10))}
+                  className="w-full accent-[#087F5B]"
+                />
+              </div>
 
               {manualEditTool === MANUAL_EDIT_TOOLS.MERGE_STICKER && (
                 <div className="flex flex-col gap-1.5 bg-purple-50/60 border border-purple-200 rounded-lg p-2">

@@ -109,16 +109,20 @@ function writeRgbaBuffer(buf, createCanvasFn) {
  */
 export function preprocessCanvasForTracing(
   canvas,
-  { shadowRemovalMode = 'keep', forcePngAlpha = false, manualMaskCanvas = null } = {}
+  { shadowRemovalMode = 'keep', forcePngAlpha = false, manualMaskCanvas = null, whiteThreshold = 255 } = {}
 ) {
   const src = readRgbaBuffer(canvas);
   if (!src) return canvas;
 
+  const safeWhiteThresh = Number.isFinite(Number(whiteThreshold))
+    ? Math.max(180, Math.min(255, Math.round(Number(whiteThreshold))))
+    : 255;
+  const needsWhiteRemoval = safeWhiteThresh < 255;
   const needsShadow = shadowRemovalMode === 'auto';
   const needsAlpha = Boolean(forcePngAlpha);
   const maskBuf = manualMaskCanvas ? readRgbaBuffer(manualMaskCanvas) : null;
 
-  if (!needsShadow && !needsAlpha && !maskBuf) {
+  if (!needsShadow && !needsAlpha && !maskBuf && !needsWhiteRemoval) {
     // Still return a clean copy if buffer-based, or original canvas when zero transforms requested
     return canvas;
   }
@@ -159,6 +163,14 @@ export function preprocessCanvasForTracing(
         data[idx + 3] = 255;
         a = 255;
       }
+    }
+
+    if (needsWhiteRemoval && a > 0 && r >= safeWhiteThresh && g >= safeWhiteThresh && b >= safeWhiteThresh) {
+      data[idx] = 255;
+      data[idx + 1] = 255;
+      data[idx + 2] = 255;
+      data[idx + 3] = hasTransparency ? 0 : 255;
+      r = 255; g = 255; b = 255; a = hasTransparency ? 0 : 255;
     }
 
     if (needsShadow && a > 0) {
