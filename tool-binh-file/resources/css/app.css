@@ -21,12 +21,63 @@
   --pk-primary: #087F5B;
   --pk-primary-dark: #064E3B;
   --pk-primary-light: #DDF5EC;
+  --pk-cut: #DB2777;
+  --pk-cut-bg: #FDF2F8;
+  --pk-cut-border: #F9A8D4;
+  --pk-bleed: #0284C7;
+  --pk-bleed-bg: #F0F9FF;
+  --pk-bleed-border: #7DD3FC;
   --pk-bg: #F3F5F7;
   --pk-surface: #FFFFFF;
+  --pk-surface-subtle: #F8FAFC;
   --pk-border: #E2E8F0;
   --pk-text: #17212F;
   --pk-muted: #64748B;
   --pk-canvas: #52565E;
+}
+
+/* Lightweight GPU-friendly sidebar transition (never triggers geometry recalculation) */
+.pk-panel-transition {
+  transition: width 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Penpot-inspired Inspector primitives */
+.pk-inspector-card {
+  background: var(--pk-surface);
+  border: 1px solid var(--pk-border);
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.pk-section-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pk-muted);
+}
+
+.pk-mm-badge-cut {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #BE185D;
+  background: var(--pk-cut-bg);
+  border: 1px solid var(--pk-cut-border);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+.pk-mm-badge-bleed {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0369A1;
+  background: var(--pk-bleed-bg);
+  border: 1px solid var(--pk-bleed-border);
+  border-radius: 5px;
+  padding: 1px 6px;
 }
 
 html,

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { PkIcon } from './PrintKitUI';
 import {
   buildPaperTransparentCanvas,
   drawContourBleedFillPreview,
@@ -50,6 +51,10 @@ export default function BleedAndContourStudio({
   onOpenStickerImpose,
   onSendSplitStickersToImpose,
   onSendV1StickersToImpose,
+  settingsCollapsed = false,
+  onToggleSettings,
+  isFocusMode = false,
+  onToggleFocusMode,
 }) {
   const [subMode, setSubMode] = useState('contour'); // 'contour' | 'bleed'
   const [sourceFile, setSourceFile] = useState(null);
@@ -1347,29 +1352,53 @@ export default function BleedAndContourStudio({
             )}
           </div>
 
-          <div className="flex items-center gap-1 bg-white border border-[#E2E8F0] rounded-md px-1.5 py-0.5 text-xs font-mono text-[#64748B]">
-            <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#087F5B] font-sans font-semibold cursor-pointer">
-              Fit
-            </button>
-            <button onClick={() => setZoom(2.0)} className="px-1.5 hover:text-[#087F5B] text-[11px] cursor-pointer">
-              200%
-            </button>
-            <button onClick={() => setZoom(4.0)} className="px-1.5 hover:text-[#087F5B] text-[11px] cursor-pointer">
-              400%
-            </button>
-            <button
-              onClick={() => setZoom((z) => Math.max(0.35, Math.round((z - (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))}
-              className="px-1.5 hover:text-[#17212F] cursor-pointer"
-            >
-              −
-            </button>
-            <span className="min-w-[44px] text-center font-bold text-[#087F5B]">{Math.round(zoom * 100)}%</span>
-            <button
-              onClick={() => setZoom((z) => Math.min(10.0, Math.round((z + (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))}
-              className="px-1.5 hover:text-[#17212F] cursor-pointer"
-            >
-              +
-            </button>
+          <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1 bg-white border border-[#E2E8F0] rounded-md px-1.5 py-0.5 text-xs font-mono text-[#64748B]">
+              <button onClick={() => setZoom(1.0)} className="px-1.5 hover:text-[#087F5B] font-sans font-semibold cursor-pointer">
+                Fit
+              </button>
+              <button onClick={() => setZoom(2.0)} className="px-1.5 hover:text-[#087F5B] text-[11px] cursor-pointer">
+                200%
+              </button>
+              <button onClick={() => setZoom(4.0)} className="px-1.5 hover:text-[#087F5B] text-[11px] cursor-pointer">
+                400%
+              </button>
+              <button
+                onClick={() => setZoom((z) => Math.max(0.35, Math.round((z - (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))}
+                className="px-1.5 hover:text-[#17212F] cursor-pointer"
+              >
+                −
+              </button>
+              <span className="min-w-[44px] text-center font-bold text-[#087F5B]">{Math.round(zoom * 100)}%</span>
+              <button
+                onClick={() => setZoom((z) => Math.min(10.0, Math.round((z + (z >= 2.0 ? 0.35 : 0.2)) * 100) / 100))}
+                className="px-1.5 hover:text-[#17212F] cursor-pointer"
+              >
+                +
+              </button>
+            </div>
+            {isFocusMode && typeof onToggleFocusMode === 'function' && (
+              <button
+                type="button"
+                onClick={onToggleFocusMode}
+                title="Thoát Focus Mode và khôi phục bảng điều khiển (Esc)"
+                className="h-7 px-2.5 rounded-md bg-[#0F172A] hover:bg-[#1E293B] text-white text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+              >
+                <PkIcon name="close" className="w-3 h-3" />
+                <span>Thoát Focus (Esc)</span>
+              </button>
+            )}
+            {!isFocusMode && settingsCollapsed && typeof onToggleSettings === 'function' && (
+              <button
+                type="button"
+                onClick={onToggleSettings}
+                title="Mở lại bảng thông số Bù Xén"
+                className="h-7 px-2.5 rounded-md bg-white hover:bg-[#DDF5EC] border border-[#087F5B]/40 text-[#064E3B] text-[11px] font-semibold flex items-center gap-1 cursor-pointer shadow-2xs transition-colors"
+              >
+                <PkIcon name="chevronsLeft" className="w-3.5 h-3.5 text-[#087F5B]" />
+                <span>Thông số</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -1443,91 +1472,108 @@ export default function BleedAndContourStudio({
         </div>
       </main>
 
-      {/* MIDDLE-RIGHT: SETTINGS & EXPORT PANEL */}
-      <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col justify-between gap-3 overflow-y-auto h-full shrink-0">
-        <div className="flex flex-col gap-3">
-          {/* Top Utility Header Bar: File Size MB Badge + Save / Undo / Close */}
-          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-            <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-mono font-bold">
-              {sourceFile ? `${(sourceFile.size / (1024 * 1024)).toFixed(2)} MB` : `${sizeMm.w}×${sizeMm.h} mm`}
+      {/* MIDDLE-RIGHT: PENPOT-REFINED SETTINGS & STICKY EXPORT PANEL (CSS-hidden on collapse to preserve scroll & state) */}
+      <aside
+        className={`${
+          settingsCollapsed || isFocusMode
+            ? 'hidden'
+            : 'w-[288px] xl:w-[320px] flex'
+        } pk-panel-transition bg-white border-l border-[#E2E8F0] flex-col h-full shrink-0 overflow-hidden`}
+      >
+        {/* Sticky Inspector Header */}
+        <div className="px-3.5 py-2.5 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="w-6 h-6 rounded-md bg-[#DDF5EC] text-[#087F5B] flex items-center justify-center shrink-0">
+              <PkIcon name="blade" className="w-3.5 h-3.5" />
             </span>
-            <div className="flex items-center gap-1.5 text-slate-400">
-              <button
-                onClick={handleExportPdf}
-                disabled={!renderedCanvas || loading}
-                title="Lưu / Xuất nhanh PDF"
-                className="p-1 rounded hover:bg-slate-100 hover:text-[#146C53] disabled:opacity-30 cursor-pointer text-xs"
-              >
-                💾
-              </button>
-              <button
-                onClick={() => {
-                  const isValidVecPdf = sourceType === 'pdf' && vectorImportResult?.status === 'OK';
-                  setOffsetMm(isValidVecPdf ? 0 : 0.5);
-                  setShapeMode('auto');
-                  setPerStickerOverrides({});
-                  setForceRasterFallback(false);
-                  setBleedOffsetMm(1.5);
-                  setCornerAngleDeg(130);
-                  setSmoothLevel(1);
-                  setSimplifyMm(0.18);
-                  setMergeGapMm(0.35);
-                  setBleedCompleted(false);
-                  setSettingsOpen(true);
-                }}
-                title="Hoàn tác / Khôi phục mặc định"
-                className="p-1 rounded hover:bg-slate-100 hover:text-amber-600 cursor-pointer text-xs"
-              >
-                ↩️
-              </button>
-              <button
-                onClick={onOpenStickerImpose}
-                title="Chuyển sang Bình Tem Bế"
-                className="p-1 rounded hover:bg-slate-100 hover:text-slate-700 cursor-pointer text-xs"
-              >
-                ✕
-              </button>
+            <div className="min-w-0">
+              <div className="text-[11.5px] font-extrabold text-[#17212F] tracking-wide truncate">
+                BÙ XÉN &amp; ĐƯỜNG BẾ
+              </div>
+              <div className="text-[10px] font-mono text-[#64748B] truncate">
+                {sourceFile ? `${(sourceFile.size / (1024 * 1024)).toFixed(2)} MB` : `${sizeMm.w}×${sizeMm.h} mm`}
+              </div>
             </div>
           </div>
-
-          <div className="text-center pb-1">
-            <div className="text-xs font-extrabold text-slate-800 tracking-wide">🔪 BÙ XÉN - TẠO ĐƯỜNG CẮT</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Quét hình ảnh, tự động offset viền và tràn lề cho tem nhãn.
-            </div>
-          </div>
-
-          {/* Row 1: Input Mode Cards (PDF/PNG đã có biên vs Tách nhiều tem) */}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="flex items-center gap-1 shrink-0">
             <button
+              type="button"
+              onClick={handleExportPdf}
+              disabled={!renderedCanvas || loading}
+              title="Lưu / Xuất nhanh PDF"
+              className="w-7 h-7 rounded-md hover:bg-[#DDF5EC] text-[#64748B] hover:text-[#087F5B] disabled:opacity-30 flex items-center justify-center cursor-pointer transition-colors"
+            >
+              <PkIcon name="save" className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const isValidVecPdf = sourceType === 'pdf' && vectorImportResult?.status === 'OK';
+                setOffsetMm(isValidVecPdf ? 0 : 0.5);
+                setShapeMode('auto');
+                setPerStickerOverrides({});
+                setForceRasterFallback(false);
+                setBleedOffsetMm(1.5);
+                setCornerAngleDeg(130);
+                setSmoothLevel(1);
+                setSimplifyMm(0.18);
+                setMergeGapMm(0.35);
+                setBleedCompleted(false);
+                setSettingsOpen(true);
+              }}
+              title="Hoàn tác / Khôi phục mặc định"
+              className="w-7 h-7 rounded-md hover:bg-amber-50 text-[#64748B] hover:text-amber-600 flex items-center justify-center cursor-pointer transition-colors"
+            >
+              <PkIcon name="undo" className="w-3.5 h-3.5" />
+            </button>
+            {typeof onToggleSettings === 'function' && (
+              <button
+                type="button"
+                onClick={onToggleSettings}
+                title="Thu gọn bảng thông số (»)"
+                className="w-7 h-7 rounded-md bg-white hover:bg-[#DDF5EC] border border-[#E2E8F0] hover:border-[#087F5B]/40 text-[#64748B] hover:text-[#087F5B] flex items-center justify-center cursor-pointer transition-colors"
+              >
+                <PkIcon name="chevronsRight" className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Scrollable Inspector Body */}
+        <div className="flex-1 overflow-y-auto p-3.5 flex flex-col gap-3">
+          {/* Row 1: Segmented Input Mode (PDF/PNG đã có biên vs Tách nhiều tem) */}
+          <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-[#F1F5F9] border border-[#E2E8F0]">
+            <button
+              type="button"
               onClick={() => {
                 setInputMode('single');
                 setMergeGapMm(2.5);
                 setBleedCompleted(false);
               }}
               title="Dùng cho file PDF đã chừa sẵn tràn lề (TrimBox + Bleed 2–3 mm) hoặc PNG 1 tem đã tách nền rõ. Giữ nguyên tràn lề gốc, không bù đúp."
-              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${inputMode === 'single'
-                ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53] shadow-2xs'
-                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+              className={`py-1.5 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${inputMode === 'single'
+                ? 'bg-white border border-[#087F5B]/40 text-[#064E3B] shadow-2xs'
+                : 'border border-transparent text-[#64748B] hover:text-[#17212F]'
                 }`}
             >
-              <span>📄</span>
-              <span>PDF/PNG đã có biên</span>
+              <PkIcon name="file" className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Có biên sẵn</span>
             </button>
             <button
+              type="button"
               onClick={() => {
                 setInputMode('multi');
                 setMergeGapMm(0.35);
                 setBleedCompleted(false);
               }}
               title="Dùng khi 1 trang chứa nhiều tem cần tách riêng từng tem để tạo đường bế và bù xén."
-              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${inputMode === 'multi'
-                ? 'bg-[#E6F4EF] border-[#146C53] text-[#146C53] shadow-2xs'
-                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+              className={`py-1.5 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${inputMode === 'multi'
+                ? 'bg-white border border-[#087F5B]/40 text-[#064E3B] shadow-2xs'
+                : 'border border-transparent text-[#64748B] hover:text-[#17212F]'
                 }`}
             >
-              <span>🥞</span>
-              <span>Tách nhiều tem</span>
+              <PkIcon name="layers" className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Tách nhiều tem</span>
             </button>
           </div>
 
@@ -1576,22 +1622,24 @@ export default function BleedAndContourStudio({
           )}
 
           {/* Row 2: Output Cut Type Cards (Bế tem nhãn vs Xén vuông góc) */}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-1.5">
             <button
+              type="button"
               onClick={() => {
                 setSubMode('contour');
                 setShapeMode('auto');
                 setBleedCompleted(false);
               }}
-              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${subMode === 'contour' && shapeMode !== 'rect'
-                ? 'bg-indigo-50 border-indigo-500 text-indigo-700 shadow-2xs'
-                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+              className={`py-1.5 px-2.5 rounded-lg border text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${subMode === 'contour' && shapeMode !== 'rect'
+                ? 'bg-[#DDF5EC] border-[#087F5B] text-[#064E3B] shadow-2xs'
+                : 'bg-white border-[#E2E8F0] text-[#475569] hover:bg-[#F8FAFC]'
                 }`}
             >
-              <span>🎯</span>
+              <PkIcon name="scissors" className="w-3.5 h-3.5 shrink-0" />
               <span>Bế tem nhãn</span>
             </button>
             <button
+              type="button"
               onClick={() => {
                 if (subMode === 'contour' && shapeMode === 'rect') {
                   setSubMode('bleed');
@@ -1601,18 +1649,18 @@ export default function BleedAndContourStudio({
                 }
                 setBleedCompleted(false);
               }}
-              className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${subMode === 'bleed' || shapeMode === 'rect'
-                ? 'bg-indigo-50 border-indigo-500 text-indigo-700 shadow-2xs'
-                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+              className={`py-1.5 px-2.5 rounded-lg border text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${subMode === 'bleed' || shapeMode === 'rect'
+                ? 'bg-[#DDF5EC] border-[#087F5B] text-[#064E3B] shadow-2xs'
+                : 'bg-white border-[#E2E8F0] text-[#475569] hover:bg-[#F8FAFC]'
                 }`}
             >
-              <span>{subMode === 'bleed' || shapeMode === 'rect' ? '☑️' : '☐'}</span>
+              <PkIcon name="crop" className="w-3.5 h-3.5 shrink-0" />
               <span>Xén vuông góc</span>
             </button>
           </div>
 
           {/* File Upload */}
-          <div className="relative border border-dashed border-slate-300 hover:border-[#146C53] rounded-xl p-2.5 text-center cursor-pointer bg-[#FAFBF9]">
+          <div className="relative border border-dashed border-[#CBD5E1] hover:border-[#087F5B] rounded-lg p-2.5 text-center cursor-pointer bg-[#F8FAFC] hover:bg-[#DDF5EC]/20 transition-colors">
             <input
               type="file"
               accept=".png,.jpg,.jpeg,.webp,.pdf"
@@ -1624,12 +1672,15 @@ export default function BleedAndContourStudio({
               }}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
             />
-            <div className="text-xs font-semibold text-slate-700 truncate">
-              {loading ? '⏳ Đang xử lý file...' : sourceFile ? `📄 ${sourceFile.name}` : '⬆️ Chọn ảnh PNG sticker hoặc file PDF'}
+            <div className="text-xs font-semibold text-[#17212F] truncate flex items-center justify-center gap-1.5">
+              <PkIcon name={sourceFile ? 'file' : 'upload'} className="w-3.5 h-3.5 text-[#087F5B] shrink-0" />
+              <span className="truncate">
+                {loading ? 'Đang xử lý file...' : sourceFile ? sourceFile.name : 'Chọn ảnh PNG sticker hoặc file PDF'}
+              </span>
             </div>
             {renderedCanvas && (
-              <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                Kích thước: {sizeMm.w} × {sizeMm.h} mm · Đã nhận diện {contoursMm.length} tem
+              <div className="text-[10.5px] font-mono text-[#64748B] mt-0.5">
+                {sizeMm.w} × {sizeMm.h} mm · {contoursMm.length} tem
               </div>
             )}
           </div>
@@ -1694,28 +1745,28 @@ export default function BleedAndContourStudio({
             </div>
           )}
 
-          {/* UNIFIED 1-STOP CARD: XEM VÀ CHỈNH ĐƯỜNG BẾ & BÙ XÉN */}
+          {/* UNIFIED 1-STOP CARD: XEM VÀ CHỈNH ĐƯỜNG BẾ & BÙ XÉN (Penpot Inspector Style) */}
           {subMode === 'contour' && renderedCanvas && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-3 flex flex-col gap-2.5 shadow-2xs">
-              <div className="flex items-center justify-between gap-1.5">
-                <span className="text-[11px] font-extrabold text-slate-800 tracking-wide">CHỈNH ĐƯỜNG BẾ &amp; BÙ XÉN</span>
-                <span className="px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold shrink-0 whitespace-nowrap">
+            <div className="pk-inspector-card flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-1.5 pb-1.5 border-b border-[#F1F5F9]">
+                <span className="pk-section-label">Đường bế &amp; Bù xén</span>
+                <span className="px-2 py-0.5 rounded-full bg-[#DDF5EC] text-[#064E3B] text-[10px] font-mono font-bold shrink-0 whitespace-nowrap">
                   {contoursMm.length} tem
                 </span>
               </div>
 
               {/* 4-Mode Dieline Selector */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-semibold text-slate-500">Chế độ đường cắt (Dieline)</label>
-                <div className="grid grid-cols-2 gap-1">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10.5px] font-semibold text-[#64748B]">Chế độ đường cắt (Dieline)</label>
+                <div className="grid grid-cols-2 gap-1.5">
                   {DIELINE_MODE_OPTIONS.map((opt) => (
                     <button
                       key={opt.id}
                       type="button"
                       onClick={() => setDielineMode(opt.id)}
-                      className={`px-2 py-1.5 rounded-lg border text-[10px] font-bold text-left transition-all cursor-pointer ${dielineMode === opt.id
-                        ? 'bg-purple-50 border-purple-500 text-purple-800'
-                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      className={`px-2 py-1.5 rounded-md border text-[10.5px] font-semibold text-left transition-all cursor-pointer ${dielineMode === opt.id
+                        ? 'bg-[#DDF5EC] border-[#087F5B] text-[#064E3B]'
+                        : 'bg-white border-[#E2E8F0] text-[#475569] hover:bg-[#F8FAFC]'
                         }`}
                     >
                       {opt.label}
@@ -1725,13 +1776,13 @@ export default function BleedAndContourStudio({
               </div>
 
               {/* Compact 1-row Shape + Detail Mode */}
-              <div className={`grid gap-1.5 ${shapeMode === 'auto' ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] text-slate-500">Hình dáng đường bế</label>
+              <div className={`grid gap-2 ${shapeMode === 'auto' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10.5px] font-medium text-[#64748B]">Hình dáng bế</label>
                   <select
                     value={shapeMode}
                     onChange={(e) => setShapeMode(e.target.value)}
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-800"
+                    className="h-8 bg-white border border-[#CBD5E1] focus:border-[#087F5B] rounded-md px-2 text-[11px] font-semibold text-[#17212F]"
                   >
                     <option value="auto">Tự do (Freeform)</option>
                     <option value="circle">Ép Tròn chuẩn</option>
@@ -1740,12 +1791,12 @@ export default function BleedAndContourStudio({
                   </select>
                 </div>
                 {shapeMode === 'auto' && (
-                  <div className="flex flex-col gap-0.5">
-                    <label className="text-[10px] text-slate-500">Độ chi tiết (Raster)</label>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10.5px] font-medium text-[#64748B]">Độ chi tiết</label>
                     <select
                       value={detailMode}
                       onChange={(e) => setDetailMode(e.target.value)}
-                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-800"
+                      className="h-8 bg-white border border-[#CBD5E1] focus:border-[#087F5B] rounded-md px-2 text-[11px] font-semibold text-[#17212F]"
                     >
                       <option value="standard">Tiêu chuẩn</option>
                       <option value="high">High Detail (Cánh hoa)</option>
@@ -1754,11 +1805,14 @@ export default function BleedAndContourStudio({
                 )}
               </div>
 
-              {/* Offset đường CẮT */}
-              <div className="flex flex-col gap-0.5 pt-1 border-t border-slate-100">
-                <div className="flex justify-between text-[11px]">
-                  <span className="text-slate-600 font-medium">Offset đường CẮT</span>
-                  <span className="font-mono font-bold text-pink-600">{offsetMm > 0 ? `+${offsetMm}` : offsetMm} mm</span>
+              {/* Offset đường CẮT (Magenta CUT Semantic) */}
+              <div className="flex flex-col gap-1 pt-2 border-t border-[#F1F5F9]">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-[#17212F] font-semibold flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-[#DB2777] inline-block" />
+                    Offset đường CẮT
+                  </span>
+                  <span className="pk-mm-badge-cut">{offsetMm > 0 ? `+${offsetMm}` : offsetMm} mm</span>
                 </div>
                 <input
                   type="range"
@@ -1767,23 +1821,24 @@ export default function BleedAndContourStudio({
                   step="0.25"
                   value={offsetMm}
                   onChange={(e) => setOffsetMm(parseFloat(e.target.value))}
-                  className="w-full accent-pink-600"
+                  className="w-full accent-[#DB2777]"
                 />
               </div>
 
-              {/* Offset đường BÙ XÉN (Bleed) */}
-              <div className="flex flex-col gap-1">
+              {/* Offset đường BÙ XÉN (Cyan BLEED Semantic) */}
+              <div className="flex flex-col gap-1.5 pt-1">
                 <div className="flex items-center justify-between text-[11px]">
-                  <label className="flex items-center gap-1.5 text-slate-600 font-medium cursor-pointer">
+                  <label className="flex items-center gap-1.5 text-[#17212F] font-semibold cursor-pointer">
                     <input
                       type="checkbox"
                       checked={showBleedContour}
                       onChange={(e) => setShowBleedContour(e.target.checked)}
-                      className="accent-sky-600"
+                      className="accent-[#0284C7] rounded"
                     />
+                    <span className="w-2 h-2 rounded-full bg-[#0284C7] inline-block" />
                     <span>Bù xén (Bleed)</span>
                   </label>
-                  <span className="font-mono font-bold text-sky-600">
+                  <span className="pk-mm-badge-bleed">
                     {showBleedContour ? `+${bleedOffsetMm} mm` : 'Tắt (0 mm)'}
                   </span>
                 </div>
@@ -1796,15 +1851,15 @@ export default function BleedAndContourStudio({
                       step="0.25"
                       value={bleedOffsetMm}
                       onChange={(e) => setBleedOffsetMm(parseFloat(e.target.value))}
-                      className="w-full accent-sky-600"
+                      className="w-full accent-[#0284C7]"
                     />
                     <div className="flex items-center justify-between gap-1.5">
-                      <span className="text-[10px] text-slate-500">Tô màu tràn viền:</span>
+                      <span className="text-[10.5px] text-[#64748B]">Tô màu tràn viền:</span>
                       <div className="flex items-center gap-1">
                         <select
                           value={contourBleedFillMode}
                           onChange={(e) => setContourBleedFillMode(e.target.value)}
-                          className="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-700"
+                          className="h-7 bg-white border border-[#CBD5E1] rounded-md px-1.5 text-[10.5px] font-medium text-[#17212F]"
                         >
                           <option value="auto">Tự động (màu mép)</option>
                           <option value="solid">Màu tự chọn</option>
@@ -1815,7 +1870,7 @@ export default function BleedAndContourStudio({
                             type="color"
                             value={contourBleedColorHex}
                             onChange={(e) => setContourBleedColorHex(e.target.value)}
-                            className="w-5 h-5 rounded border border-slate-200 cursor-pointer"
+                            className="w-6 h-6 rounded border border-[#CBD5E1] cursor-pointer"
                             title="Chọn màu tràn viền"
                           />
                         )}
@@ -1829,10 +1884,13 @@ export default function BleedAndContourStudio({
               <button
                 type="button"
                 onClick={() => setShowAdvancedTrace((v) => !v)}
-                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10px] font-bold text-slate-600 cursor-pointer"
+                className="w-full flex items-center justify-between px-2.5 py-2 rounded-md bg-[#F8FAFC] hover:bg-[#F1F5F9] border border-[#E2E8F0] text-[11px] font-semibold text-[#475569] cursor-pointer transition-colors"
               >
-                <span>⚙️ Tinh chỉnh biên nâng cao (Khử bóng · Bo cong · Lọc rác)</span>
-                <span>{showAdvancedTrace ? '⌃' : '⌄'}</span>
+                <span className="flex items-center gap-1.5">
+                  <PkIcon name="sliders" className="w-3.5 h-3.5 text-[#087F5B]" />
+                  <span>Tinh chỉnh nâng cao (Khử bóng · Bo · Lọc rác)</span>
+                </span>
+                <PkIcon name={showAdvancedTrace ? 'chevronUp' : 'chevronDown'} className="w-3.5 h-3.5 text-[#64748B] shrink-0" />
               </button>
 
               {showAdvancedTrace && (
@@ -2721,24 +2779,29 @@ export default function BleedAndContourStudio({
           )}
         </div>
 
-        <div className="flex flex-col gap-2 pt-2.5 border-t border-slate-100">
-          <div className="grid grid-cols-2 gap-1.5">
+        {/* Sticky Bottom Export Bar (always reachable regardless of panel scroll) */}
+        <div className="shrink-0 bg-[#F8FAFC] border-t border-[#E2E8F0] p-3 flex flex-col gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <button
+              type="button"
               onClick={handleExportPdf}
               disabled={loading || !renderedCanvas}
-              className={`py-2 px-2 rounded-xl text-[11px] font-bold transition-colors cursor-pointer ${loading || !renderedCanvas
-                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
+              className={`h-9 px-2.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${loading || !renderedCanvas
+                ? 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed'
+                : 'bg-[#087F5B] hover:bg-[#064E3B] text-white shadow-xs'
                 }`}
             >
-              {loading ? 'Đang xử lý...' : '✂️ Tải PDF nguyên tờ'}
+              <PkIcon name="download" className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">{loading ? 'Đang xử lý...' : 'Tải PDF nguyên tờ'}</span>
             </button>
             <button
+              type="button"
               onClick={() => handleSplitExport(false)}
               disabled={loading || contoursMm.length === 0}
-              className="py-2 px-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-bold transition-colors cursor-pointer disabled:opacity-40"
+              className="h-9 px-2.5 rounded-lg bg-white hover:bg-[#DDF5EC] border border-[#087F5B] text-[#064E3B] text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              📑 Tách {contoursMm.length} trang PDF
+              <PkIcon name="layers" className="w-3.5 h-3.5 shrink-0 text-[#087F5B]" />
+              <span className="truncate">Tách {contoursMm.length} trang</span>
             </button>
           </div>
         </div>

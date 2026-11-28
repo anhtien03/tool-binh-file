@@ -240,6 +240,75 @@ export function PkIcon({ name, className = 'w-4 h-4' }) {
           <line x1="8" y1="18" x2="16" y2="18" />
         </svg>
       );
+    case 'chevronsRight':
+      return (
+        <svg {...props}>
+          <polyline points="13 17 18 12 13 7" />
+          <polyline points="6 17 11 12 6 7" />
+        </svg>
+      );
+    case 'chevronsLeft':
+      return (
+        <svg {...props}>
+          <polyline points="11 17 6 12 11 7" />
+          <polyline points="18 17 13 12 18 7" />
+        </svg>
+      );
+    case 'chevronDown':
+      return (
+        <svg {...props}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      );
+    case 'chevronUp':
+      return (
+        <svg {...props}>
+          <polyline points="18 15 12 9 6 15" />
+        </svg>
+      );
+    case 'focus':
+      return (
+        <svg {...props}>
+          <path d="M4 9V5a1 1 0 0 1 1-1h4" />
+          <path d="M20 9V5a1 1 0 0 0-1-1h-4" />
+          <path d="M4 15v4a1 1 0 0 0 1 1h4" />
+          <path d="M20 15v4a1 1 0 0 1-1 1h-4" />
+          <circle cx="12" cy="12" r="2.2" />
+        </svg>
+      );
+    case 'save':
+      return (
+        <svg {...props}>
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+          <polyline points="17 21 17 13 7 13 7 21" />
+          <polyline points="7 3 7 8 15 8" />
+        </svg>
+      );
+    case 'undo':
+      return (
+        <svg {...props}>
+          <polyline points="9 14 4 9 9 4" />
+          <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+        </svg>
+      );
+    case 'scissors':
+      return (
+        <svg {...props}>
+          <circle cx="6" cy="6" r="3" />
+          <circle cx="6" cy="18" r="3" />
+          <line x1="20" y1="4" x2="8.12" y2="15.88" />
+          <line x1="14.47" y1="14.48" x2="20" y2="20" />
+          <line x1="8.12" y1="8.12" x2="12" y2="12" />
+        </svg>
+      );
+    case 'upload':
+      return (
+        <svg {...props}>
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="17 8 12 3 7 8" />
+          <line x1="12" y1="3" x2="12" y2="15" />
+        </svg>
+      );
     default:
       return (
         <svg {...props}>

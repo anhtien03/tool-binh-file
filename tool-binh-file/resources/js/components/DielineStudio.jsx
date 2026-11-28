@@ -5,6 +5,7 @@ import { exportDielinePdf, exportImposedDielinePdf } from '../engine/dielinePdfE
 import { PAPER_SIZES, solveDutchCut, solveSimpleGrid } from '../engine/impositionEngine';
 import { useDragPan } from '../hooks/useDragPan';
 import Box3DViewer, { PAPER_MATERIALS, FINISH_MODES } from './Box3DViewer';
+import { PkIcon } from './PrintKitUI';
 
 const PANEL_VI_LABELS = {
   back: 'Mặt sau',
@@ -81,6 +82,10 @@ export default function DielineStudio({
   onChangeTemplate,
   onOpenLibrary,
   onOpenImpose,
+  settingsCollapsed = false,
+  onToggleSettings,
+  isFocusMode = false,
+  onToggleFocusMode,
 }) {
   const tpl = DIELINE_TEMPLATES[templateId] || DIELINE_TEMPLATES.ste;
   const [params, setParams] = useState(tpl.defaults);
@@ -387,6 +392,28 @@ export default function DielineStudio({
                   +
                 </button>
               </div>
+            )}
+            {isFocusMode && typeof onToggleFocusMode === 'function' && (
+              <button
+                type="button"
+                onClick={onToggleFocusMode}
+                title="Thoát Focus Mode và khôi phục bảng điều khiển (Esc)"
+                className="h-7 px-2.5 rounded-md bg-[#0F172A] hover:bg-[#1E293B] text-white text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+              >
+                <PkIcon name="close" className="w-3 h-3" />
+                <span>Thoát Focus (Esc)</span>
+              </button>
+            )}
+            {!isFocusMode && settingsCollapsed && typeof onToggleSettings === 'function' && (
+              <button
+                type="button"
+                onClick={onToggleSettings}
+                title="Mở lại bảng thông số Khuôn Bế"
+                className="h-7 px-2.5 rounded-md bg-white hover:bg-[#DDF5EC] border border-[#087F5B]/40 text-[#064E3B] text-[11px] font-semibold flex items-center gap-1 cursor-pointer shadow-2xs transition-colors"
+              >
+                <PkIcon name="chevronsLeft" className="w-3.5 h-3.5 text-[#087F5B]" />
+                <span>Thông số</span>
+              </button>
             )}
           </div>
         </div>
@@ -868,9 +895,37 @@ export default function DielineStudio({
         </div>
       </main>
 
-      {/* 2. MIDDLE-RIGHT SETTINGS & SUMMARY SIDEBAR */}
-      <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col justify-between gap-3.5 overflow-y-auto h-full shrink-0">
+      {/* 2. MIDDLE-RIGHT SETTINGS & SUMMARY SIDEBAR (CSS-hidden on collapse/Focus to preserve scroll & state) */}
+      <aside
+        className={`${
+          settingsCollapsed || isFocusMode
+            ? 'hidden'
+            : 'w-[288px] xl:w-[320px] flex'
+        } pk-panel-transition bg-white border-l border-[#E2E8F0] p-3.5 flex-col justify-between gap-3.5 overflow-y-auto h-full shrink-0`}
+      >
         <div className="flex flex-col gap-3.5">
+          {/* Penpot Inspector Header + Independent Collapse */}
+          <div className="flex items-center justify-between gap-2 border-b border-[#E2E8F0] pb-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-6 h-6 rounded-md bg-[#DDF5EC] text-[#087F5B] flex items-center justify-center shrink-0">
+                <PkIcon name="box" className="w-3.5 h-3.5" />
+              </span>
+              <div className="min-w-0">
+                <div className="text-[11.5px] font-extrabold text-[#17212F] uppercase truncate">KHUÔN BẾ 2D &amp; 3D</div>
+                <div className="text-[10px] text-[#64748B] truncate">Thiết kế &amp; gập mô phỏng hộp</div>
+              </div>
+            </div>
+            {typeof onToggleSettings === 'function' && (
+              <button
+                type="button"
+                onClick={onToggleSettings}
+                title="Thu gọn bảng thông số (»)"
+                className="w-7 h-7 rounded-md bg-[#F8FAFC] hover:bg-[#DDF5EC] border border-[#E2E8F0] hover:border-[#087F5B]/40 text-[#64748B] hover:text-[#087F5B] flex items-center justify-center cursor-pointer transition-colors shrink-0"
+              >
+                <PkIcon name="chevronsRight" className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           {/* Selected Template Card */}
           <div className="rounded-xl border border-slate-200 bg-[#FAFBF9] p-3">
             <div className="flex items-center justify-between mb-1">

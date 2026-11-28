@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import PdfCanvasPreview from './PdfCanvasPreview';
 import DielineStudio from './DielineStudio';
 import Book3DViewer from './Book3DViewer';
@@ -33,7 +33,42 @@ export default function PdfEditor() {
   const [toolSearch, setToolSearch] = useState('');
   const [showSettingsPanel, setShowSettingsPanel] = useState(true);
   const [showPagesSidebar, setShowPagesSidebar] = useState(true);
+  const [isToolRailCollapsed, setIsToolRailCollapsed] = useState(false);
+  const [isFocusMode, setIsFocusMode] = useState(false);
+  const preFocusStateRef = useRef(null);
   const [inspectedPageIndex, setInspectedPageIndex] = useState(null);
+
+  // Pure UI Focus Mode toggle (never touches geometry/imposition/BatchPlan state)
+  const toggleFocusMode = useCallback(() => {
+    if (!isFocusMode) {
+      preFocusStateRef.current = {
+        isToolRailCollapsed,
+        showSettingsPanel,
+        showPagesSidebar,
+      };
+      setIsFocusMode(true);
+    } else {
+      const snap = preFocusStateRef.current;
+      if (snap) {
+        setIsToolRailCollapsed(snap.isToolRailCollapsed);
+        setShowSettingsPanel(snap.showSettingsPanel);
+        setShowPagesSidebar(snap.showPagesSidebar);
+      }
+      setIsFocusMode(false);
+    }
+  }, [isFocusMode, isToolRailCollapsed, showSettingsPanel, showPagesSidebar]);
+
+  useEffect(() => {
+    if (!isFocusMode) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        toggleFocusMode();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isFocusMode, toggleFocusMode]);
 
   // --- Multi-File & Gang-Run State ---
   const [sourceFiles, setSourceFiles] = useState([]);
@@ -1166,7 +1201,7 @@ export default function PdfEditor() {
           {(activeStudio === 'viewer' ||
             activeStudio === 'namecard' ||
             activeStudio === 'sticker' ||
-            activeStudio === 'booklet') && (
+            activeStudio === 'booklet') && !isFocusMode && (
             <button
               onClick={() => setShowPagesSidebar((v) => !v)}
               title={showPagesSidebar ? 'Thu gọn cột Quản lý Trang' : 'Mở cột Quản lý Trang'}
@@ -1181,42 +1216,58 @@ export default function PdfEditor() {
             </button>
           )}
 
+          {activeStudio !== 'viewer' && activeStudio !== 'library' && !isFocusMode && (
+            <button
+              onClick={() => setShowSettingsPanel((v) => !v)}
+              title={showSettingsPanel ? 'Thu gọn bảng thông số' : 'Mở bảng thông số'}
+              className={`h-8 px-2.5 rounded-md border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                showSettingsPanel
+                  ? 'bg-[#DDF5EC]/60 border-[#087F5B]/30 text-[#064E3B]'
+                  : 'bg-white border-[#E2E8F0] text-[#64748B] hover:bg-[#F3F5F7]'
+              }`}
+            >
+              <PkIcon name="sliders" className="w-3.5 h-3.5" />
+              <span className="hidden xl:inline">Thông số</span>
+            </button>
+          )}
+
+          <button
+            onClick={toggleFocusMode}
+            title={isFocusMode ? 'Thoát Focus Mode (Esc)' : 'Bật Focus Mode — Ẩn tạm các bảng điều khiển để xem file lớn'}
+            className={`h-8 px-2.5 rounded-md border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+              isFocusMode
+                ? 'bg-[#0F172A] border-[#0F172A] text-white shadow-xs'
+                : 'bg-white border-[#E2E8F0] text-[#475569] hover:bg-[#F3F5F7] hover:text-[#17212F]'
+            }`}
+          >
+            <PkIcon name="focus" className="w-3.5 h-3.5" />
+            <span className="hidden xl:inline whitespace-nowrap">
+              {isFocusMode ? 'Thoát Focus (Esc)' : 'Focus'}
+            </span>
+          </button>
+
           {(activeStudio === 'namecard' || activeStudio === 'sticker' || activeStudio === 'booklet') && (
-            <>
-              <button
-                onClick={() => setShowSettingsPanel((v) => !v)}
-                title={showSettingsPanel ? 'Ẩn bảng thông số' : 'Hiện bảng thông số'}
-                className={`h-8 px-2.5 rounded-md border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
-                  showSettingsPanel
-                    ? 'bg-[#DDF5EC]/60 border-[#087F5B]/30 text-[#064E3B]'
-                    : 'bg-white border-[#E2E8F0] text-[#64748B] hover:bg-[#F3F5F7]'
-                }`}
-              >
-                <PkIcon name="sliders" className="w-3.5 h-3.5" />
-                <span className="hidden xl:inline">Thông số</span>
-              </button>
-              <button
-                onClick={() => handleDownload('print')}
-                disabled={loading || sourceFiles.length === 0}
-                title="Xuất file PDF chuẩn vector để đưa vào máy in"
-                className={`h-8 px-3.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
-                  loading || sourceFiles.length === 0
-                    ? 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed'
-                    : 'bg-[#087F5B] hover:bg-[#064E3B] text-white shadow-xs'
-                }`}
-              >
-                <PkIcon name="download" className="w-3.5 h-3.5" />
-                <span className="whitespace-nowrap">
-                  {loading
-                    ? 'Đang xuất...'
-                    : activeStudio === 'booklet'
-                    ? 'Xuất PDF Sách'
-                    : activeStudio === 'sticker'
-                    ? 'Xuất File IN'
-                    : 'Xuất PDF In'}
-                </span>
-              </button>
-            </>
+            <button
+              onClick={() => handleDownload('print')}
+              disabled={loading || sourceFiles.length === 0}
+              title="Xuất file PDF chuẩn vector để đưa vào máy in"
+              className={`h-8 px-3.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                loading || sourceFiles.length === 0
+                  ? 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed'
+                  : 'bg-[#087F5B] hover:bg-[#064E3B] text-white shadow-xs'
+              }`}
+            >
+              <PkIcon name="download" className="w-3.5 h-3.5" />
+              <span className="whitespace-nowrap">
+                {loading
+                  ? 'Đang xuất...'
+                  : activeStudio === 'booklet'
+                  ? 'Xuất PDF Sách'
+                  : activeStudio === 'sticker'
+                  ? 'Xuất File IN'
+                  : 'Xuất PDF In'}
+              </span>
+            </button>
           )}
         </div>
       </header>
@@ -1249,6 +1300,10 @@ export default function PdfEditor() {
             templateId={selectedTemplateId}
             onChangeTemplate={(id) => setSelectedTemplateId(id)}
             onOpenLibrary={() => setActiveStudio('library')}
+            settingsCollapsed={!showSettingsPanel}
+            onToggleSettings={() => setShowSettingsPanel((v) => !v)}
+            isFocusMode={isFocusMode}
+            onToggleFocusMode={toggleFocusMode}
             onOpenImpose={() => {
               setActiveStudio('namecard');
               setShowSettingsPanel(true);
@@ -1260,6 +1315,10 @@ export default function PdfEditor() {
         {activeStudio === 'bleed' && (
           <BleedAndContourStudio
             initialFile={sourceFiles[0]?.file || null}
+            settingsCollapsed={!showSettingsPanel}
+            onToggleSettings={() => setShowSettingsPanel((v) => !v)}
+            isFocusMode={isFocusMode}
+            onToggleFocusMode={toggleFocusMode}
             onSharedFileChange={(newFile) => {
               if (newFile && (newFile.type === 'application/pdf' || newFile.name?.toLowerCase().endsWith('.pdf'))) {
                 setSourceFiles([{ id: `bleed-${Date.now()}`, file: newFile }]);
@@ -1368,6 +1427,10 @@ export default function PdfEditor() {
           <FilePrepStudio
             activeTool={activeStudio}
             initialFile={sourceFiles[0]?.file || null}
+            settingsCollapsed={!showSettingsPanel}
+            onToggleSettings={() => setShowSettingsPanel((v) => !v)}
+            isFocusMode={isFocusMode}
+            onToggleFocusMode={toggleFocusMode}
             onSharedFileChange={(newFile) => {
               if (newFile) {
                 setSourceFiles([{ id: `prep-src-${Date.now()}`, file: newFile }]);
@@ -1395,6 +1458,10 @@ export default function PdfEditor() {
           <PrepressToolsStudio
             activeTool={activeStudio}
             initialFile={sourceFiles[0]?.file || null}
+            settingsCollapsed={!showSettingsPanel}
+            onToggleSettings={() => setShowSettingsPanel((v) => !v)}
+            isFocusMode={isFocusMode}
+            onToggleFocusMode={toggleFocusMode}
             onSharedFileChange={(newFile) => {
               if (newFile) setSourceFiles([{ id: `pp-${Date.now()}`, file: newFile }]);
             }}
@@ -1415,9 +1482,14 @@ export default function PdfEditor() {
           activeStudio === 'sticker' ||
           activeStudio === 'booklet') && (
           <>
-            {/* 2. LEFT SIDEBAR: PAGES MANAGER (responsive 172-196px flush) */}
-            {showPagesSidebar && (
-              <aside className="w-[172px] xl:w-[196px] bg-white border-r border-[#E2E8F0] p-2 flex flex-col gap-2 overflow-hidden h-full shrink-0">
+            {/* 2. LEFT SIDEBAR: PAGES MANAGER (CSS-hidden on collapse/Focus to preserve scroll) */}
+            <aside
+              className={`${
+                isFocusMode || !showPagesSidebar
+                  ? 'hidden'
+                  : 'w-[172px] xl:w-[196px] flex'
+              } pk-panel-transition bg-white border-r border-[#E2E8F0] p-2 flex-col gap-2 overflow-hidden h-full shrink-0`}
+            >
                 <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-2">
                   <span className="text-[11px] font-bold text-[#17212F] tracking-wider uppercase">
                     {isV1StickerActive
@@ -1785,7 +1857,6 @@ export default function PdfEditor() {
                   )}
                 </div>
               </aside>
-            )}
 
             {/* 3. CENTER WORKSPACE: RIBBON TOOLBAR + DARK GRAY PASTEBOARD CANVAS */}
             <main className="flex-1 min-w-0 h-full flex flex-col overflow-hidden bg-[#52565E]">
@@ -2001,6 +2072,28 @@ export default function PdfEditor() {
                       )}
                     </>
                   )}
+                  {isFocusMode && (
+                    <button
+                      type="button"
+                      onClick={toggleFocusMode}
+                      title="Thoát Focus Mode và khôi phục bảng điều khiển (Esc)"
+                      className="h-7 px-2.5 rounded-md bg-[#0F172A] hover:bg-[#1E293B] text-white font-sans text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+                    >
+                      <PkIcon name="close" className="w-3 h-3" />
+                      <span>Thoát Focus (Esc)</span>
+                    </button>
+                  )}
+                  {!isFocusMode && !showSettingsPanel && activeStudio !== 'viewer' && (
+                    <button
+                      type="button"
+                      onClick={() => setShowSettingsPanel(true)}
+                      title="Mở lại bảng thông số"
+                      className="h-7 px-2.5 rounded-md bg-white hover:bg-[#DDF5EC] border border-[#087F5B]/40 text-[#064E3B] font-sans text-[11px] font-semibold flex items-center gap-1 cursor-pointer shadow-2xs transition-colors"
+                    >
+                      <PkIcon name="chevronsLeft" className="w-3.5 h-3.5 text-[#087F5B]" />
+                      <span>Thông số</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -2137,33 +2230,62 @@ export default function PdfEditor() {
               )}
             </main>
 
-            {/* 4A. ACTIVE TOOL SETTINGS DRAWER (responsive 288-320px flush white panel) */}
-            {showSettingsPanel && activeStudio !== 'viewer' && (
-              <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col gap-3 overflow-y-auto h-full shrink-0">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                  <div>
-                    <div className="text-xs font-bold text-slate-800 uppercase">
-                      {mode === 'sticker' ? 'BÌNH BÀI BẾ TEM' : mode === 'booklet' ? 'BÌNH SÁCH & TẠP CHÍ' : 'BÌNH CẮT XÉN'}
-                    </div>
-                    <div className="text-[10px] text-slate-400">
-                      {mode === 'sticker'
-                        ? 'Sắp xếp tem nhãn & đường bế CutContour'
-                        : mode === 'booklet'
-                        ? 'Đảo trang đóng ghim / đóng keo / gáy xoắn'
-                        : 'Xếp tối ưu namecard, tờ rơi, voucher'}
+            {/* 4A. ACTIVE TOOL SETTINGS DRAWER (Penpot-refined, CSS-hidden on collapse/Focus to preserve scroll & state) */}
+            {activeStudio !== 'viewer' && (
+              <aside
+                className={`${
+                  !showSettingsPanel || isFocusMode
+                    ? 'hidden'
+                    : 'w-[288px] xl:w-[320px] flex'
+                } pk-panel-transition bg-white border-l border-[#E2E8F0] flex-col h-full shrink-0 overflow-hidden`}
+              >
+                {/* Sticky Penpot Inspector Header */}
+                <div className="px-3.5 py-2.5 bg-[#F8FAFC] border-b border-[#E2E8F0] flex items-center justify-between gap-2 shrink-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="w-6 h-6 rounded-md bg-[#DDF5EC] text-[#087F5B] flex items-center justify-center shrink-0">
+                      <PkIcon
+                        name={mode === 'sticker' ? 'sticker' : mode === 'booklet' ? 'book' : 'grid'}
+                        className="w-3.5 h-3.5"
+                      />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-[11.5px] font-extrabold text-[#17212F] tracking-wide uppercase truncate">
+                        {mode === 'sticker' ? 'BÌNH TEM BẾ' : mode === 'booklet' ? 'BÌNH SÁCH & TẠP CHÍ' : 'BÌNH CẮT XÉN'}
+                      </div>
+                      <div className="text-[10px] text-[#64748B] truncate">
+                        {mode === 'sticker'
+                          ? 'Tem nhãn · Boong · CutContour'
+                          : mode === 'booklet'
+                          ? 'Đảo trang đóng ghim / keo gáy'
+                          : 'Namecard · Tờ rơi · Voucher'}
+                      </div>
                     </div>
                   </div>
-                  <button
-                    onClick={() => {
-                      setShowSettingsPanel(false);
-                      setActiveStudio('viewer');
-                    }}
-                    title="Đóng công cụ này để quay về Xem trang PDF gốc"
-                    className="w-6 h-6 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 text-sm cursor-pointer"
-                  >
-                    ×
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setShowSettingsPanel(false)}
+                      title="Thu gọn bảng thông số (»)"
+                      className="w-7 h-7 rounded-md bg-white hover:bg-[#DDF5EC] border border-[#E2E8F0] hover:border-[#087F5B]/40 text-[#64748B] hover:text-[#087F5B] flex items-center justify-center cursor-pointer transition-colors"
+                    >
+                      <PkIcon name="chevronsRight" className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSettingsPanel(false);
+                        setActiveStudio('viewer');
+                      }}
+                      title="Đóng công cụ này để quay về Xem trang PDF gốc"
+                      className="w-7 h-7 rounded-md hover:bg-[#F1F5F9] text-[#64748B] hover:text-[#17212F] flex items-center justify-center cursor-pointer transition-colors"
+                    >
+                      <PkIcon name="close" className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
+
+                {/* Scrollable Settings Body */}
+                <div className="flex-1 overflow-y-auto p-3.5 flex flex-col gap-3">
             {/* Multi-File Upload & Gang-Run Item List */}
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
@@ -3872,49 +3994,57 @@ export default function PdfEditor() {
                   {mode === 'sticker' ? (
                     <>
                       <button
+                        type="button"
                         onClick={() => handleDownload('print')}
                         disabled={
                           loading ||
                           (isV1StickerActive ? !v1PlanState?.supported || !v1PlanState?.checkpoint : sourceFiles.length === 0)
                         }
-                        className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                        className={`w-full h-9 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                           loading ||
                           (isV1StickerActive ? !v1PlanState?.supported || !v1PlanState?.checkpoint : sourceFiles.length === 0)
-                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                            : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
+                            ? 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed'
+                            : 'bg-[#087F5B] hover:bg-[#064E3B] text-white shadow-xs'
                         }`}
                       >
-                        {loading ? 'Đang xuất...' : '🖨️ Xuất File IN (PDF + Boong)'}
+                        <PkIcon name="download" className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">{loading ? 'Đang xuất...' : 'Xuất File IN (PDF + Boong)'}</span>
                       </button>
                       <button
+                        type="button"
                         onClick={() => handleDownload('cut')}
                         disabled={
                           loading ||
                           (isV1StickerActive ? !v1PlanState?.supported || !v1PlanState?.checkpoint : sourceFiles.length === 0)
                         }
-                        className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                        className={`w-full h-9 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                           loading ||
                           (isV1StickerActive ? !v1PlanState?.supported || !v1PlanState?.checkpoint : sourceFiles.length === 0)
-                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                            : 'bg-rose-600 hover:bg-rose-500 text-white shadow-xs'
+                            ? 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed'
+                            : 'bg-[#DB2777] hover:bg-[#BE185D] text-white shadow-xs'
                         }`}
                       >
-                        {isV1StickerActive && (v1PlanState?.summary?.totalSheets || 1) > 1
-                          ? `✂️ Xuất ${v1PlanState.summary.totalSheets} File BẾ riêng (TRANG 1–${v1PlanState.summary.totalSheets})`
-                          : '✂️ Xuất File BẾ (CutContour PDF)'}
+                        <PkIcon name="scissors" className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">
+                          {isV1StickerActive && (v1PlanState?.summary?.totalSheets || 1) > 1
+                            ? `Xuất ${v1PlanState.summary.totalSheets} File BẾ riêng (TRANG 1–${v1PlanState.summary.totalSheets})`
+                            : 'Xuất File BẾ (CutContour PDF)'}
+                        </span>
                       </button>
                       {isV1StickerActive && (
                         <>
                           <button
+                            type="button"
                             onClick={() => handleDownload('ai')}
                             disabled={loading || !v1PlanState?.supported || !v1PlanState?.checkpoint}
-                            className={`w-full py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                            className={`w-full h-9 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                               loading || !v1PlanState?.supported || !v1PlanState?.checkpoint
-                                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                                : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs'
+                                ? 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed'
+                                : 'bg-[#0F172A] hover:bg-[#1E293B] text-white shadow-xs'
                             }`}
                           >
-                            📐 Xuất File AI phân lớp (.ai: RegMark / CutLine / Design)
+                            <PkIcon name="layers" className="w-3.5 h-3.5 shrink-0" />
+                            <span className="truncate">Xuất File AI phân lớp (.ai)</span>
                           </button>
                           {Array.isArray(v1LastExport?.aiDownloadLinks) && v1LastExport.aiDownloadLinks.length > 0 && (
                             <div className="rounded-lg border border-indigo-200 bg-indigo-50/70 p-2 flex flex-col gap-1.5 text-[10px]">
@@ -4020,45 +4150,80 @@ export default function PdfEditor() {
                       )}
                       {!isV1StickerActive && (
                         <button
+                          type="button"
                           onClick={() => handleDownload('svg')}
                           disabled={loading || sourceFiles.length === 0}
-                          className="w-full py-2 rounded-xl bg-[#E6F4EF] hover:bg-[#d5ece4] text-[#146C53] text-xs font-bold cursor-pointer disabled:opacity-40"
+                          className="w-full h-9 px-3 rounded-lg bg-white hover:bg-[#DDF5EC] border border-[#087F5B] text-[#064E3B] text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
                         >
-                          🧩 Xuất File BẾ (.SVG)
+                          <PkIcon name="scissors" className="w-3.5 h-3.5 shrink-0 text-[#087F5B]" />
+                          <span>Xuất File BẾ (.SVG)</span>
                         </button>
                       )}
                     </>
                   ) : (
                     <button
+                      type="button"
                       onClick={() => handleDownload('print')}
                       disabled={loading || sourceFiles.length === 0}
-                      className={`w-full py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                      className={`w-full h-9 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                         loading || sourceFiles.length === 0
-                          ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                          : 'bg-[#146C53] hover:bg-[#0f5440] text-white shadow-xs'
+                          ? 'bg-[#E2E8F0] text-[#94A3B8] cursor-not-allowed'
+                          : 'bg-[#087F5B] hover:bg-[#064E3B] text-white shadow-xs'
                       }`}
                     >
-                      {loading ? 'Đang xuất Vector PDF...' : '⚡ Xuất PDF Bình Bài (CMYK)'}
+                      <PkIcon name="download" className="w-3.5 h-3.5 shrink-0" />
+                      <span>{loading ? 'Đang xuất Vector PDF...' : 'Xuất PDF Bình Bài (CMYK)'}</span>
                     </button>
                   )}
+                </div>
                 </div>
               </aside>
             )}
           </>
         )}
 
-        {/* 4B. FAR-RIGHT MODULE TOOLS DOCK (responsive 208-232px flush white panel) */}
-        <aside className="w-[208px] xl:w-[232px] bg-white border-l border-[#E2E8F0] p-2 flex flex-col gap-2.5 shrink-0 h-full overflow-y-auto select-none">
-          <div className="relative">
-            <PkIcon name="search" className="w-3.5 h-3.5 text-[#94A3B8] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              type="text"
-              value={toolSearch}
-              onChange={(e) => setToolSearch(e.target.value)}
-              placeholder="Tìm công cụ..."
-              className="w-full h-8 bg-[#F3F5F7] border border-[#E2E8F0] focus:bg-white focus:border-[#087F5B] focus:outline-none rounded-md pl-8 pr-2.5 text-xs text-[#17212F] placeholder:text-[#94A3B8]"
-            />
-          </div>
+        {/* 4B. FAR-RIGHT MODULE TOOLS DOCK (PrynX-style collapsible: 208-232px expanded <-> 52px icon rail) */}
+        <aside
+          className={`${
+            isFocusMode
+              ? 'hidden'
+              : isToolRailCollapsed
+              ? 'w-[52px] px-1.5 py-2'
+              : 'w-[208px] xl:w-[232px] p-2'
+          } pk-panel-transition bg-white border-l border-[#E2E8F0] flex flex-col gap-2 shrink-0 h-full overflow-y-auto select-none`}
+        >
+          {/* Top Collapse / Search Header */}
+          {isToolRailCollapsed ? (
+            <button
+              type="button"
+              onClick={() => setIsToolRailCollapsed(false)}
+              title="Mở rộng menu công cụ"
+              className="w-9 h-8 mx-auto rounded-md bg-[#F8FAFC] hover:bg-[#DDF5EC] border border-[#E2E8F0] hover:border-[#087F5B]/40 text-[#475569] hover:text-[#087F5B] flex items-center justify-center transition-colors cursor-pointer shrink-0"
+            >
+              <PkIcon name="chevronsLeft" className="w-4 h-4" />
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className="relative flex-1 min-w-0">
+                <PkIcon name="search" className="w-3.5 h-3.5 text-[#94A3B8] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={toolSearch}
+                  onChange={(e) => setToolSearch(e.target.value)}
+                  placeholder="Tìm công cụ..."
+                  className="w-full h-8 bg-[#F3F5F7] border border-[#E2E8F0] focus:bg-white focus:border-[#087F5B] focus:outline-none rounded-md pl-8 pr-2 text-xs text-[#17212F] placeholder:text-[#94A3B8]"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsToolRailCollapsed(true)}
+                title="Thu gọn menu công cụ (»)"
+                className="w-8 h-8 rounded-md bg-[#F8FAFC] hover:bg-[#DDF5EC] border border-[#E2E8F0] hover:border-[#087F5B]/40 text-[#64748B] hover:text-[#087F5B] flex items-center justify-center transition-colors cursor-pointer shrink-0"
+              >
+                <PkIcon name="chevronsRight" className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
           {[
             {
@@ -4196,12 +4361,44 @@ export default function PdfEditor() {
                 },
               ],
             },
-          ].map((grp) => {
-            const q = toolSearch.trim().toLowerCase();
+          ].map((grp, grpIdx) => {
+            const q = isToolRailCollapsed ? '' : toolSearch.trim().toLowerCase();
             const visibleItems = grp.items.filter(
               (it) => !q || it.label.toLowerCase().includes(q) || it.badge.toLowerCase().includes(q)
             );
             if (visibleItems.length === 0) return null;
+            if (isToolRailCollapsed) {
+              return (
+                <div
+                  key={grp.group}
+                  className={`flex flex-col items-center gap-1 ${grpIdx > 0 ? 'pt-1.5 border-t border-[#E2E8F0]' : ''}`}
+                >
+                  {visibleItems.map((tool) => {
+                    const active = activeStudio === tool.id;
+                    return (
+                      <button
+                        key={tool.id}
+                        type="button"
+                        title={`${tool.label} — ${tool.tip}`}
+                        aria-label={tool.label}
+                        onClick={() => {
+                          setActiveStudio(tool.id);
+                          setShowSettingsPanel(tool.id !== 'viewer');
+                          setCurrentSheetIndex(0);
+                        }}
+                        className={`w-9 h-9 rounded-lg border flex items-center justify-center transition-colors cursor-pointer ${
+                          active
+                            ? 'bg-[#DDF5EC] border-[#087F5B]/45 text-[#087F5B] shadow-2xs'
+                            : 'bg-transparent border-transparent hover:bg-[#F3F5F7] text-[#64748B] hover:text-[#17212F]'
+                        }`}
+                      >
+                        <PkIcon name={tool.icon} className="w-4 h-4 shrink-0" />
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            }
             return (
               <div key={grp.group} className="flex flex-col gap-0.5">
                 <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
@@ -4212,6 +4409,7 @@ export default function PdfEditor() {
                   return (
                     <button
                       key={tool.id}
+                      type="button"
                       title={tool.tip}
                       onClick={() => {
                         setActiveStudio(tool.id);

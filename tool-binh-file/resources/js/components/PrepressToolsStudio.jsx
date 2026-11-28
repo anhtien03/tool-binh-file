@@ -5,6 +5,7 @@ import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { MM_TO_PT, PAPER_SIZES } from '../engine/impositionEngine';
 import { encodeBarcode1D, encodeQrMatrix, parseTabularData } from '../engine/vdpEngine';
 import { useDragPan } from '../hooks/useDragPan';
+import { PkIcon } from './PrintKitUI';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -38,6 +39,10 @@ export default function PrepressToolsStudio({
   onSendToImpose,
   imposeSummary,
   imposeSheetDim,
+  settingsCollapsed = false,
+  onToggleSettings,
+  isFocusMode = false,
+  onToggleFocusMode,
 }) {
   const [sourceFile, setSourceFile] = useState(null);
   const [pdfBytes, setPdfBytes] = useState(null);
@@ -609,26 +614,50 @@ export default function PrepressToolsStudio({
             )}
           </div>
 
-          {(activeTool === 'numbering' || activeTool === 'vdp') && pageInfo && (
-            <div className="flex items-center gap-1.5 text-xs font-mono">
-              <span className="text-[11px] font-sans text-[#64748B] hidden md:inline">
-                Bấm lên bản vẽ để đặt vị trí
-              </span>
+          <div className="flex items-center gap-1.5">
+            {(activeTool === 'numbering' || activeTool === 'vdp') && pageInfo && (
+              <div className="flex items-center gap-1.5 text-xs font-mono">
+                <span className="text-[11px] font-sans text-[#64748B] hidden md:inline">
+                  Bấm lên bản vẽ để đặt vị trí
+                </span>
+                <button
+                  onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.2) * 100) / 100))}
+                  className="w-6 h-6 rounded bg-white border border-[#E2E8F0] hover:bg-[#F3F5F7] cursor-pointer"
+                >
+                  −
+                </button>
+                <span className="min-w-[42px] text-center font-bold text-[#087F5B]">{Math.round(zoom * 100)}%</span>
+                <button
+                  onClick={() => setZoom((z) => Math.min(4, Math.round((z + 0.2) * 100) / 100))}
+                  className="w-6 h-6 rounded bg-white border border-[#E2E8F0] hover:bg-[#F3F5F7] cursor-pointer"
+                >
+                  +
+                </button>
+              </div>
+            )}
+            {isFocusMode && typeof onToggleFocusMode === 'function' && (
               <button
-                onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.2) * 100) / 100))}
-                className="w-6 h-6 rounded bg-white border border-[#E2E8F0] hover:bg-[#F3F5F7] cursor-pointer"
+                type="button"
+                onClick={onToggleFocusMode}
+                title="Thoát Focus Mode và khôi phục bảng điều khiển (Esc)"
+                className="h-7 px-2.5 rounded-md bg-[#0F172A] hover:bg-[#1E293B] text-white text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
               >
-                −
+                <PkIcon name="close" className="w-3 h-3" />
+                <span>Thoát Focus (Esc)</span>
               </button>
-              <span className="min-w-[42px] text-center font-bold text-[#087F5B]">{Math.round(zoom * 100)}%</span>
+            )}
+            {!isFocusMode && settingsCollapsed && typeof onToggleSettings === 'function' && (
               <button
-                onClick={() => setZoom((z) => Math.min(4, Math.round((z + 0.2) * 100) / 100))}
-                className="w-6 h-6 rounded bg-white border border-[#E2E8F0] hover:bg-[#F3F5F7] cursor-pointer"
+                type="button"
+                onClick={onToggleSettings}
+                title="Mở lại bảng thông số"
+                className="h-7 px-2.5 rounded-md bg-white hover:bg-[#DDF5EC] border border-[#087F5B]/40 text-[#064E3B] text-[11px] font-semibold flex items-center gap-1 cursor-pointer shadow-2xs transition-colors"
               >
-                +
+                <PkIcon name="chevronsLeft" className="w-3.5 h-3.5 text-[#087F5B]" />
+                <span>Thông số</span>
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {error && <div className="px-3 py-1.5 bg-rose-50 border-b border-rose-200 text-[#DC4545] text-xs">{error}</div>}
@@ -930,27 +959,45 @@ export default function PrepressToolsStudio({
         </div>
       </main>
 
-      {/* RIGHT: SETTINGS PANEL */}
-      <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col gap-3 overflow-y-auto h-full shrink-0">
-        <div className="border-b border-[#E2E8F0] pb-2">
-          <div className="text-xs font-bold text-[#17212F] uppercase">
-            {activeTool === 'numbering'
-              ? 'Chạy số nhảy tự động'
-              : activeTool === 'vdp'
-              ? 'Trộn dữ liệu biến đổi (VDP)'
-              : activeTool === 'preflight'
-              ? 'Preflight chuẩn in'
-              : 'Báo giá & Giá thành in'}
+      {/* RIGHT: SETTINGS PANEL (CSS-hidden on collapse/Focus) */}
+      <aside
+        className={`${
+          settingsCollapsed || isFocusMode
+            ? 'hidden'
+            : 'w-[288px] xl:w-[320px] flex'
+        } pk-panel-transition bg-white border-l border-[#E2E8F0] p-3.5 flex-col gap-3 overflow-y-auto h-full shrink-0`}
+      >
+        <div className="flex items-start justify-between gap-2 border-b border-[#E2E8F0] pb-2">
+          <div className="min-w-0">
+            <div className="text-[11.5px] font-extrabold text-[#17212F] uppercase truncate">
+              {activeTool === 'numbering'
+                ? 'Chạy số nhảy tự động'
+                : activeTool === 'vdp'
+                ? 'Trộn dữ liệu biến đổi (VDP)'
+                : activeTool === 'preflight'
+                ? 'Preflight chuẩn in'
+                : 'Báo giá & Giá thành in'}
+            </div>
+            <div className="text-[11px] text-[#64748B] mt-0.5">
+              {activeTool === 'numbering'
+                ? 'Đánh số vé, phiếu bảo hành, hóa đơn & xếp Cut & Stack'
+                : activeTool === 'vdp'
+                ? 'Đổ danh sách Excel/CSV & mã QR Code vector lên mẫu PDF'
+                : activeTool === 'preflight'
+                ? 'Quét lỗi kích thước, TrimBox, RGB và vùng an toàn mép cắt'
+                : 'Tính nhanh giá vốn & đơn giá bán dựa trên số tờ bình'}
+            </div>
           </div>
-          <div className="text-[11px] text-[#64748B] mt-0.5">
-            {activeTool === 'numbering'
-              ? 'Đánh số vé, phiếu bảo hành, hóa đơn & xếp Cut & Stack'
-              : activeTool === 'vdp'
-              ? 'Đổ danh sách Excel/CSV & mã QR Code vector lên mẫu PDF'
-              : activeTool === 'preflight'
-              ? 'Quét lỗi kích thước, TrimBox, RGB và vùng an toàn mép cắt'
-              : 'Tính nhanh giá vốn & đơn giá bán dựa trên số tờ bình'}
-          </div>
+          {typeof onToggleSettings === 'function' && (
+            <button
+              type="button"
+              onClick={onToggleSettings}
+              title="Thu gọn bảng thông số (»)"
+              className="w-7 h-7 rounded-md bg-[#F8FAFC] hover:bg-[#DDF5EC] border border-[#E2E8F0] hover:border-[#087F5B]/40 text-[#64748B] hover:text-[#087F5B] flex items-center justify-center cursor-pointer transition-colors shrink-0"
+            >
+              <PkIcon name="chevronsRight" className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         {activeTool === 'numbering' && (

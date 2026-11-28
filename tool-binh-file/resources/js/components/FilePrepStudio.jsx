@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFDocument, degrees, rgb } from 'pdf-lib';
 import { MM_TO_PT } from '../engine/impositionEngine';
+import { PkIcon } from './PrintKitUI';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -24,6 +25,10 @@ export default function FilePrepStudio({
   onSharedFileChange,
   onApplyToWorkspace,
   onSendToImpose,
+  settingsCollapsed = false,
+  onToggleSettings,
+  isFocusMode = false,
+  onToggleFocusMode,
 }) {
   const [sourceFile, setSourceFile] = useState(null);
   const [pdfBytes, setPdfBytes] = useState(null);
@@ -458,6 +463,30 @@ export default function FilePrepStudio({
               </button>
             </div>
           )}
+          <div className="flex items-center gap-1.5">
+            {isFocusMode && typeof onToggleFocusMode === 'function' && (
+              <button
+                type="button"
+                onClick={onToggleFocusMode}
+                title="Thoát Focus Mode và khôi phục bảng điều khiển (Esc)"
+                className="h-7 px-2.5 rounded-md bg-[#0F172A] hover:bg-[#1E293B] text-white text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+              >
+                <PkIcon name="close" className="w-3 h-3" />
+                <span>Thoát Focus (Esc)</span>
+              </button>
+            )}
+            {!isFocusMode && settingsCollapsed && typeof onToggleSettings === 'function' && (
+              <button
+                type="button"
+                onClick={onToggleSettings}
+                title="Mở lại bảng thông số"
+                className="h-7 px-2.5 rounded-md bg-white hover:bg-[#DDF5EC] border border-[#087F5B]/40 text-[#064E3B] text-[11px] font-semibold flex items-center gap-1 cursor-pointer shadow-2xs transition-colors"
+              >
+                <PkIcon name="chevronsLeft" className="w-3.5 h-3.5 text-[#087F5B]" />
+                <span>Thông số</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {error && <div className="mx-3 mt-2 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs">{error}</div>}
@@ -731,27 +760,45 @@ export default function FilePrepStudio({
         </div>
       </main>
 
-      {/* 2. MIDDLE-RIGHT: SETTINGS PANEL FOR CURRENT FILE PREP TOOL */}
-      <aside className="w-[288px] xl:w-[320px] bg-white border-l border-[#E2E8F0] p-3.5 flex flex-col gap-3 overflow-y-auto h-full shrink-0">
-        <div className="border-b border-slate-100 pb-2">
-          <div className="text-xs font-bold text-slate-800 uppercase">
-            {activeTool === 'organizer'
-              ? '🔀 XÁO TRỘN & SẮP XẾP TRANG'
-              : activeTool === 'resize'
-              ? '📏 CO GIÃN TRANG (RESIZE)'
-              : activeTool === 'crop'
-              ? '✂️ CẮT KHỔ TRANG (CROP)'
-              : '↘️ TRIM & SHIFT (DỊCH LỀ)'}
+      {/* 2. MIDDLE-RIGHT: SETTINGS PANEL FOR CURRENT FILE PREP TOOL (CSS-hidden on collapse/Focus) */}
+      <aside
+        className={`${
+          settingsCollapsed || isFocusMode
+            ? 'hidden'
+            : 'w-[288px] xl:w-[320px] flex'
+        } pk-panel-transition bg-white border-l border-[#E2E8F0] p-3.5 flex-col gap-3 overflow-y-auto h-full shrink-0`}
+      >
+        <div className="flex items-start justify-between gap-2 border-b border-[#E2E8F0] pb-2">
+          <div className="min-w-0">
+            <div className="text-[11.5px] font-extrabold text-[#17212F] uppercase truncate">
+              {activeTool === 'organizer'
+                ? 'XÁO TRỘN & SẮP XẾP TRANG'
+                : activeTool === 'resize'
+                ? 'CO GIÃN TRANG (RESIZE)'
+                : activeTool === 'crop'
+                ? 'CẮT KHỔ TRANG (CROP)'
+                : 'TRIM & SHIFT (DỊCH LỀ)'}
+            </div>
+            <div className="text-[10px] text-[#64748B] mt-0.5">
+              {activeTool === 'organizer'
+                ? 'Kéo thả đổi thứ tự, xoay, nhân bản, chèn trang trắng'
+                : activeTool === 'resize'
+                ? 'Đổi khổ trang PDF hàng loạt & tự động thêm Bleed'
+                : activeTool === 'crop'
+                ? 'Cắt bỏ lề thừa / bon cắt cũ theo 4 cạnh hoặc vùng mực'
+                : 'Dịch chuyển nội dung trang Chẵn / Lẻ để chừa gáy đóng sách'}
+            </div>
           </div>
-          <div className="text-[10px] text-slate-400">
-            {activeTool === 'organizer'
-              ? 'Kéo thả đổi thứ tự, xoay, nhân bản, chèn trang trắng'
-              : activeTool === 'resize'
-              ? 'Đổi khổ trang PDF hàng loạt & tự động thêm Bleed'
-              : activeTool === 'crop'
-              ? 'Cắt bỏ lề thừa / bon cắt cũ theo 4 cạnh hoặc vùng mực'
-              : 'Dịch chuyển nội dung trang Chẵn / Lẻ để chừa gáy đóng sách'}
-          </div>
+          {typeof onToggleSettings === 'function' && (
+            <button
+              type="button"
+              onClick={onToggleSettings}
+              title="Thu gọn bảng thông số (»)"
+              className="w-7 h-7 rounded-md bg-[#F8FAFC] hover:bg-[#DDF5EC] border border-[#E2E8F0] hover:border-[#087F5B]/40 text-[#64748B] hover:text-[#087F5B] flex items-center justify-center cursor-pointer transition-colors shrink-0"
+            >
+              <PkIcon name="chevronsRight" className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         {/* File Upload box */}
