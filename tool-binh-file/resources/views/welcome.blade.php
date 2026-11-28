@@ -7,7 +7,7 @@
         @viteReactRefresh
         @vite(['resources/css/app.css', 'resources/js/app.jsx'])
     </head>
-    <body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen">
+    <body class="bg-[#F3F5F7] text-[#17212F] w-full h-full overflow-hidden m-0 p-0">
         <div id="root"></div>
     </body>
 </html>
